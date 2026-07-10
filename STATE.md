@@ -2,6 +2,21 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
+## Settings drawer (2026-07-10 evening — Giorgi: "more UI/UX options to act on things and change them about GOAT or UI")
+Gear button (top bar) or Ctrl+, opens a quiet right drawer (SettingsPanel in
+ui_qt.py, instrument style: typography, one accent, no chrome):
+- theme (4 named options), text size small/normal/large (replyNow px),
+  voice on/off (TtsPipeline.enabled — off = zero-length segments, text
+  reveals instantly via the UNSPEAKABLE path), voice level quiet/normal/loud
+  (TtsPipeline.gain, np.clip), wake word on/off, mic live/muted
+  (GoatApp.mic_muted gates _on_utterance AND _on_interrupt; footer shows it),
+  new chat (deletes .goat-session-py + gated restart) and restart buttons.
+- All prefs persist in ui-config.json (load_ui_config/save_ui_config,
+  validated w/ defaults); bind_engine() pushes them into the engine at boot.
+- Esc order: panel → input → fullscreen. TESTED offscreen: every setter
+  round-trips engine flag + cfg + JSON, reload pushes saved prefs into a
+  fresh engine; preflight + 13/13 engine tests still green. Commit 9a348aa.
+
 ## Max test sweep (2026-07-10 evening — Giorgi: "test it to the max, fix what comes up")
 - **test_engine_router.py** (permanent, free to run: mock client+TTS, no API):
   13/13 — fast/full routing, sticky-full, handoff prefix, /compact success
