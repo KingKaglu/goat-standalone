@@ -42,7 +42,16 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import Qt, QPoint, QPointF, QTimer, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPoint,
+    QPointF,
+    QPropertyAnimation,
+    QRect,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -179,6 +188,10 @@ QLineEdit#cmd {{
   selection-background-color: {t['sel']};
 }}
 QLineEdit#cmd:focus {{ border-bottom: 1px solid {t['accent']}; }}
+QLabel#epigraph {{
+  color: {t['faint']}; font-size: 21px; font-weight: 300; letter-spacing: 4px;
+}}
+QLabel#clock {{ color: {t['dim']}; font-size: 13px; letter-spacing: 2px; }}
 QLabel#paneltitle {{
   color: {t['dim']}; font-size: 12px; letter-spacing: 4px; font-weight: 600;
 }}
@@ -238,7 +251,12 @@ class StringLine(QWidget):
         self._seed = [random.uniform(0, math.tau) for _ in range(6)]
         self._base = QColor("#6f6a60")
         self._accent = QColor("#ffa94d")
+        self._ignite_t0 = 0.0  # boot ritual: light travels down the string
         self.setMinimumHeight(140)
+
+    def ignite(self, duration: float = 1.6):
+        self._ignite_dur = duration
+        self._ignite_t0 = time.time()
 
     def set_theme(self, t: dict):
         self._base = QColor(t["string_base"])
@@ -314,6 +332,16 @@ class StringLine(QWidget):
         grad.setColorAt(0.82, core)
         grad.setColorAt(1.0, edge)
 
+        # boot ritual: the light travels left to right, then life as usual
+        if self._ignite_t0:
+            f = (time.time() - self._ignite_t0) / getattr(self, "_ignite_dur", 1.6)
+            if f >= 1.0:
+                self._ignite_t0 = 0.0
+            else:
+                eased = 1 - (1 - f) ** 3
+                p.setClipRect(0, 0, int(margin + span * eased + 26), h)
+                p.setOpacity(0.25 + 0.75 * eased)
+
         # halo pass then the string itself
         halo = QColor(col)
         halo.setAlpha(int(28 + 60 * heat))
@@ -346,6 +374,25 @@ def _fmt_tok(n: int) -> str:
     return str(n)
 
 
+class PageLabel(QLabel):
+    """QLabel whose minimum height is its real wrapped-text height.
+
+    Word-wrapped QLabels in a QVBoxLayout report a near-zero minimum
+    (heightForWidth is ignored in the layout's minimum-size pass), so once
+    the page outgrows the viewport the scroll area COMPRESSES old lines to
+    slivers instead of scrolling — history looked deleted."""
+
+    def minimumSizeHint(self):
+        base = super().minimumSizeHint()
+        if not self.wordWrap():
+            return base
+        w = self.width()
+        if w <= 1:
+            return base
+        return base.expandedTo(
+            base.__class__(0, self.heightForWidth(w)))
+
+
 class ClickableThumb(QLabel):
     """Image thumbnail that opens in the system viewer on click."""
     def __init__(self, path: str):
@@ -358,6 +405,53 @@ class ClickableThumb(QLabel):
             subprocess.Popen(["explorer", self.path])
         except Exception:
             pass
+
+
+class TopFade(QWidget):
+    """Old lines dissolve as they scroll up under the string — a soft
+    gradient lip over the top of the conversation. Mouse passes through.
+    The lip must match the backdrop AT ITS OWN SCREEN POSITION (the backdrop
+    is a gradient) or it reads as a grey band instead of a dissolve."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._top = QColor("#0f0e0c")
+        self._bot = QColor("#0b0a09")
+        self._frac = 0.25  # vertical position of the lip within the window
+        self._col = QColor(self._top)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def set_theme(self, t: dict):
+        self._top = QColor(t["bg_top"])
+        self._bot = QColor(t["bg_bot"])
+        self._mix()
+
+    def set_frac(self, f: float):
+        self._frac = max(0.0, min(1.0, f))
+        self._mix()
+
+    def _mix(self):
+        f = self._frac
+        self._col = QColor(
+            int(self._top.red() + (self._bot.red() - self._top.red()) * f),
+            int(self._top.green() + (self._bot.green() - self._top.green()) * f),
+            int(self._top.blue() + (self._bot.blue() - self._top.blue()) * f),
+        )
+        self.update()
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        g = QLinearGradient(0, 0, 0, self.height())
+        top = QColor(self._col)
+        top.setAlpha(255)
+        mid = QColor(self._col)
+        mid.setAlpha(120)
+        bot = QColor(self._col)
+        bot.setAlpha(0)
+        g.setColorAt(0.0, top)
+        g.setColorAt(0.55, mid)
+        g.setColorAt(1.0, bot)
+        p.fillRect(self.rect(), g)
 
 
 class SettingsPanel(QWidget):
@@ -522,6 +616,10 @@ class GoatWindow(QWidget):
         bar.addSpacing(18)
         bar.addWidget(self.stateword)
         bar.addStretch(1)
+        self.clock = QLabel("")
+        self.clock.setObjectName("clock")
+        bar.addWidget(self.clock)
+        bar.addSpacing(16)
         bar.addWidget(self.theme_btn)
         bar.addWidget(self.gear_btn)
         bar.addSpacing(10)
@@ -549,6 +647,14 @@ class GoatWindow(QWidget):
         # backdrop gradient and the page reads as a faint band.
         self.scroll.viewport().setAutoFillBackground(False)
         host.setAutoFillBackground(False)
+        # Empty-state epigraph — one quiet line until the first exchange.
+        self.epigraph = QLabel("Say the word.")
+        self.epigraph.setObjectName("epigraph")
+        self.epigraph.setAlignment(Qt.AlignHCenter)
+        self.epigraph.setContentsMargins(0, 90, 0, 0)
+        self.col.insertWidget(0, self.epigraph)
+        # Fade lip over the top of the page (created after scroll exists).
+        self.fade = TopFade(self.scroll)
         # Follow mode: auto-scroll only while he's already at the bottom.
         # Scrolling up to reread history parks the page; scrolling back down
         # (or speaking again) re-engages following. Without this the 33ms
@@ -626,6 +732,7 @@ class GoatWindow(QWidget):
         self.setStyleSheet(build_style(t, TEXT_SIZES[self.cfg["text"]]))
         self.canvas.set_theme(t)
         self.string.set_theme(t)
+        self.fade.set_theme(t)
         self.theme_btn.setText(name)
         self.panel.set_theme(t)
         self.panel.refresh()
@@ -643,8 +750,18 @@ class GoatWindow(QWidget):
             return
         self._place_panel()
         self.panel.refresh()
+        # Slide in from the right edge — 170ms, settles quickly.
+        end = self.panel.geometry()
+        start = QRect(self.canvas.width(), end.y(), end.width(), end.height())
+        self.panel.setGeometry(start)
         self.panel.show()
         self.panel.raise_()
+        anim = QPropertyAnimation(self.panel, b"geometry", self)
+        anim.setDuration(170)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
 
     def _place_panel(self):
         # Below the title bar — window controls and the ≡ stay reachable.
@@ -815,6 +932,13 @@ class GoatWindow(QWidget):
         usage = f" · {self._usage}" if self._usage else ""
         mic = "mic muted" if (self.goat and self.goat.mic_muted) else "mic live"
         self.footer.setText(f"{self._model} · {mic} · {up // 60:02d}:{up % 60:02d}{usage}")
+        self.clock.setText(time.strftime("%H:%M"))
+        # Keep the fade lip glued across resizes (33ms — geometry set is cheap).
+        if self.fade.width() != self.scroll.width():
+            self.fade.setGeometry(0, 0, self.scroll.width(), 46)
+            self.fade.raise_()
+            y = self.scroll.mapTo(self.canvas, QPoint(0, 0)).y()
+            self.fade.set_frac(y / max(1, self.canvas.height()))
 
     # ---- input ----
     def _submit(self):
@@ -840,7 +964,7 @@ class GoatWindow(QWidget):
             wdg.style().polish(wdg)
 
     def _add_line(self, text: str, name: str) -> QLabel:
-        lbl = QLabel(text)
+        lbl = PageLabel(text)
         lbl.setObjectName(name)
         lbl.setWordWrap(True)
         lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -899,6 +1023,9 @@ class GoatWindow(QWidget):
             self.stateword.setText("out of usage")
             self._status_hold = time.time() + 15.0
         elif kind == "you":
+            if self.epigraph is not None:
+                self.epigraph.deleteLater()
+                self.epigraph = None
             self._dim_previous()
             self._reply_label = None
             self._follow = True  # he spoke — bring him to the reply
@@ -981,6 +1108,7 @@ def main():
     timer.start(33)
 
     win.showFullScreen()
+    win.string.ignite()  # boot ritual: the light travels down the string
     code = app.exec()
     goat.shutdown_audio()
     os._exit(code)  # asyncio daemon thread has no clean cross-thread stop
