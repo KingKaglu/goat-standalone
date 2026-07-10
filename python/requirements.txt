@@ -1,0 +1,10 @@
+sounddevice
+numpy
+scipy
+silero-vad
+livekit
+claude-agent-sdk
+httpx
+edge-tts
+soundfile
+PySide6
