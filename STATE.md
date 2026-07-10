@@ -2,7 +2,24 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
-## Token economy v2.1 (2026-07-10 evening — Giorgi: "is that the best way, or can we improve?")
+## Headless skill E2E + memory-law fix (2026-07-10 evening — Giorgi: "test it yourself, no voice")
+Harness: fresh SDK session w/ GOAT's exact options (persona, workspace,
+setting_sources=["project"], NO resume — live app untouched), typed queries.
+- PASS file-map: Skill→Read map→exact path+context, no disk hunt.
+- PASS briefing: Skill→probes→perfect 3-sentence JARVIS brief w/ ## Open items.
+- CAUGHT BUG remember: fact went to the harness's own auto-memory dir
+  (~\.claude\projects\...\memory) — the claude_code PRESET's memory directive
+  beat the skill; briefings read workspace\memory.md → split-brain memory.
+  FIX: PERSONA "MEMORY LAW" (only memory = workspace/memory.md, never the
+  harness dir). RETESTED: Skill→Read→Edit into memory.md, correct. Test
+  artifacts cleaned both sides. — Giorgi: "give GOAT ability to find file locations without going through all files")
+- New skill **file-map** + seeded gazetteer at workspace\file-map.md: curated
+  one-line index of the machine (GOAT layout, all his projects w/ real paths
+  verified on disk, infra ports, broken-ensurepip gotcha). Rule: read map
+  FIRST, search cheap-to-expensive (Glob scoped → Grep filtered → Read
+  offset/limit), RECORD hard-won findings back into the map.
+- Loads next session reset (app restarted 17:30 — skill written after, so
+  one more session reset needed).
 Investigated the SDK itself (0.2.114) instead of assuming:
 - ClaudeSDKClient.get_context_usage() = exact context breakdown (same as
   /context). MEASURED: autocompact IS enabled in SDK sessions but threshold
