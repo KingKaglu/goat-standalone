@@ -13,6 +13,7 @@ import queue
 import re
 import threading
 import time
+from collections import deque
 
 import numpy as np
 
@@ -51,6 +52,29 @@ MODEL_FULL = "claude-fable-5"
 MODEL_FAST = "claude-sonnet-5"
 # What the footer shows. The UI displays these verbatim — keep them speakable.
 MODEL_NAMES = {MODEL_FULL: "fable 5", MODEL_FAST: "sonnet 5"}
+
+# ---- token economy (2026-07-10, Giorgi: "GOAT burns way more than Claude
+# Code for the same work — fix it") ----
+# The burn had three sources, each addressed here:
+#  1. Obvious work went to the fast model first, which read the WHOLE
+#     history just to say ESCALATE — then the full model read it all again.
+#     WORK_RE routes clear work verbs straight to the full model.
+#  2. Prompt cache is PER MODEL: every fast<->full switch re-wrote the whole
+#     history as cache_creation tokens on the other model. Above
+#     STICKY_FULL_CTX the session stays on the full model even for chat —
+#     a warm cache read costs a fraction of re-caching on the fast model.
+#  3. The session grew until the 200k wall, so late turns each dragged
+#     ~150k+ tokens. At ROTATE_CTX the session is rotated proactively; the
+#     next message carries a handoff built from _exchanges (zero API cost)
+#     so GOAT doesn't wake up with amnesia.
+WORK_RE = re.compile(
+    r"\b(build|create|write|code|implement|fix|debug|repair|edit|refactor|"
+    r"rename|delete|remove|install|download|deploy|push|commit|clone|run|"
+    r"execute|launch|restart|kill|search|find|look up|screenshot|volume|"
+    r"brightness|clipboard|remember|briefing|diagnos\w*)\b", re.I)
+STICKY_FULL_CTX = 25_000   # past this, stop bouncing back to the fast model
+ROTATE_CTX = 60_000        # past this, rotate to a fresh session at turn end
+HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
 
 def _friendly_model_name(model_id: str) -> str:
     """Footer display name ('claude-opus-4-8' → 'opus 4 8' if unmapped)."""
@@ -171,6 +195,9 @@ session's memory actually has it — never invent), then ask what's first.
 No tools, no ESCALATE — answer directly.
 
 Context economy (protects Giorgi's Claude usage limits):
+- A message opening with [context-handoff] means your session was quietly
+  rotated to save usage; the block inside is your own recent conversation.
+  Absorb it and answer the actual message — never mention the rotation.
 - Read C:/Users/user/goat-standalone/STATE.md only when you need context — don't load it at boot.
 - After finishing significant work, update STATE.md with a tight brief (ongoing items,
   decisions, unfinished work). Read first, then update — lazy load, always.
@@ -518,6 +545,13 @@ class GoatApp:
         # spoken heads-up the moment the API says the quota is gone.
         self.usage_in = 0
         self.usage_out = 0
+        # token economy: last main-turn context size, rolling exchange log
+        # for rotation handoffs, and the rotation flags themselves.
+        self._last_ctx = 0
+        self._exchanges = deque(maxlen=HANDOFF_KEEP)
+        self._reply_acc = ""
+        self._rotate_only = False
+        self._pending_handoff = ""
         self._limit_warned = False
         self._stt_warned = False  # gates the spoken "transcriber down" warning
         # wake word: boot opens a conversation window (he just launched us);
@@ -651,13 +685,21 @@ class GoatApp:
         self._work_started = time.monotonic()
         self._turn_has_tools = False
         self._last_tool = ""
+        self._reply_acc = ""
         if echo:
             # New turn while the old voice is still finishing a tail — cut it,
             # same as voice barge-in does. (echo=False paths — file drops and
             # the fresh-session retry — must not clip their own spoken intro.)
             self.tts.cancel()
         self.tts.new_turn()
-        target = MODEL_FULL if force_full else MODEL_FAST
+        # Token-economy routing: obvious work skips the fast model's
+        # read-everything-say-ESCALATE pass; a heavy session stops bouncing
+        # to the fast model at all (per-model cache — switches re-cache the
+        # whole history). Misses still escalate the old way.
+        full = (force_full or bool(WORK_RE.search(text))
+                or self._last_ctx > STICKY_FULL_CTX
+                or bool(self._pending_handoff))
+        target = MODEL_FULL if full else MODEL_FAST
         if self.model != target:
             try:
                 await self.client.set_model(target)
@@ -665,9 +707,13 @@ class GoatApp:
             except Exception as e:  # noqa: BLE001
                 self.emit("status", f"model switch failed: {e}")
         self.emit("model", _friendly_model_name(target))
-        self._hold_deltas = not force_full
+        self._hold_deltas = not full
         self._delta_buf = ""
-        await self.client.query(text if force_full else "[fast-turn] " + text)
+        send = text if full else "[fast-turn] " + text
+        if self._pending_handoff:
+            send = self._pending_handoff + "\n\n" + send
+            self._pending_handoff = ""
+        await self.client.query(send)
 
     async def _ensure_recep(self):
         """Front-desk session: talking brain, no tool budget (max_turns=1),
@@ -788,6 +834,8 @@ class GoatApp:
                         t = (block.text or "").strip()
                         if self.model == MODEL_FAST and t.startswith("ESCALATE"):
                             self.escalate_pending = True
+                        elif t:
+                            self._reply_acc += t + " "
                     elif isinstance(block, ToolUseBlock):
                         self._turn_has_tools = True  # this is a WORK turn now
                         self._last_tool = block.name
@@ -814,6 +862,9 @@ class GoatApp:
                         os.remove(SESSION_FILE)
                     except OSError:
                         pass
+                    # Carry recent exchanges into the fresh session — the
+                    # retry used to arrive with total amnesia.
+                    self._pending_handoff = self._handoff_text()
                     warn = "My context filled up — starting a fresh session, one second."
                     self.emit("status", "context full — starting fresh session")
                     self.emit("delta", "")  # creates the reply label for the reveal
@@ -835,7 +886,42 @@ class GoatApp:
                     self._flush_sentences(force=True)
                     self._hold_deltas = False
                     self._delta_buf = ""
+                    # Turn fully done — log the exchange for future handoffs
+                    # and measure how heavy this session has become.
+                    if self.last_user_text:
+                        self._exchanges.append(
+                            (self.last_user_text[:300],
+                             self._reply_acc.strip()[:300]))
+                        self._reply_acc = ""
+                    u = msg.usage or {}
+                    self._last_ctx = ((u.get("input_tokens") or 0)
+                                      + (u.get("cache_read_input_tokens") or 0)
+                                      + (u.get("cache_creation_input_tokens") or 0))
                     self.emit("turn_done", "")
+                    if self._last_ctx > ROTATE_CTX:
+                        # Rotate BEFORE the wall: quietly start a fresh
+                        # session; the next message carries the handoff.
+                        self._rotate_only = True
+                        self._last_ctx = 0
+                        try:
+                            os.remove(SESSION_FILE)
+                        except OSError:
+                            pass
+                        self._pending_handoff = self._handoff_text()
+                        self.emit("status", "context rotated — usage saved")
+                        return True  # run() reconnects fresh, no retry
+
+    def _handoff_text(self) -> str:
+        """Zero-cost session handoff: the recent exchanges GOAT already has
+        in Python, packed into the first message of the fresh session."""
+        if not self._exchanges:
+            return ""
+        lines = [f"Giorgi: {u}\nYou: {r}" for u, r in self._exchanges]
+        return ("[context-handoff] Your previous session was rotated to save "
+                "Giorgi's usage. Recent conversation, oldest first:\n"
+                + "\n".join(lines)
+                + "\nLong-term memory lives in workspace/memory.md. Continue "
+                "naturally; don't mention the rotation unless asked.")
 
     def _track_usage(self, msg: ResultMessage) -> bool:
         """Accumulate session token totals for the footer, and detect the
@@ -997,6 +1083,13 @@ class GoatApp:
                 await self.client.connect()
                 self.model = MODEL_FAST
                 self.emit("model", _friendly_model_name(MODEL_FAST))
+                if self._rotate_only:
+                    # Proactive rotation, not a wall hit: nothing to retry —
+                    # the next thing Giorgi says carries the handoff.
+                    self._rotate_only = False
+                    retried_text = None
+                    self.emit("status", "fresh session — listening")
+                    continue
                 self.emit("status", "fresh session — listening")
                 if self.last_user_text and self.last_user_text != retried_text:
                     retried_text = self.last_user_text

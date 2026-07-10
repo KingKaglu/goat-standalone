@@ -1,6 +1,39 @@
 # GOAT State — handoff brief
 
-Updated: 2026-07-10 evening (typed input always visible + theme system; GitHub publish)
+Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
+
+## Token economy v2 (2026-07-10 evening — Giorgi: "GOAT on Fable burns way more than Claude Code doing the same work")
+Root causes + fixes, all in goat_app.py (constants WORK_RE / STICKY_FULL_CTX=25k / ROTATE_CTX=60k / HANDOFF_KEEP=8):
+- Escalation double-pass: obvious work verbs (WORK_RE) now route STRAIGHT to
+  the full model — no more fast-model read-everything-say-ESCALATE pass.
+  Misses still escalate the old way.
+- Per-model prompt-cache thrash: every fast<->full switch re-cached the whole
+  history (cache_creation) on the other model. Past 25k context the session
+  stays on Fable even for chat (warm cache read ≪ re-cache on Sonnet).
+- Unbounded session growth: at 60k context the session rotates proactively at
+  turn end; next message carries a [context-handoff] block built from the
+  last 8 exchanges kept in Python (zero API cost). Wall-hit ("prompt too
+  long") path now ALSO gets the handoff — used to wake with amnesia.
+- PERSONA: [context-handoff] rule (absorb silently, never mention).
+PREFLIGHT PASS + unit checks (WORK_RE hit/miss lists, handoff builder).
+
+## Skill library wave (2026-07-10 evening — Giorgi: "plan out the skills needed to be better and execute")
+Six new skills in workspace\.claude\skills (live from the NEXT session — say
+"restart GOAT" to load them):
+- **remember** — long-term memory at workspace\memory.md (seeded: Open items,
+  Giorgi, Machine sections); save on "remember that", recall on "what did I
+  tell you"; morning-briefing reads ## Open.
+- **self-upgrade** — the ONLY sanctioned way to edit own code: STATE.md first,
+  edit, self_check preflight (never restart on FAIL), confirm with Giorgi
+  before restart-goat.ps1, rollback if bad, record lesson in STATE.md.
+- **system-health** — battery/AC/disk/RAM/hog probes + this machine's known
+  traps (AC flap, 56% battery, QLC C:, 8GB RAM). Probes verified working.
+- **windows-control** — exact SendKeys volume/media codes, app open/close,
+  clipboard, brightness, lock; confirm-first on kills/lock/power.
+- **stt-teach** — stt-fixes.json pair format + mandatory JSON validation
+  after write (broken JSON silently kills ALL fixes).
+- **morning-briefing** — 3-4 spoken sentences: greeting, ## Open items,
+  vitals only-if-alarming; distinct from tool-less [boot-briefing].
 
 ## UI: permanent input + themes (2026-07-10 evening — Giorgi: "no option to type, only talking; improve UI, theme setting")
 - ROOT CAUSE he couldn't type: the command field was HIDDEN by design
