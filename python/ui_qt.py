@@ -24,6 +24,9 @@ language of a beautiful instrument sitting in a dark room:
 - Themes: four rooms for the same instrument (ember / paper / phosphor /
   graphite), each one accent, chosen from the top bar or Ctrl+T, persisted
   in ui-config.json.
+- Settings drawer (⚙ or Ctrl+,): theme, text size, voice on/off + level,
+  wake word, mic mute, new chat / restart — every switch typographic, saved
+  instantly to ui-config.json, engine flags applied live via bind_engine().
 - Footer is one small line of plain words: state · model · uptime.
 
 Threading: Qt owns the main thread; GoatApp's asyncio loop runs on a
@@ -103,24 +106,42 @@ THEMES = {
 THEME_ORDER = ["ember", "paper", "phosphor", "graphite"]
 
 
-def load_theme_name() -> str:
+# Reply type sizes: the current answer's pt size (older lines stay put).
+TEXT_SIZES = {"small": 22, "normal": 30, "large": 38}
+# GOAT's speaker level (multiplier on the synthesized voice only).
+VOICE_LEVELS = {"quiet": 0.6, "normal": 1.0, "loud": 1.4}
+
+DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
+               "level": "normal", "wake": True}
+
+
+def load_ui_config() -> dict:
+    cfg = dict(DEFAULT_CFG)
     try:
         with open(UI_CONFIG, encoding="utf-8") as f:
-            name = json.load(f).get("theme", "")
-        return name if name in THEMES else "ember"
-    except (OSError, json.JSONDecodeError, AttributeError):
-        return "ember"
+            saved = json.load(f)
+        if isinstance(saved, dict):
+            cfg.update({k: v for k, v in saved.items() if k in cfg})
+    except (OSError, json.JSONDecodeError):
+        pass
+    if cfg["theme"] not in THEMES:
+        cfg["theme"] = "ember"
+    if cfg["text"] not in TEXT_SIZES:
+        cfg["text"] = "normal"
+    if cfg["level"] not in VOICE_LEVELS:
+        cfg["level"] = "normal"
+    return cfg
 
 
-def save_theme_name(name: str):
+def save_ui_config(cfg: dict):
     try:
         with open(UI_CONFIG, "w", encoding="utf-8") as f:
-            json.dump({"theme": name}, f)
+            json.dump(cfg, f)
     except OSError:
-        pass  # cosmetic preference — never worth an error
+        pass  # preferences — never worth an error
 
 
-def build_style(t: dict) -> str:
+def build_style(t: dict, reply_px: int = 30) -> str:
     return f"""
 QWidget {{ color: {t['paper']}; font-family: 'Segoe UI'; }}
 QLabel#wordmark {{
@@ -141,7 +162,7 @@ QLabel#youNow {{
   color: {t['accent']}; font-size: 15px; letter-spacing: 1px; margin-top: 18px;
 }}
 QLabel#replyNow {{
-  color: {t['paper']}; font-size: 30px; font-weight: 300;
+  color: {t['paper']}; font-size: {reply_px}px; font-weight: 300;
 }}
 QLabel#youOld {{ color: {t['you_old']}; font-size: 13px; margin-top: 18px; }}
 QLabel#replyOld {{ color: {t['reply_old']}; font-size: 17px; font-weight: 300; }}
@@ -158,6 +179,22 @@ QLineEdit#cmd {{
   selection-background-color: {t['sel']};
 }}
 QLineEdit#cmd:focus {{ border-bottom: 1px solid {t['accent']}; }}
+QLabel#paneltitle {{
+  color: {t['dim']}; font-size: 12px; letter-spacing: 4px; font-weight: 600;
+}}
+QLabel#optlabel {{ color: {t['dim']}; font-size: 12px; letter-spacing: 1px; }}
+QPushButton#optbtn {{
+  background: transparent; color: {t['dim']}; border: none;
+  font-size: 13px; padding: 3px 8px; text-align: left;
+}}
+QPushButton#optbtn:hover {{ color: {t['paper']}; }}
+QPushButton#optbtn[on="true"] {{ color: {t['accent']}; }}
+QPushButton#actbtn {{
+  background: transparent; color: {t['paper']}; border: none;
+  border-bottom: 1px solid {t['faint']}; font-size: 13px; padding: 3px 10px;
+}}
+QPushButton#actbtn:hover {{ color: {t['accent']};
+  border-bottom: 1px solid {t['accent']}; }}
 """
 
 
@@ -323,6 +360,100 @@ class ClickableThumb(QLabel):
             pass
 
 
+class SettingsPanel(QWidget):
+    """Quiet right-hand drawer: every switch GOAT and the UI expose.
+    Same design law as the rest — typography, one accent, no chrome."""
+
+    def __init__(self, win):
+        super().__init__(win.canvas)
+        self.win = win
+        self._bg = QColor("#0b0a09")
+        self._line = QColor("#3d3a34")
+        self._groups: dict[str, list] = {}
+        self.hide()
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(26, 24, 26, 24)
+        lay.setSpacing(14)
+        title = QLabel("S E T T I N G S")
+        title.setObjectName("paneltitle")
+        lay.addWidget(title)
+        lay.addSpacing(6)
+
+        def row(label, key, options, handler):
+            lay.addWidget(self._mklabel(label))
+            h = QHBoxLayout()
+            h.setSpacing(2)
+            btns = []
+            for opt in options:
+                b = QPushButton(opt)
+                b.setObjectName("optbtn")
+                b.setCursor(Qt.PointingHandCursor)
+                b.clicked.connect(lambda _=False, o=opt: handler(o))
+                h.addWidget(b)
+                btns.append((opt, b))
+            h.addStretch(1)
+            lay.addLayout(h)
+            self._groups[key] = btns
+
+        row("theme", "theme", THEME_ORDER, self.win.set_theme_opt)
+        row("text size", "text", list(TEXT_SIZES), self.win.set_text_opt)
+        row("voice", "voice", ["on", "off"], self.win.set_voice_opt)
+        row("voice level", "level", list(VOICE_LEVELS), self.win.set_level_opt)
+        row("wake word", "wake", ["on", "off"], self.win.set_wake_opt)
+        row("microphone", "mic", ["live", "muted"], self.win.set_mic_opt)
+
+        lay.addSpacing(10)
+        lay.addWidget(self._mklabel("session"))
+        h = QHBoxLayout()
+        h.setSpacing(14)
+        for text, cb in (("new chat", self.win.new_chat),
+                         ("restart", self.win.restart_goat)):
+            b = QPushButton(text)
+            b.setObjectName("actbtn")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(cb)
+            h.addWidget(b)
+        h.addStretch(1)
+        lay.addLayout(h)
+        lay.addStretch(1)
+        hint = QLabel("esc closes · changes save instantly")
+        hint.setObjectName("footer")
+        lay.addWidget(hint)
+
+    @staticmethod
+    def _mklabel(text):
+        lbl = QLabel(text)
+        lbl.setObjectName("optlabel")
+        return lbl
+
+    def set_theme(self, t: dict):
+        self._bg = QColor(t["bg_bot"])
+        self._bg.setAlpha(252)
+        self._line = QColor(t["faint"])
+        self.update()
+
+    def refresh(self):
+        """Light the active option in every group."""
+        state = dict(self.win.cfg)
+        state["voice"] = "on" if state.get("voice", True) else "off"
+        state["wake"] = "on" if state.get("wake", True) else "off"
+        goat = self.win.goat
+        state["mic"] = "muted" if (goat and goat.mic_muted) else "live"
+        for key, btns in self._groups.items():
+            active = str(state.get(key, ""))
+            for opt, b in btns:
+                b.setProperty("on", "true" if opt == active else "false")
+                b.style().unpolish(b)
+                b.style().polish(b)
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.fillRect(self.rect(), self._bg)
+        p.setPen(QPen(self._line, 1))
+        p.drawLine(0, 0, 0, self.height())
+
+
 class GoatWindow(QWidget):
     event_sig = Signal(str, str)
 
@@ -347,7 +478,9 @@ class GoatWindow(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         self.canvas = Backdrop()
         outer.addWidget(self.canvas)
-        self._theme_name = load_theme_name()
+        self.goat = None  # engine handle, set by bind_engine()
+        self.cfg = load_ui_config()
+        self._theme_name = self.cfg["theme"]
 
         lay = QVBoxLayout(self.canvas)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -365,6 +498,11 @@ class GoatWindow(QWidget):
         self.theme_btn.setCursor(Qt.PointingHandCursor)
         self.theme_btn.setToolTip("theme — click or ctrl+t to cycle")
         self.theme_btn.clicked.connect(self.cycle_theme)
+        self.gear_btn = QPushButton("⚙")
+        self.gear_btn.setObjectName("winbtn")
+        self.gear_btn.setCursor(Qt.PointingHandCursor)
+        self.gear_btn.setToolTip("settings — ctrl+,")
+        self.gear_btn.clicked.connect(self.toggle_settings)
         b_min = QPushButton("–")
         b_min.setObjectName("winbtn")
         b_min.clicked.connect(self.showMinimized)
@@ -379,6 +517,7 @@ class GoatWindow(QWidget):
         bar.addWidget(self.stateword)
         bar.addStretch(1)
         bar.addWidget(self.theme_btn)
+        bar.addWidget(self.gear_btn)
         bar.addSpacing(10)
         bar.addWidget(b_min)
         bar.addWidget(b_full)
@@ -432,7 +571,7 @@ class GoatWindow(QWidget):
         foot_row.setContentsMargins(34, 4, 34, 18)
         foot_row.addWidget(self.footer)
         foot_row.addStretch(1)
-        hint = QLabel("ctrl+k type · ctrl+t theme · ctrl+o file · drop files anywhere · f11 screen")
+        hint = QLabel("ctrl+k type · ctrl+, settings · ctrl+t theme · ctrl+o file · f11 screen")
         hint.setObjectName("footer")
         foot_row.addWidget(hint)
         lay.addLayout(foot_row)
@@ -443,8 +582,10 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key_Escape), self, self._escape)
         QShortcut(QKeySequence("Ctrl+K"), self, self._show_cmd)
         QShortcut(QKeySequence("Ctrl+T"), self, self.cycle_theme)
+        QShortcut(QKeySequence("Ctrl+,"), self, self.toggle_settings)
         QShortcut(QKeySequence("Ctrl+O"), self, self._pick_files)
 
+        self.panel = SettingsPanel(self)
         self.apply_theme(self._theme_name)
 
     # ---- window controls ----
@@ -459,26 +600,114 @@ class GoatWindow(QWidget):
         self.input.selectAll()
 
     def _escape(self):
-        if self.input.hasFocus():
+        if self.panel.isVisible():
+            self.panel.hide()
+        elif self.input.hasFocus():
             self.input.clear()
             self.input.clearFocus()
         elif self.isFullScreen():
             self.showNormal()
 
-    # ---- theme ----
+    # ---- theme / appearance ----
     def apply_theme(self, name: str):
         t = THEMES.get(name) or THEMES["ember"]
         self._theme_name = name
-        self.setStyleSheet(build_style(t))
+        self.cfg["theme"] = name
+        self.setStyleSheet(build_style(t, TEXT_SIZES[self.cfg["text"]]))
         self.canvas.set_theme(t)
         self.string.set_theme(t)
         self.theme_btn.setText(name)
+        self.panel.set_theme(t)
+        self.panel.refresh()
 
     def cycle_theme(self):
         i = THEME_ORDER.index(self._theme_name) if self._theme_name in THEME_ORDER else 0
         name = THEME_ORDER[(i + 1) % len(THEME_ORDER)]
         self.apply_theme(name)
-        save_theme_name(name)
+        save_ui_config(self.cfg)
+
+    # ---- settings panel ----
+    def toggle_settings(self):
+        if self.panel.isVisible():
+            self.panel.hide()
+            return
+        self._place_panel()
+        self.panel.refresh()
+        self.panel.show()
+        self.panel.raise_()
+
+    def _place_panel(self):
+        w = max(320, int(self.canvas.width() * 0.24))
+        self.panel.setGeometry(self.canvas.width() - w, 0, w, self.canvas.height())
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self.panel.isVisible():
+            self._place_panel()
+
+    def _save(self):
+        save_ui_config(self.cfg)
+        self.panel.refresh()
+
+    def set_theme_opt(self, name: str):
+        self.apply_theme(name)
+        save_ui_config(self.cfg)
+
+    def set_text_opt(self, size: str):
+        self.cfg["text"] = size
+        self.apply_theme(self._theme_name)  # rebuilds the stylesheet
+        save_ui_config(self.cfg)
+
+    def set_voice_opt(self, opt: str):
+        self.cfg["voice"] = opt == "on"
+        if self.goat:
+            self.goat.tts.enabled = self.cfg["voice"]
+            if not self.cfg["voice"]:
+                self.goat.tts.cancel()  # silence the current sentence too
+        self._save()
+
+    def set_level_opt(self, level: str):
+        self.cfg["level"] = level
+        if self.goat:
+            self.goat.tts.gain = VOICE_LEVELS[level]
+        self._save()
+
+    def set_wake_opt(self, opt: str):
+        self.cfg["wake"] = opt == "on"
+        if self.goat:
+            self.goat.wake_enabled = self.cfg["wake"]
+        self._save()
+
+    def set_mic_opt(self, opt: str):
+        if self.goat:
+            self.goat.mic_muted = opt == "muted"
+            self._on_event("status", "mic muted" if self.goat.mic_muted
+                           else "listening")
+        self._save()
+
+    def bind_engine(self, goat):
+        """Hand the window its engine and push the saved preferences in."""
+        self.goat = goat
+        goat.tts.enabled = self.cfg["voice"]
+        goat.tts.gain = VOICE_LEVELS[self.cfg["level"]]
+        goat.wake_enabled = self.cfg["wake"]
+        self.panel.refresh()
+
+    # ---- session actions ----
+    def new_chat(self):
+        """Fresh brain: drop the session file, restart through the gate."""
+        try:
+            os.remove(os.path.join(GOAT_ROOT, ".goat-session-py"))
+        except OSError:
+            pass
+        self.restart_goat()
+
+    def restart_goat(self):
+        self._on_event("status", "restarting…")
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", os.path.join(GOAT_ROOT, "python", "restart-goat.ps1")],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
     def mousePressEvent(self, ev):
         if (ev.button() == Qt.LeftButton and not self.isFullScreen()
@@ -548,7 +777,8 @@ class GoatWindow(QWidget):
             self.stateword.setText(state)
         up = int(time.time() - self._t0)
         usage = f" · {self._usage}" if self._usage else ""
-        self.footer.setText(f"{self._model} · mic live · {up // 60:02d}:{up % 60:02d}{usage}")
+        mic = "mic muted" if (self.goat and self.goat.mic_muted) else "mic live"
+        self.footer.setText(f"{self._model} · {mic} · {up // 60:02d}:{up % 60:02d}{usage}")
 
     # ---- input ----
     def _submit(self):
@@ -682,6 +912,7 @@ def main():
     goat = GoatApp(emit=win.post_event)
     win.on_submit = goat.submit_text
     win.on_files = goat.submit_files
+    win.bind_engine(goat)
 
     def engine():
         import asyncio

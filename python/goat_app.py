@@ -407,6 +407,11 @@ class TtsPipeline:
         self.piper = PiperResident()
         self.q: queue.Queue = queue.Queue()
         self.gen = 0
+        # UI-controllable: voice off = text-only mode (sentences register as
+        # zero-length segments and reveal instantly, same path UNSPEAKABLE
+        # text already uses); gain scales the speaker level for GOAT only.
+        self.enabled = True
+        self.gain = 1.0
         self._lock = threading.Lock()
         self._warned_fallback = False
         # Word-sync bookkeeping: each spoken chunk registers its sample span
@@ -516,7 +521,7 @@ class TtsPipeline:
             gen, epoch, text = self.q.get()
             if gen != self.gen:
                 continue
-            if UNSPEAKABLE_RE.search(text):
+            if not self.enabled or UNSPEAKABLE_RE.search(text):
                 # not read aloud, but still shown — zero-length segment
                 # appears the moment playback reaches this point
                 self._register(text, 0, epoch)
@@ -528,6 +533,8 @@ class TtsPipeline:
                 self._register(text, 0, epoch)  # voice lost it; text must survive
                 continue
             if gen == self.gen:
+                if self.gain != 1.0:
+                    samples = np.clip(samples * self.gain, -1.0, 1.0).astype(np.float32)
                 self._register(text, len(samples), epoch)
                 self.audio.queue_playback(samples)
 
@@ -572,6 +579,9 @@ class GoatApp:
         # after WAKE_WINDOW_S of silence, voice input must carry the name.
         self.wake_enabled = os.environ.get("GOAT_WAKE", "on").lower() not in (
             "off", "0", "false")
+        # UI-controllable: muted mic drops utterances AND barge-in triggers
+        # at the engine gate (audio threads keep running — cheap, reversible).
+        self.mic_muted = False
         self._last_exchange = time.monotonic()
         # front desk (receptionist) + work-turn awareness
         self.recep: ClaudeSDKClient | None = None
@@ -583,6 +593,8 @@ class GoatApp:
 
     # ---- audio-thread callbacks ----
     def _on_interrupt(self, _preroll):
+        if self.mic_muted:
+            return
         if self.busy and self._turn_has_tools:
             # He's talking over a WORKING turn: stop the voice, never the
             # work — JARVIS goes quiet, the suit keeps printing. His words
@@ -609,6 +621,8 @@ class GoatApp:
             self.emit("status", f"interrupt failed: {e}")
 
     def _on_utterance(self, audio_np: np.ndarray):
+        if self.mic_muted:
+            return
         if self.loop:
             asyncio.run_coroutine_threadsafe(self._handle_utterance(audio_np), self.loop)
 
