@@ -89,6 +89,23 @@ HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
 COMPACT_CLI = os.environ.get("GOAT_COMPACT", "on").lower() not in (
     "off", "0", "false")
 
+# Appended to the persona when Georgian mode is on at boot; the live toggle
+# sends the same directive as a steering turn instead.
+LANG_NOTE_KA = """
+
+LANGUAGE: Giorgi switched you to Georgian (ქართული). Speak and write ONLY
+Georgian until he switches back — natural, native-level, same JARVIS wit.
+Keep code, paths, and technical identifiers as they are. His messages may
+still arrive in English (local speech recognition stays English — Georgian
+STT was measured unusable) or typed in Georgian; reply in Georgian either
+way."""
+
+# Local Georgian hearing measured 2026-07-10: whisper base multi romanizes,
+# small multi hallucinates/loops at 13-25s per phrase — unusable. Voice
+# INPUT therefore stays English in Georgian mode; flip this env when better
+# local models/hardware exist.
+STT_KA_EXPERIMENT = os.environ.get("GOAT_STT_KA", "off").lower() in ("on", "1", "true")
+
 # ---- power watcher (first JARVIS watcher, 2026-07-10) ----
 # This laptop's known fault: the AC jack flaps (loose adapter) and the
 # battery is worn — a silent drop to battery can end in a power collapse.
@@ -370,7 +387,8 @@ UNSPEAKABLE_RE = re.compile(r"[`|{}\\<>_*#=]|https?://|[A-Za-z]:[/\\]")
 # exchange it's an open conversation — no name needed mid-flow. Garble
 # variants cover how whisper actually mangles "goat". Typed input and
 # mid-task interjections are never gated. Disable: set GOAT_WAKE=off.
-WAKE_RE = re.compile(r"\b(goat|goats|goad|goot|gote|ghost|god|coat|goa|go at)\b",
+WAKE_RE = re.compile(r"\b(goat|goats|goad|goot|gote|ghost|god|coat|goa|go at"
+                     r"|გოატ|გოუთ|გოთ|ღოატ)\b",
                      re.IGNORECASE)
 WAKE_WINDOW_S = 120.0
 # Away this long → GOAT opens the conversation itself at boot (Phase 3).
@@ -614,6 +632,9 @@ class GoatApp:
         # UI-controllable: muted mic drops utterances AND barge-in triggers
         # at the engine gate (audio threads keep running — cheap, reversible).
         self.mic_muted = False
+        # "en" or "ka" — set by the UI before run() (boot) or live via
+        # set_language(). Boot path appends LANG_NOTE_KA to the persona.
+        self.language = "en"
         self._last_exchange = time.monotonic()
         # front desk (receptionist) + work-turn awareness
         self.recep: ClaudeSDKClient | None = None
@@ -657,6 +678,32 @@ class GoatApp:
             return
         if self.loop:
             asyncio.run_coroutine_threadsafe(self._handle_utterance(audio_np), self.loop)
+
+    def set_language(self, lang: str):
+        """Live language switch from the UI (Qt thread — everything here is
+        thread-safe): voice now, hearing in a worker thread (model reload
+        ~5s), and one steering turn so the brain switches too."""
+        if lang == self.language:
+            return
+        self.language = lang
+        tts_edge.set_language(lang)
+        if STT_KA_EXPERIMENT:
+            def _stt():
+                ok = stt_whisper.set_language(lang)
+                self.emit("status", ("hearing ready — " + lang) if ok
+                          else "hearing did not come back — restart me")
+            threading.Thread(target=_stt, daemon=True).start()
+        if lang == "ka":
+            note = ("[language switch] From now on speak and write ONLY "
+                    "Georgian (ქართული) — natural, native-level, same wit. "
+                    "Giorgi's voice still reaches you in English (local "
+                    "Georgian speech recognition isn't good enough), and he "
+                    "may type Georgian — reply in Georgian either way. "
+                    "Confirm in one short Georgian sentence.")
+        else:
+            note = ("[language switch] Back to English only from now on. "
+                    "Confirm in one short sentence.")
+        self.submit_text(note)
 
     def submit_text(self, text: str):
         """Typed input from the UI — thread-safe."""
@@ -1141,13 +1188,18 @@ class GoatApp:
         except OSError:
             pass  # no session file — fresh brain, greeting alone covers it
         self.emit("status", "starting speech recognition...")
+        if self.language != "en":
+            tts_edge.set_language(self.language)
+            if STT_KA_EXPERIMENT:
+                stt_whisper.LANGUAGE = self.language
         stt_ok = await asyncio.to_thread(stt_whisper.ensure_server)
 
+        persona = PERSONA + (LANG_NOTE_KA if self.language == "ka" else "")
         options = ClaudeAgentOptions(
             cwd=WORKSPACE,
             permission_mode="bypassPermissions",
             model=MODEL_FAST,
-            system_prompt={"type": "preset", "preset": "claude_code", "append": PERSONA},
+            system_prompt={"type": "preset", "preset": "claude_code", "append": persona},
             include_partial_messages=True,
             # "project" = ONLY workspace/.claude — GOAT's own skill library.
             # Giorgi's global plugins/hooks stay out (the latency win that

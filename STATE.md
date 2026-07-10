@@ -2,6 +2,24 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
+## Georgian mode (2026-07-10 evening — Giorgi: "do I have option to choose Georgian in UI?")
+Settings drawer got a language row (english / ქართული), persisted as
+cfg["lang"], applied at boot (persona LANG_NOTE_KA + Eka voice) and live
+(set_language: tts_edge voice swap + one steering turn so the brain
+confirms in Georgian).
+- Voice OUT: ka-GE-EkaNeural (edge-tts VOICES dict) — verified, speaks
+  Georgian beautifully.
+- Voice IN: **stays English.** MEASURED tonight on this CPU: whisper base
+  multilingual transcribes Georgian into LATIN transliteration; small
+  multilingual (482MB, downloaded, kept in stt\) loops/hallucinates at
+  13-25s per phrase, greedy or beam. Local Georgian STT = unusable. Typed
+  Georgian works (input line is unicode). GOAT_STT_KA=on re-enables the
+  experimental path (stt_whisper.set_language restarts server w/ -l ka on
+  ggml-small.bin) for a future better model/machine. ggml-base.bin (multi)
+  deleted — proven useless.
+- WAKE_RE got Georgian garble variants (გოატ|გოუთ|გოთ|ღოატ).
+- Boot greeting stays English even in ka mode (code constant) — known nit.
+
 ## Continuity + power watcher (2026-07-10 evening — Giorgi: "plan improvements, execute step by step; push latest with new guidelines")
 - **On-screen continuity**: engine logs every finished exchange to
   workspace\transcript.jsonl (_log_exchange: 400-line trim at 200KB, never

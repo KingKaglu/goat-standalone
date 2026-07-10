@@ -16,8 +16,18 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
-VOICE = "en-US-AvaMultilingualNeural"
+VOICES = {
+    "en": "en-US-AvaMultilingualNeural",
+    "ka": "ka-GE-EkaNeural",  # Microsoft's Georgian neural voice
+}
+VOICE = VOICES["en"]
 RATE = "+10%"  # same slightly-brisk pace as piper's length_scale 0.85
+
+
+def set_language(lang: str):
+    """Switch the voice; unknown languages keep the current one."""
+    global VOICE
+    VOICE = VOICES.get(lang, VOICE)
 
 
 async def _collect_mp3(text: str) -> bytes:

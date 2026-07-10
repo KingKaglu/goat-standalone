@@ -34,6 +34,13 @@ from goat_paths import GOAT_ROOT
 WHISPER_SERVER_BIN = os.path.join(GOAT_ROOT, "stt", "bin", "Release", "whisper-server.exe")
 WHISPER_MODEL_SMALL = os.path.join(GOAT_ROOT, "stt", "ggml-small.en.bin")
 WHISPER_MODEL_BASE = os.path.join(GOAT_ROOT, "stt", "ggml-base.en.bin")
+# Multilingual models — needed for Georgian. Measured 2026-07-10: base
+# multilingual transcribes Georgian audio into LATIN transliteration
+# (useless); small multilingual is required for Georgian script. base kept
+# as a last-resort fallback only.
+WHISPER_MODEL_MULTI = os.path.join(GOAT_ROOT, "stt", "ggml-base.bin")
+WHISPER_MODEL_MULTI_SMALL = os.path.join(GOAT_ROOT, "stt", "ggml-small.bin")
+LANGUAGE = "en"  # set via set_language(); "ka" switches model + decode lang
 STT_PORT = 3781
 STT_URL = f"http://127.0.0.1:{STT_PORT}/inference"
 FIXES_FILE = os.path.join(GOAT_ROOT, "stt-fixes.json")
@@ -83,15 +90,24 @@ def ensure_server() -> bool:
     except httpx.HTTPError:
         return True  # listening but grumpy about GET — still a live server
 
-    model = (WHISPER_MODEL_SMALL
-             if os.environ.get("GOAT_STT_MODEL") == "small" and os.path.exists(WHISPER_MODEL_SMALL)
-             else WHISPER_MODEL_BASE)
-    print(f"[stt] starting whisper-server on {STT_PORT} with {os.path.basename(model)}")
+    if LANGUAGE != "en" and (os.path.exists(WHISPER_MODEL_MULTI_SMALL)
+                             or os.path.exists(WHISPER_MODEL_MULTI)):
+        model = (WHISPER_MODEL_MULTI_SMALL
+                 if os.path.exists(WHISPER_MODEL_MULTI_SMALL)
+                 else WHISPER_MODEL_MULTI)
+        lang_args = ["-l", LANGUAGE]
+        prompt_args = []  # the English vocab prompt would fight Georgian
+    else:
+        model = (WHISPER_MODEL_SMALL
+                 if os.environ.get("GOAT_STT_MODEL") == "small" and os.path.exists(WHISPER_MODEL_SMALL)
+                 else WHISPER_MODEL_BASE)
+        lang_args = []
+        prompt_args = ["--prompt", _vocab_prompt(), "--carry-initial-prompt"]
+    print(f"[stt] starting whisper-server on {STT_PORT} with {os.path.basename(model)} lang={LANGUAGE}")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     _server_proc = subprocess.Popen(
         [WHISPER_SERVER_BIN, "-m", model, "-t", "6", "-nt",
-         "-bs", "5",
-         "--prompt", _vocab_prompt(), "--carry-initial-prompt",
+         "-bs", "5", *lang_args, *prompt_args,
          "--host", "127.0.0.1", "--port", str(STT_PORT)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=flags,
@@ -108,6 +124,20 @@ def ensure_server() -> bool:
             return True
     print("[stt] whisper-server did not come up in 30s — transcription will fail")
     return False
+
+
+def set_language(lang: str) -> bool:
+    """Switch decode language and restart OUR server on the right model.
+    Blocking (model load ~5s) — call from a worker thread. If the server on
+    the port isn't ours it can't be restarted here; GOAT's own boot always
+    owns it in practice."""
+    global LANGUAGE
+    if lang == LANGUAGE:
+        return True
+    LANGUAGE = lang
+    shutdown()
+    time.sleep(0.4)  # let the port go
+    return ensure_server()
 
 
 def shutdown():

@@ -120,8 +120,11 @@ TEXT_SIZES = {"small": 22, "normal": 30, "large": 38}
 # GOAT's speaker level (multiplier on the synthesized voice only).
 VOICE_LEVELS = {"quiet": 0.6, "normal": 1.0, "loud": 1.4}
 
+LANGS = {"english": "en", "ქართული": "ka"}
+
 DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
-               "level": "normal", "wake": True, "ontop": False}
+               "level": "normal", "wake": True, "ontop": False,
+               "lang": "en"}
 
 
 def load_ui_config() -> dict:
@@ -139,6 +142,8 @@ def load_ui_config() -> dict:
         cfg["text"] = "normal"
     if cfg["level"] not in VOICE_LEVELS:
         cfg["level"] = "normal"
+    if cfg["lang"] not in LANGS.values():
+        cfg["lang"] = "en"
     return cfg
 
 
@@ -494,6 +499,7 @@ class SettingsPanel(QWidget):
         row("text size", "text", list(TEXT_SIZES), self.win.set_text_opt)
         row("voice", "voice", ["on", "off"], self.win.set_voice_opt)
         row("voice level", "level", list(VOICE_LEVELS), self.win.set_level_opt)
+        row("language", "lang", list(LANGS), self.win.set_lang_opt)
         row("wake word", "wake", ["on", "off"], self.win.set_wake_opt)
         row("microphone", "mic", ["live", "muted"], self.win.set_mic_opt)
         row("window", "window", ["normal", "on top"], self.win.set_ontop_opt)
@@ -535,6 +541,8 @@ class SettingsPanel(QWidget):
         state["voice"] = "on" if state.get("voice", True) else "off"
         state["wake"] = "on" if state.get("wake", True) else "off"
         state["window"] = "on top" if state.get("ontop") else "normal"
+        state["lang"] = next((label for label, code in LANGS.items()
+                              if code == state.get("lang", "en")), "english")
         goat = self.win.goat
         state["mic"] = "muted" if (goat and goat.mic_muted) else "live"
         for key, btns in self._groups.items():
@@ -820,6 +828,15 @@ class GoatWindow(QWidget):
                            else "listening")
         self._save()
 
+    def set_lang_opt(self, label: str):
+        code = LANGS.get(label, "en")
+        if code == self.cfg.get("lang"):
+            return
+        self.cfg["lang"] = code
+        if self.goat:
+            self.goat.set_language(code)
+        self._save()
+
     def set_ontop_opt(self, opt: str):
         v = opt == "on top"
         self.cfg["ontop"] = v
@@ -849,6 +866,9 @@ class GoatWindow(QWidget):
         goat.tts.enabled = self.cfg["voice"]
         goat.tts.gain = VOICE_LEVELS[self.cfg["level"]]
         goat.wake_enabled = self.cfg["wake"]
+        # Before the engine thread starts: run() applies voice + hearing
+        # model + persona note itself from this attribute.
+        goat.language = self.cfg["lang"]
         self.panel.refresh()
 
     # ---- session actions ----
