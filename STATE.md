@@ -2,6 +2,24 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
+## Token economy v2.1 (2026-07-10 evening — Giorgi: "is that the best way, or can we improve?")
+Investigated the SDK itself (0.2.114) instead of assuming:
+- ClaudeSDKClient.get_context_usage() = exact context breakdown (same as
+  /context). MEASURED: autocompact IS enabled in SDK sessions but threshold
+  ~934k on a ~1M window — crash protection, useless for cost. Our 60k trim
+  stands.
+- Rotation upgraded: at ROTATE_CTX the engine now sends "/compact" (muted
+  turn: suppressed=True, busy=True, _compacting flag) — model-written
+  summary, SAME session, far richer than the 8-exchange handoff. Its
+  ResultMessage is verified with get_context_usage(); if context didn't
+  shrink, hard-rotate with handoff as before. GOAT_COMPACT=off env kills it.
+- Receptionist: effort="low" (SDK effort→CLI --effort; levels
+  low/medium/high/xhigh/max) — 1-3 sentence front-desk answers don't need
+  deep thinking; cheaper and snappier.
+- NOT YET LIVE-TESTED: /compact path needs a real >60k session (and usage
+  reset — limit was hit during this work, resets 19:40). Fallback covers
+  every failure shape.
+
 ## Token economy v2 (2026-07-10 evening — Giorgi: "GOAT on Fable burns way more than Claude Code doing the same work")
 Root causes + fixes, all in goat_app.py (constants WORK_RE / STICKY_FULL_CTX=25k / ROTATE_CTX=60k / HANDOFF_KEEP=8):
 - Escalation double-pass: obvious work verbs (WORK_RE) now route STRAIGHT to

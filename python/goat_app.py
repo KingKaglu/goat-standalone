@@ -73,8 +73,15 @@ WORK_RE = re.compile(
     r"execute|launch|restart|kill|search|find|look up|screenshot|volume|"
     r"brightness|clipboard|remember|briefing|diagnos\w*)\b", re.I)
 STICKY_FULL_CTX = 25_000   # past this, stop bouncing back to the fast model
-ROTATE_CTX = 60_000        # past this, rotate to a fresh session at turn end
+ROTATE_CTX = 60_000        # past this, compact (or rotate) at turn end
 HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
+# Preferred trim: the CLI's own /compact — a model-written summary that keeps
+# the SAME session (far richer than the 8-exchange handoff). Verified via
+# get_context_usage() afterwards; if it didn't take, fall back to rotation.
+# The CLI's built-in autocompact can't do this job: measured threshold is
+# ~934k tokens (1M window) — crash protection, not cost control.
+COMPACT_CLI = os.environ.get("GOAT_COMPACT", "on").lower() not in (
+    "off", "0", "false")
 
 def _friendly_model_name(model_id: str) -> str:
     """Footer display name ('claude-opus-4-8' → 'opus 4 8' if unmapped)."""
@@ -552,6 +559,7 @@ class GoatApp:
         self._reply_acc = ""
         self._rotate_only = False
         self._pending_handoff = ""
+        self._compacting = False  # a /compact turn is in flight (mute it)
         self._limit_warned = False
         self._stt_warned = False  # gates the spoken "transcriber down" warning
         # wake word: boot opens a conversation window (he just launched us);
@@ -724,6 +732,9 @@ class GoatApp:
         opts = ClaudeAgentOptions(
             cwd=WORKSPACE,
             model=MODEL_FAST,
+            # Front-desk answers are 1-3 spoken sentences with no tools —
+            # deep reasoning is waste here; low effort = cheaper AND faster.
+            effort="low",
             system_prompt={"type": "preset", "preset": "claude_code",
                            "append": RECEP_PERSONA},
             setting_sources=[],
@@ -834,7 +845,7 @@ class GoatApp:
                         t = (block.text or "").strip()
                         if self.model == MODEL_FAST and t.startswith("ESCALATE"):
                             self.escalate_pending = True
-                        elif t:
+                        elif t and not self._compacting:
                             self._reply_acc += t + " "
                     elif isinstance(block, ToolUseBlock):
                         self._turn_has_tools = True  # this is a WORK turn now
@@ -847,6 +858,32 @@ class GoatApp:
                         with open(SESSION_FILE, "w", encoding="utf-8") as f:
                             f.write(sid)
             elif isinstance(msg, ResultMessage):
+                if self._compacting:
+                    # The muted /compact turn just finished. Trust nothing —
+                    # measure. If context actually shrank, carry on in the
+                    # same session; otherwise hard-rotate with the handoff.
+                    self._compacting = False
+                    self.suppressed = False
+                    self.busy = False
+                    try:
+                        cu = await self.client.get_context_usage()
+                        after = int(cu.get("totalTokens") or 0)
+                    except Exception:  # noqa: BLE001
+                        after = ROTATE_CTX + 1
+                    if after > ROTATE_CTX:
+                        self._rotate_only = True
+                        self._last_ctx = 0
+                        try:
+                            os.remove(SESSION_FILE)
+                        except OSError:
+                            pass
+                        self._pending_handoff = self._handoff_text()
+                        self.emit("status", "compact failed — rotated instead")
+                        return True
+                    self._last_ctx = after
+                    self.emit("status",
+                              f"context compacted to {after // 1000}k — usage saved")
+                    continue
                 self.suppressed = False
                 self.busy = False
                 self._last_exchange = time.monotonic()  # reply just landed
@@ -899,8 +936,25 @@ class GoatApp:
                                       + (u.get("cache_creation_input_tokens") or 0))
                     self.emit("turn_done", "")
                     if self._last_ctx > ROTATE_CTX:
-                        # Rotate BEFORE the wall: quietly start a fresh
-                        # session; the next message carries the handoff.
+                        # Trim BEFORE the wall. Preferred: the CLI's own
+                        # /compact — same session, model-written summary.
+                        # The turn is muted; its ResultMessage (handled
+                        # above) verifies the shrink and falls back to a
+                        # hard rotation if /compact didn't take.
+                        if COMPACT_CLI:
+                            try:
+                                self._compacting = True
+                                self.suppressed = True
+                                self.busy = True
+                                self.emit("status", "compacting context…")
+                                await self.client.query("/compact")
+                                continue
+                            except Exception:  # noqa: BLE001
+                                self._compacting = False
+                                self.suppressed = False
+                                self.busy = False
+                        # Fallback: fresh session; the next message
+                        # carries the handoff.
                         self._rotate_only = True
                         self._last_ctx = 0
                         try:
