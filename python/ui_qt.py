@@ -86,8 +86,8 @@ THEMES = {
     },
     "paper": {          # daylight: warm paper, ink type, vermilion accent
         "bg_top": "#f2ede3", "bg_bot": "#eae4d6",
-        "paper": "#1e1b16", "dim": "#8a8375", "faint": "#c4bcab",
-        "accent": "#c74a24", "string_base": "#b3ab9a",
+        "paper": "#1e1b16", "dim": "#8a8375", "faint": "#b0a794",
+        "accent": "#c74a24", "string_base": "#8a8375",
         "you_old": "#a05a3c", "reply_old": "#6f6a60", "sel": "#f0c9b8",
     },
     "phosphor": {       # night instrument: green-black, phosphor trace
@@ -112,7 +112,7 @@ TEXT_SIZES = {"small": 22, "normal": 30, "large": 38}
 VOICE_LEVELS = {"quiet": 0.6, "normal": 1.0, "loud": 1.4}
 
 DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
-               "level": "normal", "wake": True}
+               "level": "normal", "wake": True, "ontop": False}
 
 
 def load_ui_config() -> dict:
@@ -402,12 +402,14 @@ class SettingsPanel(QWidget):
         row("voice level", "level", list(VOICE_LEVELS), self.win.set_level_opt)
         row("wake word", "wake", ["on", "off"], self.win.set_wake_opt)
         row("microphone", "mic", ["live", "muted"], self.win.set_mic_opt)
+        row("window", "window", ["normal", "on top"], self.win.set_ontop_opt)
 
         lay.addSpacing(10)
-        lay.addWidget(self._mklabel("session"))
+        lay.addWidget(self._mklabel("actions"))
         h = QHBoxLayout()
         h.setSpacing(14)
-        for text, cb in (("new chat", self.win.new_chat),
+        for text, cb in (("copy reply", self.win.copy_last_reply),
+                         ("new chat", self.win.new_chat),
                          ("restart", self.win.restart_goat)):
             b = QPushButton(text)
             b.setObjectName("actbtn")
@@ -438,6 +440,7 @@ class SettingsPanel(QWidget):
         state = dict(self.win.cfg)
         state["voice"] = "on" if state.get("voice", True) else "off"
         state["wake"] = "on" if state.get("wake", True) else "off"
+        state["window"] = "on top" if state.get("ontop") else "normal"
         goat = self.win.goat
         state["mic"] = "muted" if (goat and goat.mic_muted) else "live"
         for key, btns in self._groups.items():
@@ -459,8 +462,12 @@ class GoatWindow(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.cfg = load_ui_config()
         self.setWindowTitle("GOAT")
-        self.setWindowFlags(Qt.FramelessWindowHint)
+        flags = Qt.FramelessWindowHint
+        if self.cfg.get("ontop"):
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
         self.resize(1100, 800)
         self.setAcceptDrops(True)
         self.on_submit = None
@@ -479,7 +486,6 @@ class GoatWindow(QWidget):
         self.canvas = Backdrop()
         outer.addWidget(self.canvas)
         self.goat = None  # engine handle, set by bind_engine()
-        self.cfg = load_ui_config()
         self._theme_name = self.cfg["theme"]
 
         lay = QVBoxLayout(self.canvas)
@@ -498,7 +504,7 @@ class GoatWindow(QWidget):
         self.theme_btn.setCursor(Qt.PointingHandCursor)
         self.theme_btn.setToolTip("theme — click or ctrl+t to cycle")
         self.theme_btn.clicked.connect(self.cycle_theme)
-        self.gear_btn = QPushButton("⚙")
+        self.gear_btn = QPushButton("≡")  # NOT "⚙": Segoe maps it to a color emoji
         self.gear_btn.setObjectName("winbtn")
         self.gear_btn.setCursor(Qt.PointingHandCursor)
         self.gear_btn.setToolTip("settings — ctrl+,")
@@ -539,6 +545,10 @@ class GoatWindow(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(host)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Both fills off, or the viewport paints its own near-black over the
+        # backdrop gradient and the page reads as a faint band.
+        self.scroll.viewport().setAutoFillBackground(False)
+        host.setAutoFillBackground(False)
         # Follow mode: auto-scroll only while he's already at the bottom.
         # Scrolling up to reread history parks the page; scrolling back down
         # (or speaking again) re-engages following. Without this the 33ms
@@ -637,8 +647,11 @@ class GoatWindow(QWidget):
         self.panel.raise_()
 
     def _place_panel(self):
+        # Below the title bar — window controls and the ≡ stay reachable.
         w = max(320, int(self.canvas.width() * 0.24))
-        self.panel.setGeometry(self.canvas.width() - w, 0, w, self.canvas.height())
+        top = self._titlebar_h
+        self.panel.setGeometry(self.canvas.width() - w, top,
+                               w, self.canvas.height() - top)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -684,6 +697,29 @@ class GoatWindow(QWidget):
             self._on_event("status", "mic muted" if self.goat.mic_muted
                            else "listening")
         self._save()
+
+    def set_ontop_opt(self, opt: str):
+        v = opt == "on top"
+        self.cfg["ontop"] = v
+        fs = self.isFullScreen()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, v)
+        # Changing a window flag hides the window — bring it straight back.
+        if fs:
+            self.showFullScreen()
+        else:
+            self.show()
+        self._save()
+
+    def copy_last_reply(self):
+        """Latest non-empty reply (current or previous) to the clipboard."""
+        for i in range(self.col.count() - 2, -1, -1):
+            wdg = self.col.itemAt(i).widget()
+            if (wdg is not None and wdg.objectName() in ("replyNow", "replyOld")
+                    and wdg.text().strip()):
+                QApplication.clipboard().setText(wdg.text())
+                self._on_event("status", "reply copied")
+                return
+        self._on_event("status", "nothing to copy yet")
 
     def bind_engine(self, goat):
         """Hand the window its engine and push the saved preferences in."""
