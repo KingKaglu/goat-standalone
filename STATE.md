@@ -2,6 +2,20 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
+## UI review round (2026-07-10 evening — Giorgi: "see it yourself, find bugs/improvements")
+Rendered the UI offscreen (QT_QPA_PLATFORM=offscreen + QT_QPA_FONTDIR=
+C:\Windows\Fonts for real type; fake conversation; all themes ± panel) and
+READ the screenshots. Fixed what showed (273b6aa, live):
+- Panel covered the title bar → starts at _titlebar_h, controls reachable.
+- "⚙" renders as a COLOR emoji in Segoe → replaced with monochrome "≡".
+- Paper theme: string_base + faint darkened (were nearly invisible).
+- Scroll viewport + host autoFillBackground(False) — banding insurance.
+- NEW: window on-top toggle (persisted "ontop", flag re-applied at boot;
+  setWindowFlag hides the window — must re-show right after) and
+  copy-last-reply action (walks col backwards for last reply label).
+LESSON: offscreen render + Read of the PNG = real design review loop; fonts
+need QT_QPA_FONTDIR or everything is tofu.
+
 ## Settings drawer (2026-07-10 evening — Giorgi: "more UI/UX options to act on things and change them about GOAT or UI")
 Gear button (top bar) or Ctrl+, opens a quiet right drawer (SettingsPanel in
 ui_qt.py, instrument style: typography, one accent, no chrome):
