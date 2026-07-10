@@ -2,6 +2,23 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
+## UI ceremony round + MAJOR layout bug (2026-07-10 evening — Giorgi: "next level, think like a magician designer")
+New life, same instrument law (f5deea8, live):
+- Boot ignition: string lights left→right over 1.6s (StringLine.ignite(),
+  clip-rect + opacity ramp in paintEvent; called after showFullScreen).
+- Clock (HH:MM) in the top bar — fullscreen hides the system tray clock.
+- Empty-state epigraph "Say the word." — deleted on first exchange.
+- TopFade lip: old lines dissolve under the string. TRAP: it must sample the
+  backdrop gradient AT ITS OWN Y-POSITION (bg_top over a darker region reads
+  as a grey band) — set_frac() mixes bg_top→bg_bot by screen fraction.
+- Settings drawer slides in (QPropertyAnimation geometry, 170ms, OutCubic).
+- **MAJOR BUG FOUND VIA RENDER REVIEW**: word-wrapped QLabels report ~zero
+  minimumSizeHint in QVBoxLayout → once the page outgrew the viewport the
+  scroll area COMPRESSED old lines to 0-3px slivers (history looked deleted;
+  scrollbar max stayed 0). Present since v5 design in ALL long conversations.
+  FIX: PageLabel(QLabel) overrides minimumSizeHint → heightForWidth(width).
+  Verified: 12 exchanges → scrollbar max 509, all labels full height.
+
 ## UI review round (2026-07-10 evening — Giorgi: "see it yourself, find bugs/improvements")
 Rendered the UI offscreen (QT_QPA_PLATFORM=offscreen + QT_QPA_FONTDIR=
 C:\Windows\Fonts for real type; fake conversation; all themes ± panel) and
