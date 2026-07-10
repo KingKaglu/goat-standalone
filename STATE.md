@@ -2,6 +2,21 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
+## Continuity + power watcher (2026-07-10 evening — Giorgi: "plan improvements, execute step by step; push latest with new guidelines")
+- **On-screen continuity**: engine logs every finished exchange to
+  workspace\transcript.jsonl (_log_exchange: 400-line trim at 200KB, never
+  breaks a turn; boot-briefings skipped). UI _load_transcript_tail() repaints
+  last 6 dimmed at boot; epigraph only when there's no history.
+- **Power watcher (first JARVIS watcher)**: power_verdict() pure function
+  (AC drop → "check the jack", ≤20% discharging → warn, back-on-AC silent,
+  unreadable silent) + _power_watch() task: 45s poll via WMI in a worker
+  thread, 5-min alert rate limit, speaks only when idle (status line
+  otherwise). GOAT_WATCH=off disables. Targets THIS laptop's real AC-flap
+  fault. Tests: 19/19 (5 verdict cases + transcript round-trip); live
+  battery read verified.
+- README refreshed EN+KA: settings drawer, watchers, continuity, token
+  economy, first-class typing, test-suite instructions.
+
 ## UI ceremony round + MAJOR layout bug (2026-07-10 evening — Giorgi: "next level, think like a magician designer")
 New life, same instrument law (f5deea8, live):
 - Boot ignition: string lights left→right over 1.6s (StringLine.ignite(),

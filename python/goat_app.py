@@ -9,8 +9,10 @@ fight over one conversation.
 """
 import asyncio
 import datetime
+import json
 import queue
 import re
+import subprocess
 import threading
 import time
 from collections import deque
@@ -40,6 +42,10 @@ from goat_paths import GOAT_ROOT
 
 WORKSPACE = os.path.join(GOAT_ROOT, "workspace")
 SESSION_FILE = os.path.join(GOAT_ROOT, ".goat-session-py")
+# On-screen continuity across restarts: every finished exchange lands here;
+# the UI repaints the tail at boot so a restart doesn't LOOK like amnesia.
+TRANSCRIPT_FILE = os.path.join(WORKSPACE, "transcript.jsonl")
+TRANSCRIPT_MAX = 400  # lines kept when the file is trimmed
 
 # ---- model router (Giorgi's usage-saver, same design as server.js) ----
 # Every fresh turn starts on the talking model; it answers conversation
@@ -82,6 +88,32 @@ HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
 # ~934k tokens (1M window) — crash protection, not cost control.
 COMPACT_CLI = os.environ.get("GOAT_COMPACT", "on").lower() not in (
     "off", "0", "false")
+
+# ---- power watcher (first JARVIS watcher, 2026-07-10) ----
+# This laptop's known fault: the AC jack flaps (loose adapter) and the
+# battery is worn — a silent drop to battery can end in a power collapse.
+# GOAT watches and SAYS it. GOAT_WATCH=off disables.
+POWER_WATCH = os.environ.get("GOAT_WATCH", "on").lower() not in (
+    "off", "0", "false")
+POWER_POLL_S = 45
+
+
+def power_verdict(prev: tuple | None, cur: tuple | None) -> str | None:
+    """(charge%, on_ac) transitions → spoken warning or None.
+    Pure — unit-tested without hardware."""
+    if cur is None:
+        return None
+    charge, on_ac = cur
+    if prev is not None:
+        _, was_ac = prev
+        if was_ac and not on_ac:
+            return ("Power just dropped to battery — check the jack, "
+                    "it's done this before.")
+        if not was_ac and on_ac:
+            return None  # back on AC — relief, not worth interrupting him
+    if not on_ac and charge is not None and charge <= 20:
+        return f"Battery at {charge} percent and falling — plug in soon."
+    return None
 
 def _friendly_model_name(model_id: str) -> str:
     """Footer display name ('claude-opus-4-8' → 'opus 4 8' if unmapped)."""
@@ -946,9 +978,11 @@ class GoatApp:
                     # Turn fully done — log the exchange for future handoffs
                     # and measure how heavy this session has become.
                     if self.last_user_text:
+                        reply = self._reply_acc.strip()
                         self._exchanges.append(
-                            (self.last_user_text[:300],
-                             self._reply_acc.strip()[:300]))
+                            (self.last_user_text[:300], reply[:300]))
+                        if not self.last_user_text.startswith("[boot-briefing]"):
+                            self._log_exchange(self.last_user_text, reply)
                         self._reply_acc = ""
                     u = msg.usage or {}
                     self._last_ctx = ((u.get("input_tokens") or 0)
@@ -984,6 +1018,22 @@ class GoatApp:
                         self._pending_handoff = self._handoff_text()
                         self.emit("status", "context rotated — usage saved")
                         return True  # run() reconnects fresh, no retry
+
+    def _log_exchange(self, user: str, reply: str):
+        """Append to the on-disk transcript (UI repaints the tail at boot).
+        Trims occasionally; never allowed to break a turn."""
+        try:
+            line = json.dumps({"t": time.time(), "user": user[:400],
+                               "reply": reply[:600]}, ensure_ascii=False)
+            with open(TRANSCRIPT_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            if os.path.getsize(TRANSCRIPT_FILE) > 200_000:
+                with open(TRANSCRIPT_FILE, encoding="utf-8") as f:
+                    tail = f.readlines()[-TRANSCRIPT_MAX:]
+                with open(TRANSCRIPT_FILE, "w", encoding="utf-8") as f:
+                    f.writelines(tail)
+        except OSError:
+            pass
 
     def _handoff_text(self) -> str:
         """Zero-cost session handoff: the recent exchanges GOAT already has
@@ -1030,6 +1080,44 @@ class GoatApp:
             self.emit("delta", "")  # creates the reply label for the reveal
             self.tts.say("That turn failed on my side — say it again.")
         return False
+
+    @staticmethod
+    def _read_battery() -> tuple | None:
+        """(charge%, on_ac) from WMI, None when unreadable. Blocking —
+        runs in a worker thread."""
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "$b = Get-CimInstance Win32_Battery; "
+                 "\"$($b.EstimatedChargeRemaining)|$($b.BatteryStatus)\""],
+                capture_output=True, text=True, timeout=20,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            charge_s, status_s = (out.stdout or "").strip().split("|")
+            charge = int(charge_s) if charge_s else None
+            return (charge, status_s.strip() == "2")
+        except Exception:  # noqa: BLE001 — no battery, no watcher
+            return None
+
+    async def _power_watch(self):
+        """Background watcher: speaks on AC loss / low battery. Alerts are
+        rate-limited (one per 5 minutes) and only spoken when idle — mid-turn
+        they land as a status line instead."""
+        prev = None
+        last_alert = 0.0
+        while True:
+            await asyncio.sleep(POWER_POLL_S)
+            cur = await asyncio.to_thread(self._read_battery)
+            warn = power_verdict(prev, cur)
+            if cur is not None:
+                prev = cur
+            if warn and time.monotonic() - last_alert > 300:
+                last_alert = time.monotonic()
+                self.emit("status", warn[:80])
+                if not self.busy and not self.audio.is_tts_playing:
+                    self.emit("you", "[power watch]")
+                    self.emit("delta", "")
+                    self.tts.mark_reply()
+                    self.tts.say(warn)
 
     async def _warm_up(self):
         """Cold-start guard (bug #3): the canceller has never seen this room
@@ -1094,6 +1182,8 @@ class GoatApp:
             except Exception as e:  # noqa: BLE001 — front desk is optional
                 self.emit("status", f"front desk offline: {e}")
         asyncio.create_task(_prewarm_recep())
+        if POWER_WATCH:
+            asyncio.create_task(self._power_watch())
 
         # Boot briefing (Phase 3, ported from the Node app 2026-07-10):
         # back after 6+ hours away → GOAT speaks first, JARVIS-style.

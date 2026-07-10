@@ -647,12 +647,17 @@ class GoatWindow(QWidget):
         # backdrop gradient and the page reads as a faint band.
         self.scroll.viewport().setAutoFillBackground(False)
         host.setAutoFillBackground(False)
+        # Yesterday's tail: repaint recent exchanges dimmed, so a restart
+        # doesn't LOOK like amnesia (the engine resumes the session anyway).
+        restored = self._load_transcript_tail()
         # Empty-state epigraph — one quiet line until the first exchange.
-        self.epigraph = QLabel("Say the word.")
-        self.epigraph.setObjectName("epigraph")
-        self.epigraph.setAlignment(Qt.AlignHCenter)
-        self.epigraph.setContentsMargins(0, 90, 0, 0)
-        self.col.insertWidget(0, self.epigraph)
+        self.epigraph = None
+        if not restored:
+            self.epigraph = QLabel("Say the word.")
+            self.epigraph.setObjectName("epigraph")
+            self.epigraph.setAlignment(Qt.AlignHCenter)
+            self.epigraph.setContentsMargins(0, 90, 0, 0)
+            self.col.insertWidget(0, self.epigraph)
         # Fade lip over the top of the page (created after scroll exists).
         self.fade = TopFade(self.scroll)
         # Follow mode: auto-scroll only while he's already at the bottom.
@@ -962,6 +967,31 @@ class GoatWindow(QWidget):
                 wdg.setObjectName("replyOld")
             wdg.style().unpolish(wdg)
             wdg.style().polish(wdg)
+
+    def _load_transcript_tail(self, keep: int = 6) -> bool:
+        """Old exchanges from workspace/transcript.jsonl, painted dimmed.
+        Returns True when anything was restored."""
+        path = os.path.join(GOAT_ROOT, "workspace", "transcript.jsonl")
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.readlines()[-keep:]
+        except OSError:
+            return False
+        restored = False
+        for line in lines:
+            try:
+                ex = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            user = (ex.get("user") or "").strip()
+            reply = (ex.get("reply") or "").strip()
+            if not user:
+                continue
+            self._add_line(user.lower(), "youOld")
+            if reply:
+                self._add_line(reply, "replyOld")
+            restored = True
+        return restored
 
     def _add_line(self, text: str, name: str) -> QLabel:
         lbl = PageLabel(text)

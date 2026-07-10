@@ -232,7 +232,40 @@ async def main():
           c.queries == ["also this"] and app.last_user_text == "original\nalso this",
           f"queries={c.queries} last={app.last_user_text}")
 
-    # 11. regex sanity: stop orders and wake words
+    # 11. power watcher verdicts (pure function)
+    pv = g.power_verdict
+    check("power: AC drop -> jack warning",
+          pv((80, True), (80, False)) is not None
+          and "jack" in pv((80, True), (80, False)))
+    check("power: steady AC -> quiet",
+          pv((80, True), (81, True)) is None)
+    check("power: low battery discharging -> warn",
+          pv((25, False), (18, False)) is not None)
+    check("power: back on AC -> quiet",
+          pv((50, False), (50, True)) is None)
+    check("power: unreadable battery -> quiet",
+          pv(None, None) is None and pv((50, True), None) is None)
+
+    # 12. transcript log append + trim safety
+    import json as _json
+    import tempfile as _tf
+    tmp2 = _tf.NamedTemporaryFile(delete=False, suffix=".jsonl")
+    tmp2.close()
+    old_tr = g.TRANSCRIPT_FILE
+    g.TRANSCRIPT_FILE = tmp2.name
+    try:
+        app = make_app(MockClient())
+        app._log_exchange("hello there", "General reply.")
+        app._log_exchange("[boot-briefing] ignored?", "no")  # logged (filter is at call site)
+        rows = [_json.loads(x) for x in open(tmp2.name, encoding="utf-8")]
+        check("transcript rows written",
+              rows[0]["user"] == "hello there" and rows[0]["reply"] == "General reply.",
+              f"rows={rows}")
+    finally:
+        g.TRANSCRIPT_FILE = old_tr
+        os.unlink(tmp2.name)
+
+    # 13. regex sanity: stop orders and wake words
     check("STOP_RE hits stop orders",
           all(g.STOP_RE.search(t) for t in
               ("stop", "cancel that", "hold on", "never mind")))
