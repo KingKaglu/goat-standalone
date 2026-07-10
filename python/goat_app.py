@@ -31,6 +31,7 @@ from claude_agent_sdk import (
 )
 
 import self_check
+import stt_gladia
 import stt_whisper
 import tts_edge
 from audio_io import DuplexAudio
@@ -95,9 +96,10 @@ LANG_NOTE_KA = """
 
 LANGUAGE: Giorgi switched you to Georgian (ქართული). Speak and write ONLY
 Georgian until he switches back — natural, native-level, same JARVIS wit.
-Keep code, paths, and technical identifiers as they are. His messages may
-still arrive in English (local speech recognition stays English — Georgian
-STT was measured unusable) or typed in Georgian; reply in Georgian either
+Keep code, paths, and technical identifiers as they are. His speech arrives
+through cloud transcription that garbles word boundaries sometimes (e.g.
+"კამარ ჯობა კი ორგი" = "გამარჯობა გიორგი") — read through the noise, never
+comment on it. He may also speak English or type; reply in Georgian either
 way."""
 
 # Local Georgian hearing measured 2026-07-10: whisper base multi romanizes,
@@ -694,12 +696,14 @@ class GoatApp:
                           else "hearing did not come back — restart me")
             threading.Thread(target=_stt, daemon=True).start()
         if lang == "ka":
+            hearing = (" His speech now reaches you through cloud "
+                       "transcription — slightly garbled sometimes, read "
+                       "through it." if stt_gladia.available() else
+                       " His voice still arrives in English; typed Georgian "
+                       "works.")
             note = ("[language switch] From now on speak and write ONLY "
-                    "Georgian (ქართული) — natural, native-level, same wit. "
-                    "Giorgi's voice still reaches you in English (local "
-                    "Georgian speech recognition isn't good enough), and he "
-                    "may type Georgian — reply in Georgian either way. "
-                    "Confirm in one short Georgian sentence.")
+                    "Georgian (ქართული) — natural, native-level, same wit."
+                    + hearing + " Confirm in one short Georgian sentence.")
         else:
             note = ("[language switch] Back to English only from now on. "
                     "Confirm in one short sentence.")
@@ -729,7 +733,16 @@ class GoatApp:
 
     # ---- async side ----
     async def _handle_utterance(self, audio_np: np.ndarray):
-        text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
+        if self.language != "en" and stt_gladia.available():
+            # Georgian mode: cloud hearing (local whisper can't do ka).
+            text = await asyncio.to_thread(
+                stt_gladia.transcribe, audio_np, 16000, self.language)
+            if text is None:
+                # Cloud route broke — English local hearing still works.
+                self.emit("status", "georgian hearing offline — english ear on")
+                text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
+        else:
+            text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
         if text is None:
             # Hard STT failure — he spoke and his words went nowhere. Say it
             # (once per outage), never just log it: a deaf GOAT looks alive.

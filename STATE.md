@@ -2,6 +2,17 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
+## Georgian HEARING via Gladia (2026-07-10 late — Giorgi brought a key: "i think this is the key")
+Georgian voice INPUT now works. stt_gladia.py: upload → pre-recorded job →
+poll (language_config.languages=[ka]), ~4s per utterance, same contract as
+stt_whisper ('' junk / None broken). Key in .goat-secrets.json (gitignored
+via .goat-*; GLADIA_API_KEY env also works). _handle_utterance routes:
+ka mode + key → Gladia; None → fallback local English ear + status line;
+en mode → 100% local as always. MEASURED quality on Eka-synth audio: readable
+Georgian w/ word-boundary noise ("კამარ ჯობა კი ორგი" = "გამარჯობა გიორგი");
+persona told to read through noise, never comment. Free tier 10h/month =
+thousands of utterances. PRIVACY: ka-mode clips go to Gladia servers.
+
 ## Georgian mode (2026-07-10 evening — Giorgi: "do I have option to choose Georgian in UI?")
 Settings drawer got a language row (english / ქართული), persisted as
 cfg["lang"], applied at boot (persona LANG_NOTE_KA + Eka voice) and live
