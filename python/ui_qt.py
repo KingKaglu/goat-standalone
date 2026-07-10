@@ -18,8 +18,12 @@ language of a beautiful instrument sitting in a dark room:
   and quiet in amber-gray, GOAT's answer in large light editorial type.
   Older exchanges dim and stack upward like a page you can scroll.
 - Tool use is a single quiet gray line ("· read — STATE.md"), not chips.
-- Voice-first: no permanent input. Ctrl+K or "/" summons a bare underline
-  field at the bottom; Esc dismisses it (then Esc leaves fullscreen).
+- Voice-first, typing first-class: a bare underline field sits quietly at
+  the bottom, always there. Ctrl+K focuses it; Esc clears it (then Esc
+  leaves fullscreen).
+- Themes: four rooms for the same instrument (ember / paper / phosphor /
+  graphite), each one accent, chosen from the top bar or Ctrl+T, persisted
+  in ui-config.json.
 - Footer is one small line of plain words: state · model · uptime.
 
 Threading: Qt owns the main thread; GoatApp's asyncio loop runs on a
@@ -27,6 +31,7 @@ daemon thread. Events cross via a Signal; typed input crosses back via
 run_coroutine_threadsafe inside submit_text.
 """
 import ctypes
+import json
 import math
 import os
 import random
@@ -63,58 +68,117 @@ from goat_paths import GOAT_ROOT
 
 ICON = os.path.join(GOAT_ROOT, "goat.ico")
 INBOX = os.path.join(GOAT_ROOT, "inbox")  # pasted images land here
+UI_CONFIG = os.path.join(GOAT_ROOT, "ui-config.json")
 
-BG_TOP = QColor(15, 14, 12)      # warm near-black
-BG_BOT = QColor(11, 10, 9)
-PAPER = "#ece5d8"                # GOAT's type
-DIM = "#6f6a60"                  # secondary text
-FAINT = "#3d3a34"                # tertiary
-AMBER = "#ffa94d"                # the only accent
-AMBER_Q = QColor(255, 169, 77)
+# ---- themes ----
+# Same instrument, different rooms. Each theme keeps the design law:
+# one accent, quiet type, no boxes. Values are the full palette a theme
+# needs — nothing is derived at runtime so each can be hand-tuned.
+THEMES = {
+    "ember": {          # the original: warm dark, amber string
+        "bg_top": "#0f0e0c", "bg_bot": "#0b0a09",
+        "paper": "#ece5d8", "dim": "#6f6a60", "faint": "#3d3a34",
+        "accent": "#ffa94d", "string_base": "#6f6a60",
+        "you_old": "#a37c4f", "reply_old": "#948d7f", "sel": "#4a3722",
+    },
+    "paper": {          # daylight: warm paper, ink type, vermilion accent
+        "bg_top": "#f2ede3", "bg_bot": "#eae4d6",
+        "paper": "#1e1b16", "dim": "#8a8375", "faint": "#c4bcab",
+        "accent": "#c74a24", "string_base": "#b3ab9a",
+        "you_old": "#a05a3c", "reply_old": "#6f6a60", "sel": "#f0c9b8",
+    },
+    "phosphor": {       # night instrument: green-black, phosphor trace
+        "bg_top": "#0a0f0b", "bg_bot": "#070b08",
+        "paper": "#d8e8da", "dim": "#5f7263", "faint": "#2c3a30",
+        "accent": "#5ce88a", "string_base": "#5f7263",
+        "you_old": "#4f8a62", "reply_old": "#7f9484", "sel": "#1e4a2e",
+    },
+    "graphite": {       # mono: near-black, white-hot string
+        "bg_top": "#0e0e10", "bg_bot": "#0a0a0b",
+        "paper": "#e8e8ea", "dim": "#6c6c72", "faint": "#38383e",
+        "accent": "#ffffff", "string_base": "#6c6c72",
+        "you_old": "#9a9aa0", "reply_old": "#8c8c92", "sel": "#3a3a44",
+    },
+}
+THEME_ORDER = ["ember", "paper", "phosphor", "graphite"]
 
-STYLE = f"""
-QWidget {{ color: {PAPER}; font-family: 'Segoe UI'; }}
+
+def load_theme_name() -> str:
+    try:
+        with open(UI_CONFIG, encoding="utf-8") as f:
+            name = json.load(f).get("theme", "")
+        return name if name in THEMES else "ember"
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return "ember"
+
+
+def save_theme_name(name: str):
+    try:
+        with open(UI_CONFIG, "w", encoding="utf-8") as f:
+            json.dump({"theme": name}, f)
+    except OSError:
+        pass  # cosmetic preference — never worth an error
+
+
+def build_style(t: dict) -> str:
+    return f"""
+QWidget {{ color: {t['paper']}; font-family: 'Segoe UI'; }}
 QLabel#wordmark {{
-  color: {DIM}; font-size: 13px; letter-spacing: 5px; font-weight: 600;
+  color: {t['dim']}; font-size: 13px; letter-spacing: 5px; font-weight: 600;
 }}
-QLabel#stateword {{ color: {AMBER}; font-size: 13px; letter-spacing: 2px; }}
+QLabel#stateword {{ color: {t['accent']}; font-size: 13px; letter-spacing: 2px; }}
 QPushButton#winbtn {{
-  background: transparent; color: {FAINT}; border: none;
+  background: transparent; color: {t['faint']}; border: none;
   font-size: 13px; padding: 2px 10px;
 }}
-QPushButton#winbtn:hover {{ color: {PAPER}; }}
+QPushButton#winbtn:hover {{ color: {t['paper']}; }}
+QPushButton#themebtn {{
+  background: transparent; color: {t['dim']}; border: none;
+  font-size: 12px; letter-spacing: 2px; padding: 2px 12px;
+}}
+QPushButton#themebtn:hover {{ color: {t['accent']}; }}
 QLabel#youNow {{
-  color: {AMBER}; font-size: 15px; letter-spacing: 1px; margin-top: 18px;
+  color: {t['accent']}; font-size: 15px; letter-spacing: 1px; margin-top: 18px;
 }}
 QLabel#replyNow {{
-  color: {PAPER}; font-size: 30px; font-weight: 300;
+  color: {t['paper']}; font-size: 30px; font-weight: 300;
 }}
-QLabel#youOld {{ color: #a37c4f; font-size: 13px; margin-top: 18px; }}
-QLabel#replyOld {{ color: #948d7f; font-size: 17px; font-weight: 300; }}
-QLabel#toolLine {{ color: {FAINT}; font-size: 13px; font-style: italic; }}
-QLabel#footer {{ color: {FAINT}; font-size: 12px; letter-spacing: 1px; }}
+QLabel#youOld {{ color: {t['you_old']}; font-size: 13px; margin-top: 18px; }}
+QLabel#replyOld {{ color: {t['reply_old']}; font-size: 17px; font-weight: 300; }}
+QLabel#toolLine {{ color: {t['faint']}; font-size: 13px; font-style: italic; }}
+QLabel#footer {{ color: {t['faint']}; font-size: 12px; letter-spacing: 1px; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 4px; margin: 0; }}
-QScrollBar::handle:vertical {{ background: {FAINT}; border-radius: 2px; min-height: 30px; }}
+QScrollBar::handle:vertical {{ background: {t['faint']}; border-radius: 2px; min-height: 30px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QLineEdit#cmd {{
-  background: transparent; border: none; border-bottom: 1px solid {DIM};
-  padding: 8px 2px; font-size: 16px; color: {PAPER};
-  selection-background-color: #4a3722;
+  background: transparent; border: none; border-bottom: 1px solid {t['faint']};
+  padding: 8px 2px; font-size: 16px; color: {t['paper']};
+  selection-background-color: {t['sel']};
 }}
-QLineEdit#cmd:focus {{ border-bottom: 1px solid {AMBER}; }}
+QLineEdit#cmd:focus {{ border-bottom: 1px solid {t['accent']}; }}
 """
 
 
 class Backdrop(QWidget):
     """Warm dark gradient. Nothing else — the silence behind the string."""
 
+    def __init__(self):
+        super().__init__()
+        self.top = QColor("#0f0e0c")
+        self.bot = QColor("#0b0a09")
+
+    def set_theme(self, t: dict):
+        self.top = QColor(t["bg_top"])
+        self.bot = QColor(t["bg_bot"])
+        self.update()
+
     def paintEvent(self, _ev):
         p = QPainter(self)
         g = QLinearGradient(0, 0, 0, self.height())
-        g.setColorAt(0.0, BG_TOP)
-        g.setColorAt(1.0, BG_BOT)
+        g.setColorAt(0.0, self.top)
+        g.setColorAt(1.0, self.bot)
         p.fillRect(self.rect(), g)
 
 
@@ -135,7 +199,14 @@ class StringLine(QWidget):
         self.state = "idle"
         self._t = 0.0
         self._seed = [random.uniform(0, math.tau) for _ in range(6)]
+        self._base = QColor("#6f6a60")
+        self._accent = QColor("#ffa94d")
         self.setMinimumHeight(140)
+
+    def set_theme(self, t: dict):
+        self._base = QColor(t["string_base"])
+        self._accent = QColor(t["accent"])
+        self.update()
 
     def tick(self, level: float, state: str):
         self.level = self.level * 0.7 + max(0.0, min(1.0, level)) * 0.3
@@ -188,12 +259,12 @@ class StringLine(QWidget):
         active = self.state != "idle"
         heat = min(1.0, self.level * 2 + (0.35 if active else 0.0))
 
-        # color: warm gray at rest, amber where alive
-        base = QColor(111, 106, 96)
+        # color: quiet base at rest, the theme accent where alive
+        base, acc = self._base, self._accent
         col = QColor(
-            int(base.red() + (AMBER_Q.red() - base.red()) * heat),
-            int(base.green() + (AMBER_Q.green() - base.green()) * heat),
-            int(base.blue() + (AMBER_Q.blue() - base.blue()) * heat),
+            int(base.red() + (acc.red() - base.red()) * heat),
+            int(base.green() + (acc.green() - base.green()) * heat),
+            int(base.blue() + (acc.blue() - base.blue()) * heat),
         )
 
         grad = QLinearGradient(margin, 0, margin + span, 0)
@@ -276,7 +347,7 @@ class GoatWindow(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         self.canvas = Backdrop()
         outer.addWidget(self.canvas)
-        self.setStyleSheet(STYLE)
+        self._theme_name = load_theme_name()
 
         lay = QVBoxLayout(self.canvas)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -289,6 +360,11 @@ class GoatWindow(QWidget):
         wordmark.setObjectName("wordmark")
         self.stateword = QLabel("booting")
         self.stateword.setObjectName("stateword")
+        self.theme_btn = QPushButton(self._theme_name)
+        self.theme_btn.setObjectName("themebtn")
+        self.theme_btn.setCursor(Qt.PointingHandCursor)
+        self.theme_btn.setToolTip("theme — click or ctrl+t to cycle")
+        self.theme_btn.clicked.connect(self.cycle_theme)
         b_min = QPushButton("–")
         b_min.setObjectName("winbtn")
         b_min.clicked.connect(self.showMinimized)
@@ -302,6 +378,8 @@ class GoatWindow(QWidget):
         bar.addSpacing(18)
         bar.addWidget(self.stateword)
         bar.addStretch(1)
+        bar.addWidget(self.theme_btn)
+        bar.addSpacing(10)
         bar.addWidget(b_min)
         bar.addWidget(b_full)
         bar.addWidget(b_close)
@@ -335,12 +413,11 @@ class GoatWindow(QWidget):
         page.addStretch(4)
         lay.addLayout(page, stretch=1)
 
-        # ---- command field (hidden — voice-first) ----
+        # ---- command field (always there — speak or type, both first-class) ----
         self.input = QLineEdit()
         self.input.setObjectName("cmd")
-        self.input.setPlaceholderText("type — enter to send, esc to dismiss")
+        self.input.setPlaceholderText("speak — or type here, enter to send")
         self.input.returnPressed.connect(self._submit)
-        self.input.hide()
         cmd_row = QHBoxLayout()
         cmd_row.setContentsMargins(0, 0, 0, 6)
         cmd_row.addStretch(4)
@@ -355,7 +432,7 @@ class GoatWindow(QWidget):
         foot_row.setContentsMargins(34, 4, 34, 18)
         foot_row.addWidget(self.footer)
         foot_row.addStretch(1)
-        hint = QLabel("ctrl+k type · ctrl+o file · drop files anywhere · f11 screen")
+        hint = QLabel("ctrl+k type · ctrl+t theme · ctrl+o file · drop files anywhere · f11 screen")
         hint.setObjectName("footer")
         foot_row.addWidget(hint)
         lay.addLayout(foot_row)
@@ -365,8 +442,10 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key_F11), self, self.toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key_Escape), self, self._escape)
         QShortcut(QKeySequence("Ctrl+K"), self, self._show_cmd)
-        QShortcut(QKeySequence(Qt.Key_Slash), self, self._show_cmd)
+        QShortcut(QKeySequence("Ctrl+T"), self, self.cycle_theme)
         QShortcut(QKeySequence("Ctrl+O"), self, self._pick_files)
+
+        self.apply_theme(self._theme_name)
 
     # ---- window controls ----
     def toggle_fullscreen(self):
@@ -376,14 +455,30 @@ class GoatWindow(QWidget):
             self.showFullScreen()
 
     def _show_cmd(self):
-        self.input.show()
         self.input.setFocus()
+        self.input.selectAll()
 
     def _escape(self):
-        if self.input.isVisible():
-            self.input.hide()
+        if self.input.hasFocus():
+            self.input.clear()
+            self.input.clearFocus()
         elif self.isFullScreen():
             self.showNormal()
+
+    # ---- theme ----
+    def apply_theme(self, name: str):
+        t = THEMES.get(name) or THEMES["ember"]
+        self._theme_name = name
+        self.setStyleSheet(build_style(t))
+        self.canvas.set_theme(t)
+        self.string.set_theme(t)
+        self.theme_btn.setText(name)
+
+    def cycle_theme(self):
+        i = THEME_ORDER.index(self._theme_name) if self._theme_name in THEME_ORDER else 0
+        name = THEME_ORDER[(i + 1) % len(THEME_ORDER)]
+        self.apply_theme(name)
+        save_theme_name(name)
 
     def mousePressEvent(self, ev):
         if (ev.button() == Qt.LeftButton and not self.isFullScreen()
@@ -430,9 +525,8 @@ class GoatWindow(QWidget):
         if not self.on_files:
             return
         # anything typed (but not yet sent) rides along as the note
-        note = self.input.text().strip() if self.input.isVisible() else ""
+        note = self.input.text().strip()
         self.input.clear()
-        self.input.hide()
         self.on_files(paths, note)
 
     # ---- per-frame ----
@@ -462,7 +556,6 @@ class GoatWindow(QWidget):
         if text and self.on_submit:
             self.on_submit(text)
             self.input.clear()
-            self.input.hide()
 
     # ---- the page ----
     def _dim_previous(self):

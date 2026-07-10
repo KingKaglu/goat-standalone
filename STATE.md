@@ -1,6 +1,29 @@
 # GOAT State — handoff brief
 
-Updated: 2026-07-10 midday (waves 2-5: personality, access/skills, router v2, front desk)
+Updated: 2026-07-10 evening (typed input always visible + theme system; GitHub publish)
+
+## UI: permanent input + themes (2026-07-10 evening — Giorgi: "no option to type, only talking; improve UI, theme setting")
+- ROOT CAUSE he couldn't type: the command field was HIDDEN by design
+  (voice-first), summoned only by Ctrl+K or "/" — undiscoverable; worse, the
+  app-wide "/" QShortcut made typing a literal "/" in the field impossible.
+- Fix in ui_qt.py: input field now ALWAYS visible (bare underline at bottom,
+  placeholder "speak — or type here, enter to send"); Ctrl+K focuses it;
+  Esc clears+unfocuses (then leaves fullscreen); "/" shortcut REMOVED;
+  submit/file-note no longer hide the field.
+- Theme system: THEMES dict (ember=original amber, paper=light editorial
+  vermilion, phosphor=green instrument, graphite=mono white-hot), one accent
+  each — design law kept. build_style() generates the stylesheet; Backdrop +
+  StringLine got set_theme(). Cycle via top-bar button (shows current name)
+  or Ctrl+T; persisted in ui-config.json at root (cosmetic — load/save never
+  raise). PREFLIGHT PASS + offscreen Qt smoke test (cycle, persist, submit).
+
+## Published to GitHub (2026-07-10)
+- Public repo https://github.com/KingKaglu/goat-standalone (branch master).
+- Models/binaries (stt/bin, *.bin, tts/piper, *.onnx) are GITIGNORED — 636MB
+  exceeded GitHub's 100MB blob limit; history was rebuilt via orphan branch.
+  NEVER commit those paths; README documents where users download them.
+- README is bilingual EN+KA: how it works, install, usage, "Can you run it?"
+  (others need their own Claude Code login; PERSONA/SEED_VOCAB are personal).
 
 ## Front desk / talk-while-working (2026-07-10 midday — Giorgi: "JARVIS talks to Tony while finishing background work; leave Sonnet talking while Fable does the job")
 Phase 3.5 receptionist PORTED to Python. PREFLIGHT PASS; NOT yet live-tested
