@@ -2,6 +2,24 @@
 
 Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
 
+## Max test sweep (2026-07-10 evening — Giorgi: "test it to the max, fix what comes up")
+- **test_engine_router.py** (permanent, free to run: mock client+TTS, no API):
+  13/13 — fast/full routing, sticky-full, handoff prefix, /compact success
+  AND failure→rotation fallback, stop-order brake, front-desk routing,
+  talk-turn steering, STOP/WAKE/WORK regexes. Run it after ANY engine edit.
+- Behavioral round 2 (headless SDK session): system-health ✓, stt-teach ✓
+  (writes+validates fixes json), screen-look ✓ (described the real screen),
+  self-upgrade ✓ (recited procedure, touched nothing), identity ✓ (said
+  "Fable 5" on untagged harness message — correct per MODEL TRUTH; harness
+  doesn't tag, real app does — artifact, not bug).
+- UI offscreen: you→delta→tool→reveal→dim flow, usage footer, limit path ✓.
+- windows-control volume keys executed for real (net zero) ✓.
+- BUG FOUND+FIXED: system-health called 7.1/7.6GB RAM (93%) "fine" —
+  skill now has HARD RULE: ≥85% = warning + name the top hog. Loads next
+  session reset.
+- Test hygiene: stt-fixes marker removed (json re-validated), memory marker
+  removed.
+
 ## Headless skill E2E + memory-law fix (2026-07-10 evening — Giorgi: "test it yourself, no voice")
 Harness: fresh SDK session w/ GOAT's exact options (persona, workspace,
 setting_sources=["project"], NO resume — live app untouched), typed queries.
