@@ -22,6 +22,14 @@ function KillGoat {
     Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
         Where-Object { $_.CommandLine -match 'ui_qt\.py' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    # Stop-Process -Force only requests termination - it doesn't block until the
+    # process is actually reaped. If the launcher's "already running?" WMI check
+    # (start-goat-app.vbs) runs while the old process is still dying, it thinks
+    # GOAT is up and quits without launching a new one, so wait for real death.
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline -and (GoatAlive)) {
+        Start-Sleep -Milliseconds 300
+    }
 }
 
 function LaunchGoat {

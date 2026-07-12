@@ -86,45 +86,59 @@ UI_CONFIG = os.path.join(GOAT_ROOT, "ui-config.json")
 # Same instrument, different rooms. Each theme keeps the design law:
 # one accent, quiet type, no boxes. Values are the full palette a theme
 # needs — nothing is derived at runtime so each can be hand-tuned.
+# Brightened 2026-07-11 (Giorgi: "UI colours look little dark") — dark
+# themes lifted a full step: backgrounds up from near-black, dim/faint
+# raised so secondary text is READABLE, not archaeological.
 THEMES = {
     "ember": {          # the original: warm dark, amber string
-        "bg_top": "#0f0e0c", "bg_bot": "#0b0a09",
-        "paper": "#ece5d8", "dim": "#6f6a60", "faint": "#3d3a34",
-        "accent": "#ffa94d", "string_base": "#6f6a60",
-        "you_old": "#a37c4f", "reply_old": "#948d7f", "sel": "#4a3722",
+        "bg_top": "#1a1713", "bg_bot": "#14110e",
+        "paper": "#f4ede0", "dim": "#948d7e", "faint": "#5c5649",
+        "accent": "#ffb35e", "string_base": "#948d7e",
+        "you_old": "#c09263", "reply_old": "#aca395", "sel": "#5a4429",
     },
     "paper": {          # daylight: warm paper, ink type, vermilion accent
-        "bg_top": "#f2ede3", "bg_bot": "#eae4d6",
-        "paper": "#1e1b16", "dim": "#8a8375", "faint": "#b0a794",
-        "accent": "#c74a24", "string_base": "#8a8375",
-        "you_old": "#a05a3c", "reply_old": "#6f6a60", "sel": "#f0c9b8",
+        "bg_top": "#f6f1e7", "bg_bot": "#efe9db",
+        "paper": "#1e1b16", "dim": "#7a7365", "faint": "#a29a86",
+        "accent": "#c74a24", "string_base": "#7a7365",
+        "you_old": "#a05a3c", "reply_old": "#5f5a50", "sel": "#f0c9b8",
     },
     "phosphor": {       # night instrument: green-black, phosphor trace
-        "bg_top": "#0a0f0b", "bg_bot": "#070b08",
-        "paper": "#d8e8da", "dim": "#5f7263", "faint": "#2c3a30",
-        "accent": "#5ce88a", "string_base": "#5f7263",
-        "you_old": "#4f8a62", "reply_old": "#7f9484", "sel": "#1e4a2e",
+        "bg_top": "#101812", "bg_bot": "#0c120d",
+        "paper": "#e2f0e4", "dim": "#82997f", "faint": "#4a5f50",
+        "accent": "#66f096", "string_base": "#82997f",
+        "you_old": "#6aae80", "reply_old": "#9db3a1", "sel": "#265a38",
     },
     "graphite": {       # mono: near-black, white-hot string
-        "bg_top": "#0e0e10", "bg_bot": "#0a0a0b",
-        "paper": "#e8e8ea", "dim": "#6c6c72", "faint": "#38383e",
-        "accent": "#ffffff", "string_base": "#6c6c72",
-        "you_old": "#9a9aa0", "reply_old": "#8c8c92", "sel": "#3a3a44",
+        "bg_top": "#18181b", "bg_bot": "#121214",
+        "paper": "#f0f0f2", "dim": "#94949b", "faint": "#5a5a63",
+        "accent": "#ffffff", "string_base": "#94949b",
+        "you_old": "#b6b6bc", "reply_old": "#a8a8af", "sel": "#44444f",
     },
 }
 THEME_ORDER = ["ember", "paper", "phosphor", "graphite"]
 
 
 # Reply type sizes: the current answer's pt size (older lines stay put).
-TEXT_SIZES = {"small": 22, "normal": 30, "large": 38}
+TEXT_SIZES = {"small": 24, "normal": 32, "large": 40}
+# Brain pin (drawer): auto = router decides, others pin fresh turns.
+# Escalation stays live even pinned to local.
+BRAINS = ["auto", "local", "sonnet", "fable"]
+# Global interface zoom — one factor scales EVERY font/padding in the app.
+# Drawer offers presets; voice can set any value in [MIN,MAX] via set_ui_scale.
+UI_SCALES = {"100%": 1.0, "125%": 1.25, "150%": 1.5, "175%": 1.75, "200%": 2.0}
+UI_SCALE_MIN, UI_SCALE_MAX = 0.7, 2.5
 # GOAT's speaker level (multiplier on the synthesized voice only).
 VOICE_LEVELS = {"quiet": 0.6, "normal": 1.0, "loud": 1.4}
 
 LANGS = {"english": "en", "ქართული": "ka"}
 
+# Friendly UI-part name → palette key(s) the color tool can override.
+COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
+               "background": ["bg_top", "bg_bot"]}
+
 DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
-               "lang": "en"}
+               "lang": "en", "brain": "auto", "scale": 1.0, "colors": {}}
 
 
 def load_ui_config() -> dict:
@@ -144,6 +158,14 @@ def load_ui_config() -> dict:
         cfg["level"] = "normal"
     if cfg["lang"] not in LANGS.values():
         cfg["lang"] = "en"
+    if cfg["brain"] not in BRAINS:
+        cfg["brain"] = "auto"
+    try:
+        cfg["scale"] = min(UI_SCALE_MAX, max(UI_SCALE_MIN, float(cfg["scale"])))
+    except (TypeError, ValueError):
+        cfg["scale"] = 1.0
+    if not isinstance(cfg.get("colors"), dict):
+        cfg["colors"] = {}
     return cfg
 
 
@@ -155,61 +177,67 @@ def save_ui_config(cfg: dict):
         pass  # preferences — never worth an error
 
 
-def build_style(t: dict, reply_px: int = 30) -> str:
+# Sizes bumped 2026-07-11, then made globally scalable 2026-07-12 (Giorgi:
+# "increase the icon/UI sizes by 50%" — GOAT resizes its OWN interface).
+# Every px passes through _s(scale): one control zooms the whole app.
+def build_style(t: dict, reply_px: int = 30, scale: float = 1.0) -> str:
+    def s(px: int) -> int:
+        return max(1, round(px * scale))
+    reply = max(1, round(reply_px * scale))
     return f"""
 QWidget {{ color: {t['paper']}; font-family: 'Segoe UI'; }}
 QLabel#wordmark {{
-  color: {t['dim']}; font-size: 13px; letter-spacing: 5px; font-weight: 600;
+  color: {t['dim']}; font-size: {s(15)}px; letter-spacing: 5px; font-weight: 600;
 }}
-QLabel#stateword {{ color: {t['accent']}; font-size: 13px; letter-spacing: 2px; }}
+QLabel#stateword {{ color: {t['accent']}; font-size: {s(15)}px; letter-spacing: 2px; }}
 QPushButton#winbtn {{
   background: transparent; color: {t['faint']}; border: none;
-  font-size: 13px; padding: 2px 10px;
+  font-size: {s(15)}px; padding: {s(3)}px {s(12)}px;
 }}
 QPushButton#winbtn:hover {{ color: {t['paper']}; }}
 QPushButton#themebtn {{
   background: transparent; color: {t['dim']}; border: none;
-  font-size: 12px; letter-spacing: 2px; padding: 2px 12px;
+  font-size: {s(14)}px; letter-spacing: 2px; padding: {s(3)}px {s(12)}px;
 }}
 QPushButton#themebtn:hover {{ color: {t['accent']}; }}
 QLabel#youNow {{
-  color: {t['accent']}; font-size: 15px; letter-spacing: 1px; margin-top: 18px;
+  color: {t['accent']}; font-size: {s(18)}px; letter-spacing: 1px; margin-top: {s(18)}px;
 }}
 QLabel#replyNow {{
-  color: {t['paper']}; font-size: {reply_px}px; font-weight: 300;
+  color: {t['paper']}; font-size: {reply}px; font-weight: 300;
 }}
-QLabel#youOld {{ color: {t['you_old']}; font-size: 13px; margin-top: 18px; }}
-QLabel#replyOld {{ color: {t['reply_old']}; font-size: 17px; font-weight: 300; }}
-QLabel#toolLine {{ color: {t['faint']}; font-size: 13px; font-style: italic; }}
-QLabel#footer {{ color: {t['faint']}; font-size: 12px; letter-spacing: 1px; }}
+QLabel#youOld {{ color: {t['you_old']}; font-size: {s(16)}px; margin-top: {s(18)}px; }}
+QLabel#replyOld {{ color: {t['reply_old']}; font-size: {s(20)}px; font-weight: 300; }}
+QLabel#toolLine {{ color: {t['faint']}; font-size: {s(15)}px; font-style: italic; }}
+QLabel#footer {{ color: {t['faint']}; font-size: {s(14)}px; letter-spacing: 1px; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
-QScrollBar:vertical {{ background: transparent; width: 4px; margin: 0; }}
-QScrollBar::handle:vertical {{ background: {t['faint']}; border-radius: 2px; min-height: 30px; }}
+QScrollBar:vertical {{ background: transparent; width: {s(6)}px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {t['faint']}; border-radius: 3px; min-height: {s(30)}px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QLineEdit#cmd {{
   background: transparent; border: none; border-bottom: 1px solid {t['faint']};
-  padding: 8px 2px; font-size: 16px; color: {t['paper']};
+  padding: {s(10)}px {s(2)}px; font-size: {s(19)}px; color: {t['paper']};
   selection-background-color: {t['sel']};
 }}
 QLineEdit#cmd:focus {{ border-bottom: 1px solid {t['accent']}; }}
 QLabel#epigraph {{
-  color: {t['faint']}; font-size: 21px; font-weight: 300; letter-spacing: 4px;
+  color: {t['faint']}; font-size: {s(24)}px; font-weight: 300; letter-spacing: 4px;
 }}
-QLabel#clock {{ color: {t['dim']}; font-size: 13px; letter-spacing: 2px; }}
+QLabel#clock {{ color: {t['dim']}; font-size: {s(15)}px; letter-spacing: 2px; }}
 QLabel#paneltitle {{
-  color: {t['dim']}; font-size: 12px; letter-spacing: 4px; font-weight: 600;
+  color: {t['dim']}; font-size: {s(14)}px; letter-spacing: 4px; font-weight: 600;
 }}
-QLabel#optlabel {{ color: {t['dim']}; font-size: 12px; letter-spacing: 1px; }}
+QLabel#optlabel {{ color: {t['dim']}; font-size: {s(14)}px; letter-spacing: 1px; }}
 QPushButton#optbtn {{
   background: transparent; color: {t['dim']}; border: none;
-  font-size: 13px; padding: 3px 8px; text-align: left;
+  font-size: {s(16)}px; padding: {s(5)}px {s(12)}px; text-align: left;
 }}
 QPushButton#optbtn:hover {{ color: {t['paper']}; }}
 QPushButton#optbtn[on="true"] {{ color: {t['accent']}; }}
 QPushButton#actbtn {{
   background: transparent; color: {t['paper']}; border: none;
-  border-bottom: 1px solid {t['faint']}; font-size: 13px; padding: 3px 10px;
+  border-bottom: 1px solid {t['faint']}; font-size: {s(16)}px; padding: {s(5)}px {s(14)}px;
 }}
 QPushButton#actbtn:hover {{ color: {t['accent']};
   border-bottom: 1px solid {t['accent']}; }}
@@ -495,7 +523,9 @@ class SettingsPanel(QWidget):
             lay.addLayout(h)
             self._groups[key] = btns
 
+        row("brain", "brain", BRAINS, self.win.set_brain_opt)
         row("theme", "theme", THEME_ORDER, self.win.set_theme_opt)
+        row("interface size", "scale", list(UI_SCALES), self.win.set_scale_opt)
         row("text size", "text", list(TEXT_SIZES), self.win.set_text_opt)
         row("voice", "voice", ["on", "off"], self.win.set_voice_opt)
         row("voice level", "level", list(VOICE_LEVELS), self.win.set_level_opt)
@@ -509,6 +539,7 @@ class SettingsPanel(QWidget):
         h = QHBoxLayout()
         h.setSpacing(14)
         for text, cb in (("copy reply", self.win.copy_last_reply),
+                         ("reset colors", self.win.reset_ui_colors),
                          ("new chat", self.win.new_chat),
                          ("restart", self.win.restart_goat)):
             b = QPushButton(text)
@@ -543,6 +574,11 @@ class SettingsPanel(QWidget):
         state["window"] = "on top" if state.get("ontop") else "normal"
         state["lang"] = next((label for label, code in LANGS.items()
                               if code == state.get("lang", "en")), "english")
+        # scale is stored as a float; light the preset that matches (or none
+        # if he set an off-preset value by voice).
+        sc = float(state.get("scale", 1.0))
+        state["scale"] = next((lbl for lbl, v in UI_SCALES.items()
+                               if abs(v - sc) < 0.001), "")
         goat = self.win.goat
         state["mic"] = "muted" if (goat and goat.mic_muted) else "live"
         for key, btns in self._groups.items():
@@ -578,7 +614,9 @@ class GoatWindow(QWidget):
         self._reply_label: QLabel | None = None
         self._you_label: QLabel | None = None
         self._t0 = time.time()
-        self._model = "sonnet 5"
+        # Placeholder until the engine reports the real default brain at
+        # boot (local model when Ollama is up, Sonnet otherwise).
+        self._model = "…"
         self._statew = "booting"
         self._status_hold = 0.0  # until this time, hud_tick may not stomp
         self._usage = ""
@@ -739,10 +777,14 @@ class GoatWindow(QWidget):
 
     # ---- theme / appearance ----
     def apply_theme(self, name: str):
-        t = THEMES.get(name) or THEMES["ember"]
+        base = THEMES.get(name) or THEMES["ember"]
+        # Live per-part color overrides GOAT set (e.g. text→blue) ride on top
+        # of whatever theme is active.
+        t = {**base, **(self.cfg.get("colors") or {})}
         self._theme_name = name
         self.cfg["theme"] = name
-        self.setStyleSheet(build_style(t, TEXT_SIZES[self.cfg["text"]]))
+        self.setStyleSheet(build_style(t, TEXT_SIZES[self.cfg["text"]],
+                                       float(self.cfg.get("scale", 1.0))))
         self.canvas.set_theme(t)
         self.string.set_theme(t)
         self.fade.set_theme(t)
@@ -801,6 +843,48 @@ class GoatWindow(QWidget):
         self.apply_theme(self._theme_name)  # rebuilds the stylesheet
         save_ui_config(self.cfg)
 
+    def set_scale_opt(self, label: str):
+        """Drawer preset click ('150%')."""
+        self.set_ui_scale(UI_SCALES.get(label, 1.0))
+
+    def set_ui_color(self, part: str, color: str) -> bool:
+        """Live recolor of one UI part (GOAT changing its own look). Returns
+        False for an unrecognized color/part so the tool can tell him."""
+        keys = COLOR_PARTS.get(part)
+        if not keys:
+            return False
+        c = QColor(color)
+        if not c.isValid():
+            return False
+        hexv = c.name()
+        cols = dict(self.cfg.get("colors") or {})
+        for k in keys:
+            cols[k] = hexv
+        self.cfg["colors"] = cols
+        self.apply_theme(self._theme_name)
+        save_ui_config(self.cfg)
+        self._on_event("status", f"{part} color → {color}")
+        return True
+
+    def reset_ui_colors(self):
+        self.cfg["colors"] = {}
+        self.apply_theme(self._theme_name)
+        save_ui_config(self.cfg)
+        self._on_event("status", "colors reset to theme")
+
+    def set_ui_scale(self, factor: float, relative: bool = False):
+        """Live global UI zoom — from the drawer OR from GOAT itself (voice:
+        'make your interface 50% bigger'). relative=True multiplies the
+        current scale (a 50%-bigger request), else sets it absolutely.
+        Clamped, applied instantly, saved."""
+        cur = float(self.cfg.get("scale", 1.0))
+        target = cur * factor if relative else factor
+        target = min(UI_SCALE_MAX, max(UI_SCALE_MIN, round(target, 3)))
+        self.cfg["scale"] = target
+        self.apply_theme(self._theme_name)  # rebuilds the stylesheet at scale
+        save_ui_config(self.cfg)
+        self._on_event("status", f"interface size {round(target * 100)}%")
+
     def set_voice_opt(self, opt: str):
         self.cfg["voice"] = opt == "on"
         if self.goat:
@@ -826,6 +910,12 @@ class GoatWindow(QWidget):
             self.goat.mic_muted = opt == "muted"
             self._on_event("status", "mic muted" if self.goat.mic_muted
                            else "listening")
+        self._save()
+
+    def set_brain_opt(self, mode: str):
+        self.cfg["brain"] = mode if mode in BRAINS else "auto"
+        if self.goat:
+            self.goat.set_brain(self.cfg["brain"])
         self._save()
 
     def set_lang_opt(self, label: str):
@@ -869,6 +959,7 @@ class GoatWindow(QWidget):
         # Before the engine thread starts: run() applies voice + hearing
         # model + persona note itself from this attribute.
         goat.language = self.cfg["lang"]
+        goat.brain_mode = self.cfg.get("brain", "auto")
         self.panel.refresh()
 
     # ---- session actions ----
@@ -1059,6 +1150,21 @@ class GoatWindow(QWidget):
             self._status_hold = time.time() + 4.0
         elif kind == "model":
             self._model = data  # the engine sends the display name
+        elif kind == "ui_scale":
+            # GOAT resizing its own interface (voice/typed request routed
+            # through the engine). Payload: "<factor>" absolute, or "*<factor>"
+            # relative (e.g. "*1.5" = 50% bigger).
+            try:
+                if data.startswith("*"):
+                    self.set_ui_scale(float(data[1:]), relative=True)
+                else:
+                    self.set_ui_scale(float(data))
+            except (ValueError, TypeError):
+                pass
+        elif kind == "ui_color":
+            # "part|color" — GOAT recoloring its own interface.
+            part, _, color = data.partition("|")
+            self.set_ui_color(part.strip(), color.strip())
         elif kind == "usage":
             try:
                 tin, tout = (int(x) for x in data.split("|"))

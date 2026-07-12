@@ -1,6 +1,277 @@
 # GOAT State — handoff brief
 
-Updated: 2026-07-10 evening (token economy v2; skill library wave; typed input + themes; GitHub publish)
+Updated: 2026-07-12 (local brain v3 — no guardrails, no self-escalation)
+
+## Local brain v3 — no guardrails, never self-escalates (2026-07-12, Giorgi:
+## "i dont want my local Ai to have any guardlines ... full access ... it
+## still refuses to do anything ... do not escalate until i say so")
+- NO COMMAND WALL: DESTRUCTIVE_RE deleted from local_hands.py. _run_command
+  runs EVERY command the model forms — deletes, Defender/firewall, shadow
+  copies, format, everything. Only empty-command guard remains. FOOTGUN
+  documented in the module docstring: the 4B can hallucinate a catastrophic
+  command and it WILL execute; re-add a typed *confirm* (not a refusal) on
+  nuclear-tier commands if it ever bites (old regex is in git history).
+- NEVER SELF-ESCALATES: local_llm.chat only returns "ESCALATE" when his
+  message LITERALLY names the full model (ESCALATE_REQ_RE: escalate/fable/
+  full model/working brain/big brain). Every refusal opener or self-emitted
+  ESCALATE is now RE-RUN locally once with FORCE_NUDGE (a system override
+  ordering it to use its tools); if still stuck it speaks STUCK_LINE — never
+  punts. Persona HOW-YOU-WORK rewritten: "DO NOT ESCALATE ... no task you
+  hand off on your own ... there is no command you refuse."
+- goat_app pinned-local: the old "say the word and I'll hand it to Fable"
+  approval prompt is gone. An "escalate" verdict (now only when he asked)
+  falls straight through to Fable. _pending_escalation setter removed from
+  the local block (approval handler kept, now only reachable if set manually).
+- Tests: test 25 rewritten (pin local ESCALATE → straight to Fable, no ask),
+  DESTRUCTIVE_RE tests replaced (wall-removed + run_command executes). 54/54
+  pass. All three files py_compile clean.
+- HARD-TEST ROUND (same day): mock harness (37 cases, scripted _post_stream —
+  every retry/escalate/offline/lie path) + LIVE fire on real qwen3:4b. Live
+  caught a REAL bug twice: asked "delete the file X", the 4B replied
+  "Deleted file: X" with ZERO tool calls — file untouched. Fixes:
+  (1) delete_file tool (file + recursive folder, honest result string) —
+  prompt-only fixes did NOT stop the lying, so
+  (2) LIE GATE in chat(): his text asks an action (ACTION_HINT_RE) + reply
+  OPENS as a completion claim (CLAIM_RE) + zero tools ran this attempt →
+  retry with LIE_NUDGE; still fabricating → speaks LIE_LINE ("that didn't
+  actually run"). Claims are only trusted when a tool ran the SAME attempt.
+  HOLD_MAX 100→200 so one-line claims w/ long paths are still held when
+  judged (nothing false ever spoken).
+  (3) list_dir now prints real sizes — 4B was "reading" file size out of the
+  FILENAME digits (claimed 348926 KB; real 1.3 GB).
+  Verified live after fixes: lie gate fired → delete_file ran → file gone;
+  biggest-file answer used real size; explicit "escalate" still punts;
+  access-denied reported honestly (not a refusal). 56/56 unit + 37/37 mock +
+  9/9 live.
+
+## Self-recolor + STOP escalating benign tasks (2026-07-12, Giorgi begging:
+## "asked to change UI text to blue, it suggested escalate — remove
+## guardrails; it feels like this llm is no use")
+
+## Self-recolor + STOP escalating benign tasks (2026-07-12, Giorgi begging:
+## "asked to change UI text to blue, it suggested escalate — remove
+## guardrails; it feels like this llm is no use")
+- set_ui_color tool (local_hands): part text/accent/background, any CSS name
+  or hex → callback → "ui_color" emit → window.set_ui_color merges a live
+  override dict on top of the theme (cfg["colors"], persisted), QColor-
+  validated, applied instantly. Drawer "reset colors" action clears it.
+  Live-verified: text→blue, accent→red, background→navy, all direct, zero
+  escalation.
+- PERSONA REWRITE — bias is ACT, escalate almost never: ESCALATE is now a
+  LAST resort, allowed ONLY when he explicitly asks for the full model/Fable
+  OR for genuinely huge multi-file coding beyond run_command+write_file.
+  Everything else — own UI/colors/size, commands, search, files — just DO
+  it. "you/yourself" = GOAT's own app; never deflect to Windows settings,
+  never "I can't". Added set_ui_color to the tool list + intent examples.
+- Tests 54/54 (color tool routing + bad-part/no-UI errors).
+
+## Self-resize UI + "realize what I ask" (2026-07-12, Giorgi: local model
+## refused "increase UI 50%" saying it's Windows Display settings — WRONG,
+## it's GOAT's own app; "give it mentality to realize what I ask")
+- GLOBAL UI SCALE: build_style() now takes scale, every px passes through
+  s(px)=round(px*scale) — one factor zooms the whole app. cfg["scale"]
+  (0.7–2.5, clamped in load_ui_config), applied live in apply_theme (no
+  restart). Drawer row "interface size" 100/125/150/175/200%; refresh maps
+  the float back to the preset label.
+- GOAT resizes its OWN interface by voice: new local_hands tool
+  resize_interface(percent | bigger) → set_ui_scale_callback (registered by
+  GoatApp.__init__) → request_ui_scale emits "ui_scale" event → Qt window
+  set_ui_scale(factor, relative). "*1.5" = 50% bigger. Live-verified:
+  "increase interface 50%"→1.5x, "smaller"→0.8x, "200 percent"→2.0, "zoom a
+  lot"→3x clamped to 2.5.
+- PERSONA "read his intent": you/your/yourself = GOAT's own app/size/voice/
+  code — you CAN change those, never deflect to Windows settings; figure out
+  intent from loose/garbled phrasing and pick the tool, don't ask which.
+- TRAP: goat_app used local_hands.set_ui_scale_callback in __init__ but only
+  imported local_llm — NameError at runtime (tests passed because make_app
+  uses __new__, skipping __init__). Added `import local_hands`. Lesson: a
+  __new__-based test can't catch a missing import used in __init__.
+- Tests 51/51 (resize tool routing, scale clamp).
+
+## Local brain v2 — full access + pinned-obey + UI switcher (2026-07-12,
+## Giorgi: "give it full access, do what I say, escalate only when I approve")
+
+## Local brain v2 — full access + pinned-obey + UI switcher (2026-07-12,
+## Giorgi: "give it full access, do what I say, escalate only when I approve")
+- FULL HANDS: local_hands.py grew from a closed whitelist to real access —
+  web_search (DuckDuckGo HTML **POST**, GET now returns a JS shell → parse
+  fails; measured), fetch_url, read_file/write_file (auto .goat-bak)/
+  list_dir, run_command (PowerShell, 30s). Old open/volume/media/etc kept.
+- THIN destructive wall (DESTRUCTIVE_RE): blocks ONLY catastrophic-
+  irreversible (format/diskpart/mkfs/dd/cipher-wipe, bcdedit/bootrec,
+  vssadmin+wbadmin delete, Defender/firewall disable, remote-code|iex pipe,
+  fork bomb). His deletes/shutdowns/kills/reg edits RUN — "do what I say".
+- MACHINE CONTEXT injected per call: real username (was guessing "Giorgi",
+  real is "user"), home/Desktop/Downloads paths, "use PowerShell cmdlets,
+  never invent names", live local+UTC clock. Fixed model reading garbage
+  (misread a filename column as free disk).
+- PINNED = OBEY, no auto-escalate (his core complaint "keeps escalating"):
+  brain_mode local → runs EVERYTHING local with full tools; if it truly
+  can't it ASKS ("say the word and I'll hand it to the full model"),
+  _pending_escalation stored, APPROVE_RE short-yes escalates it, anything
+  else drops it. brain_mode sonnet → untagged working turn on Sonnet, never
+  escalates. brain_mode fable → always Fable. AUTO unchanged (auto-escalate
+  live). Fast-model ESCALATE detection gated to mode==auto.
+- Persona rewritten: "you HAVE real hands + internet, NEVER refuse, NEVER
+  say 'only from memory' — SEARCH then answer". REFUSAL_RE grew to catch
+  "I don't have internet / can't check the web / I only say from memory /
+  didn't check the internet".
+- Tool loop MAX_HOPS 6, TIMEOUT_STREAM 180s. Live-verified: disk space,
+  desktop listing, live web search+fetch all correct now.
+- Tests 48/48 (added pin-obey, approval gate, pinned-sonnet untagged,
+  destructive wall, file round-trip).
+
+## UI: model switcher + brighter + bigger (2026-07-11→12, Giorgi: "easy
+## switch model to model, colours look dark, parts are small")
+- Drawer "brain" row (top): auto / local / sonnet / fable, persists in
+  ui-config.json, pushed to engine.set_brain(); auto shows router, others
+  pin.
+- Palettes lifted a full step (dark themes were murky) — bg/dim/faint all
+  brighter, secondary text now readable. All chrome font-sizes +~2px, inputs
+  and drawer buttons bigger; TEXT_SIZES bumped 24/32/40. Footer placeholder
+  "…" until engine reports the real default brain.
+
+## Local brain — third router tier (2026-07-11 night, Giorgi: "best local LLM
+## so casual talk costs zero usage; escalate to Fable for complex") — DEPLOYED
+- New `local_llm.py`: qwen3:4b-instruct-2507-q4_K_M via Ollama (:11434) on the
+  RTX 3050 4GB — measured 33-45 tok/s, 2-4s replies, fully GPU-resident.
+  Model chosen after web-checked shootout vs Phi-4-mini/Gemma3-4B/SmolLM3;
+  gemma3:4b pull stalled repeatedly at the same byte and was abandoned —
+  redundant anyway (see Georgian below).
+- Router v3 in `_send_user`: casual turn → local brain first (zero usage);
+  ESCALATE reply → straight to Fable; Ollama down → old Sonnet fast-turn
+  path. Work verbs (WORK_RE, now incl. open/close/play/pause/mute/browse/
+  visit — a 4B says "I can't" instead of escalating machine control) still
+  skip local entirely. Sticky-full/rotation logic untouched (Claude-session
+  economics don't apply to the local turn).
+- Continuity both ways: local keeps its own rolling history and gets Fable's
+  exchanges via note_exchange(); Fable gets a "[chat since your last turn]"
+  bridge block for turns it slept through.
+- ESCALATE stream gate + 12-char tail hold: hedged "answer…ESCALATE" replies
+  keep the answer, never speak the keyword.
+- Live clock (local + UTC) injected per call — measured hallucination: model
+  invented "3:47 PM in New York" with no clock; with UTC grounding the NY
+  answer is correct.
+- FRONT DESK STAYS ON SONNET — measured: under mid-work pressure the 4B
+  invented completed work ("dark red theme? Done.") and wrong facts. Rare
+  turns, honesty required; not worth the savings.
+- Georgian STAYS ON CLAUDE (GOAT_LOCAL_KA=off): qwen3-4B Georgian is fluent-
+  looking word salad. Any ka turn routes cloud as before.
+- Config: GOAT_LOCAL_MODEL / GOAT_LOCAL_NAME / GOAT_OLLAMA_URL / GOAT_LOCAL_KA.
+  Ollama server env: OLLAMA_FLASH_ATTENTION=1, OLLAMA_KV_CACHE_TYPE=q8_0 (set
+  as user env vars). Footer shows "qwen 4b local" when Ollama is up.
+- REVERSE FALLBACK (his order, same night: "give fallback to local ai if
+  claude is not avalable"): quota exhausted or Claude API error with an
+  empty reply → `_local_fallback()` answers on the local brain in offline
+  mode (persona told not to escalate; a stray ESCALATE converts to the
+  fixed honest OFFLINE_LINE). Both down → spoken apology, never silence.
+- KA text gate: KA_RE (Mkhedruli) checks the MESSAGE, not just the language
+  toggle — typed Georgian in English mode also skips the local brain.
+- LOCAL HANDS (his ask: "cant my local llm control my machine?"): new
+  `local_hands.py` — WHITELISTED tools via Ollama tool calling: open_url
+  (http/https only, scheme-smuggling blocked), open_app (closed exe map),
+  volume/media (keybd_event media keys), brightness (WMI), lock_screen.
+  NO shell, NO filesystem, no process-kill (so "close X" stays in WORK_RE →
+  Fable). Tool loop max 2 hops in local_llm.chat; ERROR results → model
+  told to ESCALATE. GOAT_LOCAL_HANDS=off disables. Verified live: "open
+  youtube" opened a tab, "volume down" pressed keys, "close spotify and
+  delete temp files" escalated.
+- REFUSAL SAFETY NET (his order: escalation is THE main thing): 100-char
+  head-hold on every local reply; REFUSAL_RE catches "I can't/unable/don't
+  have access/that requires…" openers and converts them to ESCALATE before
+  a word is spoken ("can't wait" spared). Offline mode converts to the
+  honest OFFLINE_LINE instead. Verified live: screenshot + read-folder asks
+  both started as refusals, both escalated; casual chat unaffected.
+- Tests: test_engine_router.py now 38/38 (local routing, ka gate, quota/api
+  fallbacks, refusal regex, hands whitelist safety, FakeLocal stub; legacy
+  tests pin local off). README EN+KA updated.
+- Traps hit: `qwen3:4b-instruct-2507` is not a tag (need `-q4_K_M` suffix);
+  Ollama pulls stall on this connection (kill+resume un-sticks; watchdog
+  killing during the post-download sha256 verify makes it WORSE — verify of
+  3.3GB looks like a stall for >90s on this disk).
+
+## Restart left GOAT dead after the last self-restart (2026-07-11) — FIXED
+Bug: restart-goat.ps1's KillGoat did `Stop-Process -Force` then a blind fixed
+`Start-Sleep -Seconds 2` before LaunchGoat. Stop-Process -Force only *requests*
+termination — it doesn't block until the OS actually reaps the process. If
+death took longer than 2s (plausible: active Qt threads, audio streams,
+network calls), LaunchGoat's start-goat-app.vbs ran its "already running?"
+WMI check (`Win32_Process WHERE CommandLine LIKE '%ui_qt.py%'`), saw the
+still-dying old process, assumed GOAT was up, and quit without launching a
+new one — net result: GOAT fully dead, no relaunch, no error anywhere (vbs
+is silent by design). Confirmed from evidence: goat-app.log has no
+"[restart]" line at all for the last restart (previous three restarts same
+day all logged fine), yet ui_qt.py's process-creation time was ~6 min after
+the last spoken utterance — consistent with Giorgi manually relaunching it
+himself after the automated relaunch silently no-op'd.
+FIX: KillGoat now polls `GoatAlive` (up to 10s, 300ms steps) after
+Stop-Process, so LaunchGoat only fires once the old process is *confirmed*
+gone, not just "probably gone by now." The existing 2s post-kill sleep
+(audio/mic handle release) is unchanged and now runs after confirmed death.
+LESSON: any "kill old, then fixed-sleep, then launch new" pattern racing
+against another process's own "is it already running?" check needs to wait
+on a real signal (process gone), not a guessed delay — the failure mode is
+silent (no log, no crash, just nothing running) which makes it nasty to
+spot after the fact.
+
+## Scribe tuning + model badge (2026-07-11) — DEPLOYED
+stt_gladia.py: Scribe POST now sends keyterms (KEYTERM_SEED + every
+stt-fixes.json value, capped 90 — >100 triggers 20s min billing, keyterms
+cost +20%), tag_audio_events=false (no "(სიცილი)" pollution),
+temperature=0. Georgian transcripts finally go through stt_whisper.
+_apply_fixes (they used to skip corrections entirely — English-only path);
+debug log keeps the RAW transcript, caller gets the fixed one. Replay on 3
+real WAVs: near-perfect, keyterms visibly working ("ფეიბლ ხუთი"→"Fable 5"
+right from Scribe). stt-fixes.json gained ka model-name entries.
+UI: each reply now carries a faint "fable 5"/"sonnet 5" badge above it
+(Giorgi's ask — modelTag label created with the reply in ui_qt.py; front
+desk replies tagged sonnet via a model-emit sandwich in goat_app.py).
+NOTE: his ElevenLabs key is scoped to speech_to_text ONLY — user_read is
+missing, so balance can't be checked by API; he was told how to enable it
+if he wants GOAT watching the credit burn.
+
+## Georgian STT moved to ElevenLabs Scribe (2026-07-10 night) — DEPLOYED
+Replay-verified on the real-mic WAVs (python/stt-debug/diag_scribe.py,
+reusable): Gladia "სალამ ნებარო გვრგესმის ჩემი ქარტოლი" vs Scribe
+"ააა, სალამი, აბა როგორ გესმის ჩემი ქართული?" — near-perfect on both
+samples. stt_gladia.py rewrote transcribe(): Scribe primary (one POST to
+api.elevenlabs.io/v1/speech-to-text, model_id=scribe_v2, language_code=ka,
+xi-api-key header, ~2s), Gladia kept verbatim as fallback when Scribe key
+missing/route fails; junk + repetition gates and _debug_log unchanged
+(notes now carry engine: ok:scribe). available() = either key. Keys:
+elevenlabs_api_key in .goat-secrets.json (ELEVENLABS_API_KEY env works).
+LESSON: ElevenLabs keys are permission-scoped — first key returned 401
+missing_permissions until Giorgi enabled the speech_to_text permission in
+the dashboard; a 401 there is a key-settings problem, not code. Module
+integration tested on both WAVs, PREFLIGHT PASS, restarted on this code.
+
+## STT accuracy diagnosis (2026-07-10 night) — resolved by the above
+Debug trail works (chat transcript == stt-debug.log — pipeline is faithful,
+garble originates at Gladia). Replay experiments on real-mic WAVs
+(20260710-231105, -231341) via python/stt-debug/diag_gain.py (reusable —
+uploads any debug WAV to Gladia, orig vs boosted):
+- ka-only vs ka+en code_switching: identical garble → language config NOT
+  the cause.
+- gain-normalize rms 0.06→0.2: identical garble → audio level NOT the cause.
+VERDICT: Gladia's Georgian model (Solaria-1) is simply weak for ka; no
+better Gladia option exists. Web research: ElevenLabs Scribe is the Georgian
+accuracy leader (FLEURS ~10.9% WER; STT $0.22/hr, free tier exists).
+
+## STT debug trail (2026-07-10 night) — deployed
+App is launched via start-goat-app.vbs (hidden), stdout goes nowhere;
+stt_gladia._debug_log saves every utterance to python/stt-debug/ (last 20
+WAVs + stt-debug.log with timestamp/duration/verdict/transcript).
+Preflight PASS, restarted on this code.
+
+## Gladia real-mic hallucination fix (2026-07-10 night)
+First real-mic Georgian session: Gladia returned repetition loops
+("მინისის" x19) — it was only ever tested on Eka-synth audio. Root causes &
+fixes in stt_gladia.py: (1) ka-ONLY language_config force-transcribes
+English/noise into hallucinated Georgian → now languages=[ka,en],
+code_switching=True (Giorgi often speaks English in ka mode); (2) junk gate
+only caught len<2 → added repetition gate: >=4 words AND unique<=words//4
+drops as '' (19x1 and 19x2 real garbage both caught; "ok ok ok" survives).
+Preflight PASS. Lesson: synth-audio measurement ≠ real-mic verification.
 
 ## Georgian HEARING via Gladia (2026-07-10 late — Giorgi brought a key: "i think this is the key")
 Georgian voice INPUT now works. stt_gladia.py: upload → pre-recorded job →

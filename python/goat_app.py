@@ -30,6 +30,8 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
+import local_hands
+import local_llm
 import self_check
 import stt_gladia
 import stt_whisper
@@ -77,8 +79,12 @@ MODEL_NAMES = {MODEL_FULL: "fable 5", MODEL_FAST: "sonnet 5"}
 WORK_RE = re.compile(
     r"\b(build|create|write|code|implement|fix|debug|repair|edit|refactor|"
     r"rename|delete|remove|install|download|deploy|push|commit|clone|run|"
-    r"execute|launch|restart|kill|search|find|look up|screenshot|volume|"
-    r"brightness|clipboard|remember|briefing|diagnos\w*)\b", re.I)
+    r"execute|launch|restart|kill|search|find|look up|screenshot|"
+    r"clipboard|remember|briefing|diagnos\w*|"
+    # "close" stays here: the local hands whitelist (local_hands.py) has no
+    # process-kill tool on purpose. open/play/volume/brightness etc. are NOT
+    # here — the local brain handles those itself now (2026-07-11).
+    r"close)\b", re.I)
 STICKY_FULL_CTX = 25_000   # past this, stop bouncing back to the fast model
 ROTATE_CTX = 60_000        # past this, compact (or rotate) at turn end
 HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
@@ -359,6 +365,11 @@ is a badly built JARVIS.
   anything; only escalation or the app switches. If he orders a switch to
   the full model (alone or with a task), that IS work: reply ESCALATE.
 - Untagged messages are already on the working brain — just do the work.
+- THIRD BRAIN (2026-07-11): most casual chat never reaches you at all — a
+  local model on his own GPU answers it for free. You may receive a
+  "[chat since your last turn]" block: that's what you (as the local brain)
+  already said. Treat it as your own memory — context only, never reply to
+  it, never comment on the mechanics. One mind, three engines.
 - While you work, a front-desk side of you fields his small talk and status
   questions so he's never waiting on you. Only messages that genuinely need
   the working brain reach you mid-turn — which is why INTERRUPTIONS ARE
@@ -395,6 +406,17 @@ WAKE_RE = re.compile(r"\b(goat|goats|goad|goot|gote|ghost|god|coat|goa|go at"
 WAKE_WINDOW_S = 120.0
 # Away this long → GOAT opens the conversation itself at boot (Phase 3).
 BRIEFING_AFTER_H = 6.0
+
+# Georgian script (Mkhedruli) anywhere in a message — routes it past the
+# local brain regardless of the UI language toggle.
+KA_RE = re.compile(r"[ა-ჿ]")
+
+# His "yes, hand it to Fable" when a pinned local brain asked to escalate.
+# Short + affirmative; a long sentence that happens to contain "yes" is not
+# an escalation approval.
+APPROVE_RE = re.compile(
+    r"\b(yes|yep|yeah|sure|ok|okay|do it|go|go ahead|escalate|hand it|full "
+    r"model|fable|please do|დიახ|კი|გააკეთე)\b", re.IGNORECASE)
 
 # Short spoken stop-orders while the working brain is mid-task — the brake.
 # Word-count cap keeps "don't stop, also add X" from tripping it.
@@ -594,6 +616,10 @@ class TtsPipeline:
 class GoatApp:
     def __init__(self, emit=_default_emit):
         self.emit = emit
+        # Let the local brain's hands change GOAT's own UI live: these tools
+        # call back here, which hops to the Qt thread via emit.
+        local_hands.set_ui_scale_callback(self.request_ui_scale)
+        local_hands.set_ui_color_callback(self.request_ui_color)
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client: ClaudeSDKClient | None = None
         self.audio = DuplexAudio(
@@ -638,6 +664,16 @@ class GoatApp:
         # set_language(). Boot path appends LANG_NOTE_KA to the persona.
         self.language = "en"
         self._last_exchange = time.monotonic()
+        # local-brain exchanges the Claude session hasn't seen yet — bridged
+        # into its next turn so Fable never answers blind to recent chat.
+        self._local_unseen: list = []
+        # Brain override from the UI drawer. "auto" = the router decides and
+        # escalation is automatic. A PINNED brain (local/sonnet/fable) stays
+        # put — his order 2026-07-12: "if I set the model pinned, no need to
+        # change in any situation; escalate only when I approve." A pinned
+        # local brain that hits its limit ASKS instead of jumping to Fable.
+        self.brain_mode = "auto"
+        self._pending_escalation = ""  # text awaiting his "yes, escalate"
         # front desk (receptionist) + work-turn awareness
         self.recep: ClaudeSDKClient | None = None
         self._recep_busy = False
@@ -708,6 +744,28 @@ class GoatApp:
             note = ("[language switch] Back to English only from now on. "
                     "Confirm in one short sentence.")
         self.submit_text(note)
+
+    def request_ui_scale(self, spec: str):
+        """GOAT resizing its own interface — called from local_hands when the
+        model uses the resize_interface tool. spec is '<factor>' (absolute)
+        or '*<factor>' (relative). Crosses to the Qt thread via emit."""
+        self.emit("ui_scale", spec)
+
+    def request_ui_color(self, part: str, color: str) -> bool:
+        """GOAT recoloring its own UI. The Qt side validates the color and
+        returns whether it applied; we optimistically report True and let the
+        window reject a bad name (rare — the tool passes common names)."""
+        self.emit("ui_color", f"{part}|{color}")
+        return True
+
+    def set_brain(self, mode: str):
+        """Brain pin from the UI drawer — thread-safe (plain attribute).
+        auto = router decides; local/sonnet/fable pin fresh turns."""
+        if mode not in ("auto", "local", "sonnet", "fable"):
+            mode = "auto"
+        self.brain_mode = mode
+        self.emit("status", f"brain: {mode}"
+                  + (" — router decides" if mode == "auto" else " pinned"))
 
     def submit_text(self, text: str):
         """Typed input from the UI — thread-safe."""
@@ -799,6 +857,27 @@ class GoatApp:
             self.tts.mark_reply()
             await self.client.query(text)
             return
+        mode = self.brain_mode
+        # Pinned-local approval gate: if the local brain earlier asked to
+        # hand a task to Fable, a short "yes" here approves THAT — escalate
+        # the stored task. Anything else drops the pending ask and proceeds
+        # normally (he moved on).
+        if self._pending_escalation:
+            pending = self._pending_escalation
+            self._pending_escalation = ""
+            if APPROVE_RE.search(text) and len(text.split()) <= 6:
+                self.busy = True
+                self.last_user_text = pending
+                self._current_task = pending
+                self._work_started = time.monotonic()
+                self._turn_has_tools = False
+                self._last_tool = ""
+                self._reply_acc = ""
+                if echo:
+                    self.tts.cancel()
+                self.tts.new_turn()
+                await self._escalate()
+                return
         self.busy = True
         self.last_user_text = text
         self._current_task = text
@@ -812,14 +891,44 @@ class GoatApp:
             # the fresh-session retry — must not clip their own spoken intro.)
             self.tts.cancel()
         self.tts.new_turn()
-        # Token-economy routing: obvious work skips the fast model's
-        # read-everything-say-ESCALATE pass; a heavy session stops bouncing
-        # to the fast model at all (per-model cache — switches re-cache the
-        # whole history). Misses still escalate the old way.
-        full = (force_full or bool(WORK_RE.search(text))
-                or self._last_ctx > STICKY_FULL_CTX
-                or bool(self._pending_handoff))
-        target = MODEL_FULL if full else MODEL_FAST
+        # Routing v4 (2026-07-12). AUTO: local brain answers free, ESCALATE
+        # → Fable automatically. PINNED local: stays local, does the work
+        # with its full tools; if it truly can't, it ASKS before escalating.
+        # PINNED sonnet/fable: straight to that Claude model, no local hop.
+        work = force_full or mode == "fable" or bool(WORK_RE.search(text))
+        local_verdict = ""
+        # Georgian never goes local — the 4B garbles it (measured 2026-07-11).
+        # Check the TEXT, not just the language toggle: typed Georgian in
+        # English mode must skip the local brain too.
+        ka_text = bool(KA_RE.search(text))
+        local_ok = (local_llm.available() and not ka_text
+                    and (self.language == "en" or local_llm.LOCAL_KA))
+        # Pinned "local" runs EVERYTHING through the local brain (it has full
+        # machine + web tools now); file drops (force_full) still need real
+        # tools and skip it. Auto runs casual turns local, work → Fable.
+        if (local_ok and mode in ("auto", "local") and not force_full
+                and (mode == "local" or not work)):
+            local_verdict = await self._local_answer(text)
+            if local_verdict == "done":
+                return
+            # local_verdict == "escalate" now fires ONLY when he literally asked
+            # for the full model (his order 2026-07-12: "do not escalate until i
+            # say so" — the local brain no longer self-punts). So don't ask —
+            # fall through and hand it straight to Fable.
+        # "escalate" = the local brain judged this needs tools: straight to
+        # Fable (auto only). "fail"/"" = Ollama died or is absent: Sonnet path.
+        if mode == "fable":
+            target, tagged = MODEL_FULL, False
+        elif mode == "sonnet":
+            # Pinned Sonnet: untagged working turn on the fast model — it uses
+            # tools directly and never escalates itself (his order: pinned
+            # stays put).
+            target, tagged = MODEL_FAST, False
+        else:  # auto (or local that fell through to Claude)
+            full = (work or local_verdict == "escalate"
+                    or self._last_ctx > STICKY_FULL_CTX
+                    or bool(self._pending_handoff))
+            target, tagged = (MODEL_FULL, False) if full else (MODEL_FAST, True)
         if self.model != target:
             try:
                 await self.client.set_model(target)
@@ -827,9 +936,18 @@ class GoatApp:
             except Exception as e:  # noqa: BLE001
                 self.emit("status", f"model switch failed: {e}")
         self.emit("model", _friendly_model_name(target))
-        self._hold_deltas = not full
+        self._hold_deltas = tagged
         self._delta_buf = ""
-        send = text if full else "[fast-turn] " + text
+        send = ("[fast-turn] " + text) if tagged else text
+        if self._local_unseen:
+            # Bridge: the Claude session slept through these local-brain
+            # exchanges — hand it a compact transcript so it never answers
+            # blind to what was just discussed.
+            lines = "\n".join(f"him: {u}\nyou: {a}"
+                              for u, a in self._local_unseen[-6:])
+            send = ("[chat since your last turn — context only, do not "
+                    "reply to it]\n" + lines + "\n\n" + send)
+            self._local_unseen.clear()
         if self._pending_handoff:
             send = self._pending_handoff + "\n\n" + send
             self._pending_handoff = ""
@@ -864,6 +982,10 @@ class GoatApp:
             return False
         self._recep_busy = True
         try:
+            # Front desk stays on Sonnet, NOT the local brain — measured
+            # 2026-07-11: the 4B model invents answers under mid-work
+            # pressure ("dark red theme? I'll make it pop", a wrong NY time
+            # stated as fact). Rare turns, cheap model, honesty required.
             await self._ensure_recep()
             elapsed = int(time.monotonic() - self._work_started)
             status = (f"[main-status] working on: {self._current_task[:200]}"
@@ -915,6 +1037,70 @@ class GoatApp:
             self.tts.say(self._say_buf)
             self._say_buf = ""
 
+    async def _local_answer(self, text: str) -> str:
+        """Casual turn on the local brain (Ollama, zero usage). Returns
+        "done" (answered + spoken), "escalate" (needs Fable), or "fail"
+        (Ollama broke — caller uses the cloud path). Streams into the same
+        delta/TTS pipeline as Claude turns."""
+        self.emit("model", local_llm.LOCAL_NAME)
+        loop = asyncio.get_running_loop()
+
+        def on_delta(piece: str):
+            loop.call_soon_threadsafe(self._speak_delta, piece)
+
+        try:
+            reply = await asyncio.to_thread(
+                local_llm.chat, text, on_delta, self.language)
+        except Exception as e:  # noqa: BLE001 — local down ≠ mute GOAT
+            self.emit("status", f"local brain failed: {e}")
+            reply = None
+        if reply == "ESCALATE":
+            return "escalate"
+        if reply is None:
+            self.emit("status", "local brain offline — using cloud")
+            return "fail"
+        self.busy = False
+        self._last_exchange = time.monotonic()
+        self._flush_sentences(force=True)
+        self._exchanges.append((text[:300], reply[:300]))
+        self._local_unseen.append((text[:200], reply[:200]))
+        self._log_exchange(text, reply)
+        self.emit("turn_done", "")
+        return "done"
+
+    async def _local_fallback(self, reason: str) -> bool:
+        """Reverse fallback (his order 2026-07-11): Claude is unreachable —
+        quota gone or the API errored — so the LOCAL brain answers instead
+        of GOAT going mute. Degraded mode: conversation works, tools don't
+        (the persona says so honestly). Returns True if a reply was spoken."""
+        text = self.last_user_text
+        if not text or not local_llm.available():
+            return False
+        self.emit("model", local_llm.LOCAL_NAME)
+        self.emit("status", f"claude unreachable ({reason}) — local brain on")
+        loop = asyncio.get_running_loop()
+
+        def on_delta(piece: str):
+            loop.call_soon_threadsafe(self._speak_delta, piece)
+
+        # Georgian mode: LOCAL_KA gates it as usual; a garbled-Georgian
+        # brain is worse than an English apology, so fall to English.
+        lang = self.language if (self.language == "en"
+                                 or local_llm.LOCAL_KA) else "en"
+        try:
+            reply = await asyncio.to_thread(
+                local_llm.chat, text, on_delta, lang, True)
+        except Exception as e:  # noqa: BLE001
+            self.emit("status", f"local fallback failed: {e}")
+            return False
+        if not reply:
+            return False
+        self._flush_sentences(force=True)
+        self._exchanges.append((text[:300], reply[:300]))
+        self._local_unseen.append((text[:200], reply[:200]))
+        self._log_exchange(text, reply)
+        return True
+
     async def _escalate(self):
         self.emit("model", _friendly_model_name(MODEL_FULL))
         self.emit("status", "switching to the full model")
@@ -955,7 +1141,9 @@ class GoatApp:
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         t = (block.text or "").strip()
-                        if self.model == MODEL_FAST and t.startswith("ESCALATE"):
+                        if (self.model == MODEL_FAST and t.startswith("ESCALATE")
+                                and self.brain_mode == "auto"):
+                            # Auto only — a pinned brain stays put (his order).
                             self.escalate_pending = True
                         elif t and not self._compacting:
                             self._reply_acc += t + " "
@@ -1021,11 +1209,27 @@ class GoatApp:
                     return True  # run() reconnects and retries
                 if self._track_usage(msg):
                     # Quota is gone — escalating or retrying would just fail
-                    # again. The warning has already been spoken.
+                    # again. The warning has already been spoken. The LOCAL
+                    # brain takes over so GOAT keeps talking (2026-07-11).
                     self.escalate_pending = False
                     self._flush_sentences(force=True)
                     self._hold_deltas = False
                     self._delta_buf = ""
+                    await self._local_fallback("usage limit")
+                    self.emit("turn_done", "")
+                elif msg.is_error and not self._reply_acc.strip():
+                    # Claude errored with nothing said (API/network/auth down,
+                    # not a content turn) — the local brain answers instead
+                    # of GOAT going silent.
+                    self.escalate_pending = False
+                    self._hold_deltas = False
+                    self._delta_buf = ""
+                    if not await self._local_fallback("api error"):
+                        self.emit("status", f"claude error: {err[:120]}")
+                        self.emit("delta", "")
+                        self.tts.say("I hit an error reaching my mind and "
+                                     "my local brain is down too — "
+                                     "give me a moment and try again.")
                     self.emit("turn_done", "")
                 elif self.escalate_pending and self.last_user_text:
                     self.escalate_pending = False
@@ -1041,6 +1245,9 @@ class GoatApp:
                         reply = self._reply_acc.strip()
                         self._exchanges.append(
                             (self.last_user_text[:300], reply[:300]))
+                        # Keep the local brain's memory in step with what
+                        # the Claude brains said — one mind, three engines.
+                        local_llm.note_exchange(self.last_user_text, reply)
                         if not self.last_user_text.startswith("[boot-briefing]"):
                             self._log_exchange(self.last_user_text, reply)
                         self._reply_acc = ""
@@ -1236,7 +1443,11 @@ class GoatApp:
                          "I can't transcribe you until you restart me.")
         else:
             self.emit("status", "listening — just talk")
-        self.emit("model", _friendly_model_name(MODEL_FAST))
+        # Default brain in the footer: local when Ollama is up (the check
+        # runs off-loop — a dead Ollama must not stall boot), Sonnet otherwise.
+        local_up = await asyncio.to_thread(local_llm.available)
+        self.emit("model", local_llm.LOCAL_NAME if local_up
+                  else _friendly_model_name(MODEL_FAST))
         # This code just booted end to end — it IS the last-good version.
         # Snapshot it so a future bad self-edit always has a way back.
         threading.Thread(target=self_check.snapshot, daemon=True).start()
@@ -1297,7 +1508,9 @@ class GoatApp:
                     self.escalate_pending = False
                     self._hold_deltas = False
                     self._delta_buf = ""
-                    self.emit("model", _friendly_model_name(MODEL_FAST))
+                    self.emit("model", local_llm.LOCAL_NAME
+                              if await asyncio.to_thread(local_llm.available)
+                              else _friendly_model_name(MODEL_FAST))
                     self.emit("status", "reconnected — listening")
                     self.emit("delta", "")
                     self.tts.say("Hit a snag and reconnected — "
@@ -1311,7 +1524,9 @@ class GoatApp:
                 self.client = ClaudeSDKClient(options)
                 await self.client.connect()
                 self.model = MODEL_FAST
-                self.emit("model", _friendly_model_name(MODEL_FAST))
+                self.emit("model", local_llm.LOCAL_NAME
+                          if await asyncio.to_thread(local_llm.available)
+                          else _friendly_model_name(MODEL_FAST))
                 if self._rotate_only:
                     # Proactive rotation, not a wall hit: nothing to retry —
                     # the next thing Giorgi says carries the handoff.

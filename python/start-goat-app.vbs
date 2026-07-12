@@ -11,8 +11,16 @@ Set running = wmi.ExecQuery( _
   "SELECT * FROM Win32_Process WHERE (Name='python.exe' OR Name='pythonw.exe') " & _
   "AND CommandLine LIKE '%ui_qt.py%'")
 If running.Count > 0 Then
-  sh.AppActivate "GOAT"
-  WScript.Quit
+  ' Only trust the running instance if it actually has a focusable window.
+  ' A hung/headless leftover (engine died, window never came up) used to
+  ' make this launcher quit silently — double-click did nothing.
+  If sh.AppActivate("GOAT") Then WScript.Quit
+  For Each p In running
+    On Error Resume Next
+    p.Terminate
+    On Error Goto 0
+  Next
+  WScript.Sleep 500
 End If
 
 ' Rotate the log before launch so the append redirect below can't grow it
