@@ -34,6 +34,7 @@ daemon thread. Events cross via a Signal; typed input crosses back via
 run_coroutine_threadsafe inside submit_text.
 """
 import ctypes
+import ctypes.wintypes
 import json
 import math
 import os
@@ -120,9 +121,15 @@ THEME_ORDER = ["ember", "paper", "phosphor", "graphite"]
 
 # Reply type sizes: the current answer's pt size (older lines stay put).
 TEXT_SIZES = {"small": 24, "normal": 32, "large": 40}
-# Brain pin (drawer): auto = router decides, others pin fresh turns.
-# Escalation stays live even pinned to local.
-BRAINS = ["auto", "local", "sonnet", "fable"]
+# Manual brain roster (his order 2026-07-17): three independent roles he sets
+# by hand from the drawer — no auto-routing, no escalation. Values are the
+# display names the engine (goat_app) understands directly.
+#   talking brain  — the middle lane, out loud (Gemini Flash = free + always
+#                    up even when Claude is spent).
+#   working brain  — the left lane, tools, for normal work.
+#   hard brain     — the left lane, for heavy work.
+TALK_OPTS = ["gemini flash", "sonnet 5"]
+WORK_OPTS = ["sonnet 5", "fable 5", "opus 4.8"]
 # Global interface zoom — one factor scales EVERY font/padding in the app.
 # Drawer offers presets; voice can set any value in [MIN,MAX] via set_ui_scale.
 UI_SCALES = {"100%": 1.0, "125%": 1.25, "150%": 1.5, "175%": 1.75, "200%": 2.0}
@@ -138,7 +145,10 @@ COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
 
 DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
-               "lang": "en", "brain": "auto", "scale": 1.0, "colors": {}}
+               "lang": "en", "talk_brain": "gemini flash",
+               "work_model": "fable 5", "hard_model": "fable 5",
+               "scale": 1.0, "colors": {},
+               "geom": None}  # [x, y, w, h] — remembered window box
 
 
 def load_ui_config() -> dict:
@@ -158,8 +168,12 @@ def load_ui_config() -> dict:
         cfg["level"] = "normal"
     if cfg["lang"] not in LANGS.values():
         cfg["lang"] = "en"
-    if cfg["brain"] not in BRAINS:
-        cfg["brain"] = "auto"
+    if cfg["talk_brain"] not in TALK_OPTS:
+        cfg["talk_brain"] = "gemini flash"
+    if cfg["work_model"] not in WORK_OPTS:
+        cfg["work_model"] = "fable 5"
+    if cfg["hard_model"] not in WORK_OPTS:
+        cfg["hard_model"] = "fable 5"
     try:
         cfg["scale"] = min(UI_SCALE_MAX, max(UI_SCALE_MIN, float(cfg["scale"])))
     except (TypeError, ValueError):
@@ -200,6 +214,19 @@ QPushButton#themebtn {{
   font-size: {s(14)}px; letter-spacing: 2px; padding: {s(3)}px {s(12)}px;
 }}
 QPushButton#themebtn:hover {{ color: {t['accent']}; }}
+QPushButton#micbtn {{
+  background: transparent; color: {t['dim']}; border: none;
+  font-size: {s(14)}px; letter-spacing: 2px; padding: {s(3)}px {s(12)}px;
+}}
+QPushButton#micbtn:hover {{ color: {t['paper']}; }}
+QPushButton#micbtn[muted="true"] {{ color: {t['accent']}; }}
+QPushButton#sendbtn {{
+  background: transparent; color: {t['faint']}; border: none;
+  border-bottom: 1px solid {t['faint']};
+  font-size: {s(16)}px; padding: {s(6)}px {s(14)}px;
+}}
+QPushButton#sendbtn:hover {{ color: {t['accent']};
+  border-bottom: 1px solid {t['accent']}; }}
 QLabel#youNow {{
   color: {t['accent']}; font-size: {s(18)}px; letter-spacing: 1px; margin-top: {s(18)}px;
 }}
@@ -241,6 +268,20 @@ QPushButton#actbtn {{
 }}
 QPushButton#actbtn:hover {{ color: {t['accent']};
   border-bottom: 1px solid {t['accent']}; }}
+QPushButton#workbtn {{
+  background: transparent; color: {t['dim']}; border: none;
+  border-bottom: 1px solid {t['faint']};
+  font-size: {s(15)}px; padding: {s(6)}px {s(12)}px;
+}}
+QPushButton#workbtn:hover {{ color: {t['accent']};
+  border-bottom: 1px solid {t['accent']}; }}
+QLabel#workmodel {{ color: {t['accent']}; font-size: {s(13)}px; letter-spacing: 2px; }}
+QLabel#workidle {{ color: {t['faint']}; font-size: {s(15)}px; }}
+QLabel#worktask {{ color: {t['paper']}; font-size: {s(16)}px; font-weight: 400; margin-top: {s(6)}px; }}
+QLabel#workstep {{ color: {t['accent']}; font-size: {s(14)}px; }}
+QLabel#workdone {{ color: {t['dim']}; font-size: {s(14)}px; }}
+QLabel#worktext {{ color: {t['faint']}; font-size: {s(13)}px; font-style: italic; }}
+QLabel#workfail {{ color: {t['accent']}; font-size: {s(15)}px; font-weight: 500; }}
 """
 
 
@@ -316,7 +357,7 @@ class StringLine(QWidget):
                  + math.sin(u * 23 - t * 6 + s[1]) * 0.3
                  + math.sin(u * 41 + t * 9 + s[2]) * 0.2)
             return pin * a * w
-        if self.state == "thinking":
+        if self.state in ("thinking", "working"):
             w = (math.sin(u * 60 + t * 14 + s[3]) * 0.6
                  + math.sin(u * 90 - t * 17 + s[4]) * 0.4)
             return pin * 5.5 * w
@@ -499,7 +540,26 @@ class SettingsPanel(QWidget):
         self._groups: dict[str, list] = {}
         self.hide()
 
-        lay = QVBoxLayout(self)
+        # The drawer is height-locked to the visible window, but its content
+        # (10 option rows + actions + footer) is taller than that on a short
+        # window — a plain layout then COMPRESSES every row below its natural
+        # height and clips the button text (measured 2026-07-12). Put the
+        # content in a scroll area so rows keep full height and overflow just
+        # scrolls. Panel keeps its own paintEvent (bg + left border).
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.viewport().setAutoFillBackground(False)
+        outer.addWidget(scroll)
+        content = QWidget()
+        content.setAttribute(Qt.WA_TranslucentBackground, True)
+        scroll.setWidget(content)
+
+        lay = QVBoxLayout(content)
         lay.setContentsMargins(26, 24, 26, 24)
         lay.setSpacing(14)
         title = QLabel("S E T T I N G S")
@@ -523,7 +583,9 @@ class SettingsPanel(QWidget):
             lay.addLayout(h)
             self._groups[key] = btns
 
-        row("brain", "brain", BRAINS, self.win.set_brain_opt)
+        row("talking brain", "talk_brain", TALK_OPTS, self.win.set_talk_opt)
+        row("working brain", "work_model", WORK_OPTS, self.win.set_work_opt)
+        row("hard brain", "hard_model", WORK_OPTS, self.win.set_hard_opt)
         row("theme", "theme", THEME_ORDER, self.win.set_theme_opt)
         row("interface size", "scale", list(UI_SCALES), self.win.set_scale_opt)
         row("text size", "text", list(TEXT_SIZES), self.win.set_text_opt)
@@ -595,6 +657,133 @@ class SettingsPanel(QWidget):
         p.drawLine(0, 0, 0, self.height())
 
 
+class WorkPanel(QWidget):
+    """Left lane: what the WORKING brain is doing right now — the task, each
+    live step (marked ✓ the moment the next begins or the turn ends), and the
+    brain's own narration. Silent by design: this is the build log Giorgi
+    watches on the left while he talks to Gemini in the middle."""
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self._bg = QColor("#0b0a09")
+        self._bg.setAlpha(70)
+        self._line = QColor("#3d3a34")
+        self._cur_step = None    # the in-progress step label ("▸ …")
+        self._text_label = None  # rolling narration label for this turn
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 10, 16, 12)
+        outer.setSpacing(6)
+        self.header = QLabel("W O R K I N G   B R A I N")
+        self.header.setObjectName("paneltitle")
+        outer.addWidget(self.header)
+        self.sub = QLabel("idle")
+        self.sub.setObjectName("workmodel")
+        outer.addWidget(self.sub)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.viewport().setAutoFillBackground(False)
+        host = QWidget()
+        host.setAutoFillBackground(False)
+        self.col = QVBoxLayout(host)
+        self.col.setContentsMargins(0, 8, 0, 0)
+        self.col.setSpacing(5)
+        self.col.addStretch(1)
+        self.scroll.setWidget(host)
+        outer.addWidget(self.scroll, stretch=1)
+
+        self._idle = QLabel("no work running.\nsend an order to the\nworking brain —\nctrl+enter, or the\nwork button below.")
+        self._idle.setObjectName("workidle")
+        self._idle.setWordWrap(True)
+        self.col.insertWidget(0, self._idle)
+
+    def set_theme(self, t: dict):
+        self._bg = QColor(t["bg_bot"])
+        self._bg.setAlpha(80)
+        self._line = QColor(t["faint"])
+        self.update()
+
+    def set_model(self, name: str):
+        if self._cur_step is None and self.win and not self.win_busy():
+            self.sub.setText(f"{name} · idle")
+
+    def win_busy(self) -> bool:
+        return bool(self.win and self.win.goat and self.win.goat.busy)
+
+    def _add(self, text: str, name: str) -> QLabel:
+        lbl = PageLabel(text)
+        lbl.setObjectName(name)
+        lbl.setWordWrap(True)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.col.insertWidget(self.col.count() - 1, lbl)
+        QTimer.singleShot(20, self._down)
+        return lbl
+
+    def _down(self):
+        sb = self.scroll.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _mark_cur_done(self):
+        if self._cur_step is not None:
+            txt = self._cur_step.text()
+            if txt.startswith("▸ "):
+                self._cur_step.setText("✓ " + txt[2:])
+            self._cur_step.setObjectName("workdone")
+            self._cur_step.style().unpolish(self._cur_step)
+            self._cur_step.style().polish(self._cur_step)
+            self._cur_step = None
+
+    def start(self, model: str, task: str):
+        if self._idle is not None:
+            self._idle.deleteLater()
+            self._idle = None
+        self._mark_cur_done()
+        self.sub.setText(f"{model} · working")
+        self._add("— " + " ".join(task.split())[:200], "worktask")
+        self._text_label = None
+
+    def step(self, desc: str):
+        self._mark_cur_done()
+        self._cur_step = self._add("▸ " + desc, "workstep")
+        self._text_label = None
+
+    def text(self, piece: str):
+        if self._text_label is None:
+            self._text_label = self._add("", "worktext")
+        self._text_label.setText((self._text_label.text() + piece)[-1200:])
+        self._down()
+
+    def add(self, note: str):
+        self._add("+ " + note, "workstep")
+        self._text_label = None
+
+    def done(self):
+        self._mark_cur_done()
+        self.sub.setText("idle")
+        self._add("✓ done", "workdone")
+        self._text_label = None
+
+    def fail(self, reason: str):
+        self._mark_cur_done()
+        self.sub.setText("idle")
+        self._add("⚠ " + reason, "workfail")
+        self._text_label = None
+
+    def files(self, paths: list):
+        for p in paths:
+            if p.strip():
+                self._add("file — " + os.path.basename(p.strip()), "workstep")
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.fillRect(self.rect(), self._bg)
+        p.setPen(QPen(self._line, 1))
+        p.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
+
+
 class GoatWindow(QWidget):
     event_sig = Signal(str, str)
 
@@ -606,20 +795,27 @@ class GoatWindow(QWidget):
         if self.cfg.get("ontop"):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
-        self.resize(1100, 800)
+        # Frameless still needs a floor — otherwise a resize can crush it to
+        # nothing (usability pass 2026-07-12).
+        self.setMinimumSize(720, 520)
+        self._restore_geometry()   # remembered box, or a sane default
         self.setAcceptDrops(True)
-        self.on_submit = None
+        self.on_submit = None    # talk lane (middle)
+        self.on_work = None      # work lane (left)
         self.on_files = None
         self._drag: QPoint | None = None
         self._reply_label: QLabel | None = None
         self._you_label: QLabel | None = None
         self._t0 = time.time()
-        # Placeholder until the engine reports the real default brain at
-        # boot (local model when Ollama is up, Sonnet otherwise).
+        # Footer model = the talking brain (Gemini Flash), the always-on voice.
+        # Placeholder until the engine reports it at boot.
         self._model = "…"
+        self._work_model = ""    # working brain (shown on the left panel)
         self._statew = "booting"
         self._status_hold = 0.0  # until this time, hud_tick may not stomp
         self._usage = ""
+        self._claude_out = False   # Claude quota spent? (footer meter)
+        self._claude_reset = ""    # reset clock when out
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -639,6 +835,13 @@ class GoatWindow(QWidget):
         wordmark.setObjectName("wordmark")
         self.stateword = QLabel("booting")
         self.stateword.setObjectName("stateword")
+        # Mic toggle lives in the titlebar — the single most-used switch of a
+        # voice assistant was buried in the drawer (usability pass 2026-07-12).
+        self.mic_btn = QPushButton("mic")
+        self.mic_btn.setObjectName("micbtn")
+        self.mic_btn.setCursor(Qt.PointingHandCursor)
+        self.mic_btn.setToolTip("microphone — click or ctrl+m to mute/unmute")
+        self.mic_btn.clicked.connect(self.toggle_mic)
         self.theme_btn = QPushButton(self._theme_name)
         self.theme_btn.setObjectName("themebtn")
         self.theme_btn.setCursor(Qt.PointingHandCursor)
@@ -666,9 +869,13 @@ class GoatWindow(QWidget):
         self.clock.setObjectName("clock")
         bar.addWidget(self.clock)
         bar.addSpacing(16)
+        bar.addWidget(self.mic_btn)
         bar.addWidget(self.theme_btn)
         bar.addWidget(self.gear_btn)
         bar.addSpacing(10)
+        b_min.setToolTip("minimize")
+        b_full.setToolTip("fullscreen — f11")
+        b_close.setToolTip("quit GOAT")
         bar.addWidget(b_min)
         bar.addWidget(b_full)
         bar.addWidget(b_close)
@@ -712,23 +919,50 @@ class GoatWindow(QWidget):
         # word reveal yanks the page to the bottom while he's reading.
         self._follow = True
         self.scroll.verticalScrollBar().valueChanged.connect(self._on_scrolled)
+        # Left lane: the working brain's live build log. Middle: the talking
+        # brain (Gemini) conversation. He watches Fable build on the left while
+        # he keeps talking to Gemini in the middle (his order 2026-07-17).
+        self.work_panel = WorkPanel(self)
         page = QHBoxLayout()
         page.setContentsMargins(0, 10, 0, 0)
-        page.addStretch(4)
-        page.addWidget(self.scroll, stretch=7)
-        page.addStretch(4)
+        page.addWidget(self.work_panel, stretch=5)
+        page.addSpacing(10)
+        page.addWidget(self.scroll, stretch=8)
+        page.addStretch(1)
         lay.addLayout(page, stretch=1)
 
         # ---- command field (always there — speak or type, both first-class) ----
+        # Enter → talking brain (Gemini, middle). Ctrl+Enter → working brain
+        # (left). Ctrl+Shift+Enter → hard brain (left). His manual dispatch.
         self.input = QLineEdit()
         self.input.setObjectName("cmd")
-        self.input.setPlaceholderText("speak — or type here, enter to send")
+        self.input.setPlaceholderText(
+            "talk to the talking brain — enter  ·  work: ctrl+enter  ·  hard: ctrl+shift+enter")
         self.input.returnPressed.connect(self._submit)
+        send_btn = QPushButton("talk ↵")
+        send_btn.setObjectName("sendbtn")
+        send_btn.setCursor(Qt.PointingHandCursor)
+        send_btn.setToolTip("send to the talking brain — or press enter")
+        send_btn.clicked.connect(self._submit)
+        work_btn = QPushButton("work ⌃↵")
+        work_btn.setObjectName("workbtn")
+        work_btn.setCursor(Qt.PointingHandCursor)
+        work_btn.setToolTip("send to the working brain — or ctrl+enter")
+        work_btn.clicked.connect(lambda: self._submit_work(False))
+        hard_btn = QPushButton("hard ⌃⇧↵")
+        hard_btn.setObjectName("workbtn")
+        hard_btn.setCursor(Qt.PointingHandCursor)
+        hard_btn.setToolTip("send to the hard-task working brain — or ctrl+shift+enter")
+        hard_btn.clicked.connect(lambda: self._submit_work(True))
         cmd_row = QHBoxLayout()
         cmd_row.setContentsMargins(0, 0, 0, 6)
-        cmd_row.addStretch(4)
-        cmd_row.addWidget(self.input, stretch=7)
-        cmd_row.addStretch(4)
+        cmd_row.setSpacing(0)
+        cmd_row.addStretch(5)
+        cmd_row.addWidget(self.input, stretch=8)
+        cmd_row.addWidget(send_btn)
+        cmd_row.addWidget(work_btn)
+        cmd_row.addWidget(hard_btn)
+        cmd_row.addStretch(1)
         lay.addLayout(cmd_row)
 
         # ---- footer: one quiet line ----
@@ -738,7 +972,7 @@ class GoatWindow(QWidget):
         foot_row.setContentsMargins(34, 4, 34, 18)
         foot_row.addWidget(self.footer)
         foot_row.addStretch(1)
-        hint = QLabel("ctrl+k type · ctrl+, settings · ctrl+t theme · ctrl+o file · f11 screen")
+        hint = QLabel("esc quiets voice · ctrl+m mic · ctrl+k type · ctrl+n new chat · ctrl+, settings")
         hint.setObjectName("footer")
         foot_row.addWidget(hint)
         lay.addLayout(foot_row)
@@ -751,6 +985,13 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+T"), self, self.cycle_theme)
         QShortcut(QKeySequence("Ctrl+,"), self, self.toggle_settings)
         QShortcut(QKeySequence("Ctrl+O"), self, self._pick_files)
+        QShortcut(QKeySequence("Ctrl+M"), self, self.toggle_mic)
+        QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
+        # Manual work dispatch: Ctrl+Enter → working brain, +Shift → hard.
+        QShortcut(QKeySequence("Ctrl+Return"), self, lambda: self._submit_work(False))
+        QShortcut(QKeySequence("Ctrl+Enter"), self, lambda: self._submit_work(False))
+        QShortcut(QKeySequence("Ctrl+Shift+Return"), self, lambda: self._submit_work(True))
+        QShortcut(QKeySequence("Ctrl+Shift+Enter"), self, lambda: self._submit_work(True))
 
         self.panel = SettingsPanel(self)
         self.apply_theme(self._theme_name)
@@ -772,8 +1013,26 @@ class GoatWindow(QWidget):
         elif self.input.hasFocus():
             self.input.clear()
             self.input.clearFocus()
+        elif self.goat and self.goat.tts.speaking():
+            # Keyboard barge-in: esc shuts GOAT up mid-sentence (voice
+            # barge-in already did this; mouse/keyboard users had no way).
+            self.goat.tts.cancel()
+            self._on_event("status", "quieted")
         elif self.isFullScreen():
             self.showNormal()
+
+    def toggle_mic(self):
+        """Titlebar mic button / ctrl+m — same switch the drawer exposes."""
+        if not self.goat:
+            return
+        self.set_mic_opt("live" if self.goat.mic_muted else "muted")
+
+    def _refresh_mic_btn(self):
+        muted = bool(self.goat and self.goat.mic_muted)
+        self.mic_btn.setText("muted" if muted else "mic")
+        self.mic_btn.setProperty("muted", "true" if muted else "false")
+        self.mic_btn.style().unpolish(self.mic_btn)
+        self.mic_btn.style().polish(self.mic_btn)
 
     # ---- theme / appearance ----
     def apply_theme(self, name: str):
@@ -788,6 +1047,8 @@ class GoatWindow(QWidget):
         self.canvas.set_theme(t)
         self.string.set_theme(t)
         self.fade.set_theme(t)
+        if hasattr(self, "work_panel"):
+            self.work_panel.set_theme(t)
         self.theme_btn.setText(name)
         self.panel.set_theme(t)
         self.panel.refresh()
@@ -829,6 +1090,7 @@ class GoatWindow(QWidget):
         super().resizeEvent(ev)
         if self.panel.isVisible():
             self._place_panel()
+        self._debounce_geom_save()
 
     def _save(self):
         save_ui_config(self.cfg)
@@ -910,12 +1172,25 @@ class GoatWindow(QWidget):
             self.goat.mic_muted = opt == "muted"
             self._on_event("status", "mic muted" if self.goat.mic_muted
                            else "listening")
+        self._refresh_mic_btn()
         self._save()
 
-    def set_brain_opt(self, mode: str):
-        self.cfg["brain"] = mode if mode in BRAINS else "auto"
+    def set_talk_opt(self, name: str):
+        self.cfg["talk_brain"] = name if name in TALK_OPTS else "gemini flash"
         if self.goat:
-            self.goat.set_brain(self.cfg["brain"])
+            self.goat.set_talk_brain(self.cfg["talk_brain"])
+        self._save()
+
+    def set_work_opt(self, name: str):
+        self.cfg["work_model"] = name if name in WORK_OPTS else "fable 5"
+        if self.goat:
+            self.goat.set_work_model(self.cfg["work_model"])
+        self._save()
+
+    def set_hard_opt(self, name: str):
+        self.cfg["hard_model"] = name if name in WORK_OPTS else "fable 5"
+        if self.goat:
+            self.goat.set_hard_model(self.cfg["hard_model"])
         self._save()
 
     def set_lang_opt(self, label: str):
@@ -959,7 +1234,9 @@ class GoatWindow(QWidget):
         # Before the engine thread starts: run() applies voice + hearing
         # model + persona note itself from this attribute.
         goat.language = self.cfg["lang"]
-        goat.brain_mode = self.cfg.get("brain", "auto")
+        goat.talk_brain = self.cfg.get("talk_brain", "gemini flash")
+        goat.work_model = self.cfg.get("work_model", "fable 5")
+        goat.hard_model = self.cfg.get("hard_model", "fable 5")
         self.panel.refresh()
 
     # ---- session actions ----
@@ -979,6 +1256,9 @@ class GoatWindow(QWidget):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
     def mousePressEvent(self, ev):
+        # Fallback drag only — on Windows the native hit-test below turns the
+        # titlebar into a real caption (OS handles move, Aero Snap, double-
+        # click maximize), so this rarely fires. Kept for safety / non-Windows.
         if (ev.button() == Qt.LeftButton and not self.isFullScreen()
                 and ev.position().y() < self._titlebar_h):
             self._drag = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -989,6 +1269,113 @@ class GoatWindow(QWidget):
 
     def mouseReleaseEvent(self, _ev):
         self._drag = None
+
+    # ---- native window behavior (resize borders + Aero Snap) ----
+    # Frameless windows lose everything the OS normally gives a title bar:
+    # edge/corner resize, snap-to-half, snap layouts, double-click maximize,
+    # shake-to-minimize. WM_NCHITTEST hands those back — we just tell Windows
+    # which part of the window each pixel belongs to (2026-07-12: "window
+    # behaves weirdly"). Any failure falls through to Qt's default + the
+    # manual drag above, so this can never brick the window.
+    _BORDER = 7  # px grab band on each edge
+
+    def _hit_test(self, p: QPoint):
+        w, h, b = self.width(), self.height(), self._BORDER
+        x, y = p.x(), p.y()
+        left, right = x < b, x >= w - b
+        top, bottom = y < b, y >= h - b
+        if not self.isMaximized() and not self.isFullScreen():
+            if top and left:
+                return 13     # HTTOPLEFT
+            if top and right:
+                return 14     # HTTOPRIGHT
+            if bottom and left:
+                return 16     # HTBOTTOMLEFT
+            if bottom and right:
+                return 17     # HTBOTTOMRIGHT
+            if left:
+                return 10     # HTLEFT
+            if right:
+                return 11     # HTRIGHT
+            if top:
+                return 12     # HTTOP
+            if bottom:
+                return 15     # HTBOTTOM
+        # Titlebar band, but let real buttons keep their clicks.
+        if y < self._titlebar_h:
+            child = self.childAt(p)
+            if not isinstance(child, (QPushButton, QLineEdit)):
+                return 2      # HTCAPTION — drag/snap/double-click-maximize
+        return None           # HTCLIENT (default)
+
+    def nativeEvent(self, eventType, message):
+        if eventType == "windows_generic_MSG" and not self.isFullScreen():
+            try:
+                addr = int(message)
+                if not addr:
+                    return super().nativeEvent(eventType, message)
+                msg = ctypes.wintypes.MSG.from_address(addr)
+                if msg.message == 0x0084:  # WM_NCHITTEST
+                    gx = ctypes.c_short(msg.lParam & 0xFFFF).value
+                    gy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                    # WM_NCHITTEST coords are PHYSICAL screen pixels; Qt
+                    # widgets speak LOGICAL (DPI-scaled) ones. At 125% display
+                    # scale mapFromGlobal() here was off by 25%, so interior
+                    # clicks hit-tested as caption/resize and windowed mode
+                    # felt completely click-dead (fullscreen skips this
+                    # handler, which is why it still worked). Convert against
+                    # the native window rect — physical like the message.
+                    rect = ctypes.wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(
+                        int(self.winId()), ctypes.byref(rect))
+                    dpr = self.devicePixelRatioF() or 1.0
+                    p = QPoint(int((gx - rect.left) / dpr),
+                               int((gy - rect.top) / dpr))
+                    code = self._hit_test(p)
+                    if code is not None:
+                        return True, code
+            except Exception:  # noqa: BLE001 — never let hit-testing crash the UI
+                pass
+        return super().nativeEvent(eventType, message)
+
+    # ---- remembered window box ----
+    def _restore_geometry(self):
+        geom = self.cfg.get("geom")
+        if (isinstance(geom, (list, tuple)) and len(geom) == 4
+                and all(isinstance(n, (int, float)) for n in geom)):
+            x, y, w, h = (int(n) for n in geom)
+            w, h = max(720, w), max(520, h)
+            # Clamp onto a currently-connected screen so a remembered box from
+            # an unplugged monitor can't strand GOAT off-screen.
+            area = self.screen().availableGeometry() if self.screen() else None
+            if area:
+                x = min(max(x, area.left()), area.right() - 120)
+                y = min(max(y, area.top()), area.bottom() - 80)
+                w = min(w, area.width())
+                h = min(h, area.height())
+            self.setGeometry(x, y, w, h)
+        else:
+            self.resize(1100, 800)
+
+    def _save_geometry(self):
+        if self.isMaximized() or self.isFullScreen() or self.isMinimized():
+            return  # only remember the normal floating box
+        g = self.geometry()
+        self.cfg["geom"] = [g.x(), g.y(), g.width(), g.height()]
+        save_ui_config(self.cfg)
+
+    def moveEvent(self, ev):
+        super().moveEvent(ev)
+        self._debounce_geom_save()
+
+    def _debounce_geom_save(self):
+        # Coalesce the flood of move/resize events into one save shortly after
+        # motion stops — no disk write per pixel.
+        if not hasattr(self, "_geom_timer"):
+            self._geom_timer = QTimer(self)
+            self._geom_timer.setSingleShot(True)
+            self._geom_timer.timeout.connect(self._save_geometry)
+        self._geom_timer.start(600)
 
     # ---- attachments: drop / pick / paste ----
     def dragEnterEvent(self, ev):
@@ -1045,9 +1432,17 @@ class GoatWindow(QWidget):
             self._statew = state
             self.stateword.setText(state)
         up = int(time.time() - self._t0)
-        usage = f" · {self._usage}" if self._usage else ""
         mic = "mic muted" if (self.goat and self.goat.mic_muted) else "mic live"
-        self.footer.setText(f"{self._model} · {mic} · {up // 60:02d}:{up % 60:02d}{usage}")
+        # Claude usage meter: OUT (+reset) when spent, else session tokens.
+        if self._claude_out:
+            claude = " · claude OUT" + (
+                f" · resets {self._claude_reset}" if self._claude_reset else "")
+        elif self._usage:
+            claude = f" · claude {self._usage}"
+        else:
+            claude = ""
+        self.footer.setText(
+            f"talk {self._model} · {mic} · {up // 60:02d}:{up % 60:02d}{claude}")
         self.clock.setText(time.strftime("%H:%M"))
         # Keep the fade lip glued across resizes (33ms — geometry set is cheap).
         if self.fade.width() != self.scroll.width():
@@ -1061,6 +1456,14 @@ class GoatWindow(QWidget):
         text = self.input.text().strip()
         if text and self.on_submit:
             self.on_submit(text)
+            self.input.clear()
+
+    def _submit_work(self, hard: bool = False):
+        """Dispatch the typed order to the working brain (left lane), or the
+        hard-task brain when hard=True."""
+        text = self.input.text().strip()
+        if text and self.on_work:
+            self.on_work(text, hard)
             self.input.clear()
 
     # ---- the page ----
@@ -1148,8 +1551,19 @@ class GoatWindow(QWidget):
             self._statew = data.lower()
             self.stateword.setText(self._statew)
             self._status_hold = time.time() + 4.0
+        elif kind == "talkmodel":
+            self._model = data  # talking brain = the footer's live model
         elif kind == "model":
-            self._model = data  # the engine sends the display name
+            self._work_model = data  # working brain (left panel)
+            self.work_panel.set_model(data)
+        elif kind == "claude":
+            # Claude usage meter: "ok" or "out|HH:MM".
+            if data == "ok":
+                self._claude_out = False
+            elif data.startswith("out"):
+                self._claude_out = True
+                _, _, reset = data.partition("|")
+                self._claude_reset = reset.strip()
         elif kind == "ui_scale":
             # GOAT resizing its own interface (voice/typed request routed
             # through the engine). Payload: "<factor>" absolute, or "*<factor>"
@@ -1202,6 +1616,22 @@ class GoatWindow(QWidget):
             # Keep _reply_label — the whole turn reveals into ONE label
             # (spoken_text() is cumulative; a second label would duplicate).
             self._add_line(f"·  {data.lower()}", "toolLine")
+        elif kind == "work_start":
+            # Left lane: a work turn began — "<model>|<task>".
+            model, _, task = data.partition("|")
+            self.work_panel.start(model.strip(), task)
+        elif kind == "work_tool" or kind == "work_step":
+            self.work_panel.step(data)
+        elif kind == "work_text":
+            self.work_panel.text(data)
+        elif kind == "work_add":
+            self.work_panel.add(data)
+        elif kind == "work_files":
+            self.work_panel.files(data.split("\n"))
+        elif kind == "work_done":
+            self.work_panel.done()
+        elif kind == "work_fail":
+            self.work_panel.fail(data)
         elif kind == "turn_done":
             # Do NOT drop _reply_label here: the model finishes generating
             # seconds before the voice finishes speaking (often before it
@@ -1212,9 +1642,6 @@ class GoatWindow(QWidget):
 
 
 def main():
-    # Import here so a Qt-less headless run of goat_app.py never pays for it.
-    from goat_app import GoatApp
-
     # Own taskbar identity (otherwise Windows groups us under "Python").
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KingKaglu.GOAT")
@@ -1228,33 +1655,72 @@ def main():
         app.setWindowIcon(QIcon(ICON))
     win = GoatWindow()
 
-    goat = GoatApp(emit=win.post_event)
-    win.on_submit = goat.submit_text
-    win.on_files = goat.submit_files
-    win.bind_engine(goat)
+    # Boot latency (2026-07-15, "it needs so much time to turn on"): the
+    # goat_app import drags torch in via silero-vad — seconds even warm,
+    # much longer on a cold disk cache — and used to run BEFORE the window
+    # existed, so launching looked like nothing was happening. Paint the
+    # window immediately, import the engine on a side thread, bind it on
+    # the main thread the moment the import lands.
+    win.showFullScreen()
+    win.string.ignite()  # boot ritual: the light travels down the string
 
-    def engine():
-        import asyncio
-        import traceback
+    holder: dict = {}
+
+    def _import_engine():
         try:
-            asyncio.run(goat.run())
+            from goat_app import GoatApp
+            holder["cls"] = GoatApp
         except Exception:  # noqa: BLE001 — surface it, don't die silently
+            import traceback
             traceback.print_exc()
-            win.post_event("status", "engine crashed — check python\\goat-app.log")
-        else:
-            win.post_event("status", "engine stopped")
+    imp = threading.Thread(target=_import_engine, daemon=True)
+    imp.start()
 
-    t = threading.Thread(target=engine, daemon=True)
-    t.start()
+    def _bind_when_ready():
+        if imp.is_alive():
+            QTimer.singleShot(50, _bind_when_ready)
+            return
+        if "cls" not in holder:
+            win.post_event(
+                "status", "engine import failed — check python\\goat-app.log")
+            return
+        goat = holder["cls"](emit=win.post_event)
+        holder["goat"] = goat
+        win.on_submit = goat.submit_text
+        win.on_work = goat.submit_work
+        win.on_files = goat.submit_files
+        win.bind_engine(goat)
+
+        def engine():
+            import asyncio
+            import traceback
+            try:
+                asyncio.run(goat.run())
+            except Exception:  # noqa: BLE001 — surface it, don't die silently
+                traceback.print_exc()
+                win.post_event(
+                    "status", "engine crashed — check python\\goat-app.log")
+            else:
+                win.post_event("status", "engine stopped")
+
+        threading.Thread(target=engine, daemon=True).start()
+    QTimer.singleShot(50, _bind_when_ready)
 
     timer = QTimer()
     def tick():
+        goat = holder.get("goat")
+        if goat is None:
+            win.hud_tick(0.2, "booting", False)
+            return
         if goat.audio.is_tts_playing:
             state = "speaking"
             level = goat.audio.out_level * 6
-        elif goat.busy:
-            state = "thinking"
+        elif getattr(goat, "talk_busy", False):
+            state = "thinking"       # talking brain composing (middle)
             level = 0.25
+        elif goat.busy:
+            state = "working"        # working brain building (left), silent
+            level = 0.2
         else:
             level = (goat.audio._raw_rms_ema or 0.0) * 12
             state = "listening" if level > 0.35 else "idle"
@@ -1263,10 +1729,9 @@ def main():
     timer.timeout.connect(tick)
     timer.start(33)
 
-    win.showFullScreen()
-    win.string.ignite()  # boot ritual: the light travels down the string
     code = app.exec()
-    goat.shutdown_audio()
+    if holder.get("goat"):
+        holder["goat"].shutdown_audio()
     os._exit(code)  # asyncio daemon thread has no clean cross-thread stop
 
 

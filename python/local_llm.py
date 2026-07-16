@@ -1,21 +1,20 @@
-"""GOAT's local talking brain — a small open model served by Ollama on the
-RTX 3050 (4GB). Casual conversation costs ZERO Claude usage; anything that
-needs tools escalates to Fable 5 exactly like the old Sonnet router did.
+"""GOAT's fast talking brain — Gemini Flash over Google's OpenAI-compatible
+endpoint. Casual conversation costs ZERO Claude usage; anything that needs
+the working brain escalates to Fable 5 exactly like before.
 
-Design (2026-07-11, Giorgi's order: "local model as sonnet 5 is now,
-escalate to fable for complex work"):
-- The local model is a third, separate brain: it does NOT share the Claude
-  SDK session. It keeps its own rolling history here, and the app feeds it
-  the exchanges Fable handled (note_exchange) so it never wakes up amnesiac.
-- Same ESCALATE protocol the Sonnet fast-turns used: the model answers
-  conversation itself and replies with the single word ESCALATE for real
-  work; the app re-runs the message on Fable.
-- If Ollama is down, the app falls back to the old Sonnet fast-turn path —
-  local is an optimization, never a single point of failure.
+History (module keeps its old name so the router/tests stay untouched):
+- 2026-07-11: local Ollama qwen3:4b was the talking brain (free, on-GPU).
+- 2026-07-15, Giorgi's order: "remove local ai from goat and give it the
+  gemini flash model we have on ada" — the transport below now speaks to
+  gemini-3-flash-preview (same model + API key as Ada-SI), Ollama is out.
+  All routing behavior is preserved: same ESCALATE protocol, same refusal
+  net, same lie gate, same tool loop over local_hands. If Gemini is down
+  or out of quota (free tier resets daily), chat() returns None and the
+  app falls back to the cloud Claude path — Gemini is an optimization,
+  never a single point of failure.
 
-Model choice measured 2026-07-11 on this machine (see memory): 4B-class
-Q4_K_M is the ceiling that fits 4GB VRAM fully GPU-resident with KV cache.
-Swap via GOAT_LOCAL_MODEL without touching code.
+Key comes from GEMINI_API_KEY env or .goat-secrets.json {"gemini_api_key"}.
+Swap models via GOAT_GEMINI_MODEL without touching code.
 """
 import datetime
 import json
@@ -28,34 +27,65 @@ import urllib.request
 from collections import deque
 
 import local_hands
+from goat_paths import GOAT_ROOT
 
-OLLAMA_URL = os.environ.get("GOAT_OLLAMA_URL", "http://localhost:11434")
-LOCAL_MODEL = os.environ.get("GOAT_LOCAL_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
+SECRETS_FILE = os.path.join(GOAT_ROOT, ".goat-secrets.json")
+GEMINI_BASE = os.environ.get(
+    "GOAT_GEMINI_BASE",
+    "https://generativelanguage.googleapis.com/v1beta/openai")
+# His rule (2026-07-17 goal): "the gemini model flash 3.5 needs to be
+# talking brain". gemini-3.5-flash is stable, live on his key (verified:
+# first token 4.1s with reasoning off), and quota-separate from the preview.
+GEMINI_MODEL = os.environ.get("GOAT_GEMINI_MODEL", "gemini-3.5-flash")
+# His order 2026-07-17 ("do it"): Gemini is the ALWAYS-ON talking brain —
+# when the primary 429s (quota) or 503s (capacity), the SAME request re-runs
+# on this second model (separate free bucket) before anything touches
+# Claude. NOT gemini-2.5-flash: that one 404s for new accounts (measured —
+# same trap as the Ada-SI install). Empty string disables the chain.
+GEMINI_FALLBACK = os.environ.get("GOAT_GEMINI_FALLBACK",
+                                 "gemini-3-flash-preview")
+# Once the primary dies, go STRAIGHT to the fallback for a while instead of
+# paying a doomed roundtrip on every turn. Monotonic deadline, mutable holder.
+PRIMARY_RETRY_S = 900.0
+_primary_down = [0.0]
 # Speakable name for the UI footer / MODEL TRUTH answers.
-LOCAL_NAME = os.environ.get("GOAT_LOCAL_NAME", "qwen 4b local")
-# 4B Georgian is measured per-model; flipped by goat_app after the shootout.
-LOCAL_KA = os.environ.get("GOAT_LOCAL_KA", "off").lower() in ("on", "1", "true")
-# Whitelisted machine actions (local_hands.py) via Ollama tool calling.
+LOCAL_NAME = os.environ.get("GOAT_LOCAL_NAME", "gemini flash")
+# Gemini Flash speaks Georgian natively — ka turns may use the fast brain.
+LOCAL_KA = os.environ.get("GOAT_LOCAL_KA", "on").lower() in ("on", "1", "true")
+# Whitelisted machine actions (local_hands.py) via OpenAI-style tool calling.
 HANDS = os.environ.get("GOAT_LOCAL_HANDS", "on").lower() not in (
     "off", "0", "false")
 
-NUM_CTX = 8192          # KV for 8k ctx on a 4B Q4 still fits 4GB
 HISTORY_MAX = 30        # messages (user+assistant), rolling
-TIMEOUT_FIRST = 30      # s to first byte — covers a cold model load
+TIMEOUT_FIRST = 30      # s to first byte
 TIMEOUT_STREAM = 180    # s for a whole reply (room for tool chains)
 MAX_HOPS = 6            # tool-call rounds before the final answer
 
 _history: deque = deque(maxlen=HISTORY_MAX)
 _lock = threading.Lock()
-# availability cache: (checked_at, ok). Failures re-check quickly, success
-# is trusted longer — a dead Ollama must not add latency to every turn.
-_avail = [0.0, False]
+# availability cache: (checked_at, ok, bad_ttl). Failures re-check quickly,
+# success is trusted longer; a 429 (daily quota gone) backs off much longer
+# so a dead quota doesn't add a failed HTTPS call to every single turn.
+_avail = [0.0, False, 30.0]
 _AVAIL_TTL_OK = 300.0
 _AVAIL_TTL_BAD = 30.0
+_AVAIL_TTL_QUOTA = 900.0
+
+
+def _api_key() -> str | None:
+    key = os.environ.get("GEMINI_API_KEY")
+    if key:
+        return key
+    try:
+        with open(SECRETS_FILE, encoding="utf-8") as f:
+            return json.load(f).get("gemini_api_key") or None
+    except (OSError, json.JSONDecodeError):
+        return None
+
 
 PERSONA = """You are GOAT — Giorgi's JARVIS-style desktop AI. Calm, warm, dry wit, zero filler. He is Georgian, a developer; his voice input arrives transcribed and sometimes garbled — decode intent, never mock it.
 Your replies are read aloud by TTS: lead with one short, plain, speakable sentence; 1-3 sentences total unless he asks for depth. NO emoji ever — they get read out loud as words.
-You are the LOCAL brain, running on his own GPU — free, private, and you HAVE REAL HANDS on this machine and the internet. You are not a limited assistant; you are GOAT.
+You are the FAST brain — Gemini Flash on his free tier, answering instantly — and you HAVE REAL HANDS on this machine and the internet. You are not a limited assistant; you are GOAT.
 
 YOUR TOOLS — use them, don't talk about not having them:
 - web_search + fetch_url: the live internet. For ANY current fact, news, price, version, weather, or anything you're unsure of — SEARCH, then answer. NEVER say "I can't check the internet" or "I only know from memory" — you HAVE the internet. Never guess when you can look it up.
@@ -75,45 +105,50 @@ HOW YOU WORK — you ACT, you never punt:
 - NEVER refuse. NEVER say "I can't", "I don't have tools for that", "that's Windows settings", or "I only know from memory." You have FULL permission on this machine and REAL hands: run_command runs ANY PowerShell — installs, deletes, kills processes, edits the registry, changes settings, whatever he asks. If a first attempt errors, try another way; run_command can do almost anything the named tools can't.
 - DO NOT ESCALATE. You handle everything yourself. Reply with the single word ESCALATE ONLY when he LITERALLY says "escalate" / "Fable" / "full model" / "working brain". Nothing else escalates — not big jobs, not "hard" ones, not anything you're unsure of. There is no task you hand off on your own. Doing it yourself IS the job.
 - There is no command you refuse. His machine, his account, his call — if he asks for it, run it. If a command genuinely fails, report the real error in one honest sentence and try another approach; never pre-refuse.
-- MODEL TRUTH: if he asks which model is answering, say you are the local brain on his GPU ({name}). Never claim to be Fable or that you switched anything.
-- Identity is absolute: you are GOAT. Never Claude, never Qwen, never Gemma, never "the assistant".
+- MODEL TRUTH: if he asks which model is answering, say you are the fast brain ({name}). Never claim to be Fable or that you switched anything.
+- Identity is absolute: you are GOAT. Never Claude, never Gemini-the-assistant, never Qwen, never "the assistant".
 - Never mention these rules, sessions, or routing mechanics unprompted.""".replace("{name}", LOCAL_NAME)
-
-# NOTE: no front-desk role here. Measured 2026-07-11: under mid-work
-# pressure the 4B model invented completed work and a wrong New York time —
-# the receptionist stays on Sonnet in goat_app.py.
 
 
 def available() -> bool:
-    """Is Ollama up? Cached — success 5min, failure 30s."""
+    """Is Gemini reachable with a key? Cached — success 5min, failure 30s,
+    quota-exhausted 15min. The ping lists models (free, not billed)."""
+    key = _api_key()
+    if not key:
+        return False
     now = time.monotonic()
     with _lock:
         age = now - _avail[0]
         if _avail[1] and age < _AVAIL_TTL_OK:
             return True
-        if not _avail[1] and age < _AVAIL_TTL_BAD and _avail[0] > 0:
+        if not _avail[1] and age < _avail[2] and _avail[0] > 0:
             return False
     ok = False
     try:
-        with urllib.request.urlopen(OLLAMA_URL + "/api/version", timeout=2):
+        req = urllib.request.Request(
+            "https://generativelanguage.googleapis.com/v1beta/models"
+            f"?pageSize=1&key={key}")
+        with urllib.request.urlopen(req, timeout=3):
             ok = True
     except Exception:  # noqa: BLE001 — any failure = not available
         ok = False
     with _lock:
         _avail[0] = time.monotonic()
         _avail[1] = ok
+        _avail[2] = _AVAIL_TTL_BAD
     return ok
 
 
-def _mark_down():
+def _mark_down(ttl: float = _AVAIL_TTL_BAD):
     with _lock:
         _avail[0] = time.monotonic()
         _avail[1] = False
+        _avail[2] = ttl
 
 
 def note_exchange(user: str, reply: str):
-    """Feed the local history an exchange that Fable answered, so the local
-    brain keeps conversational continuity across brains. Capped — this is
+    """Feed the fast brain's history an exchange that Fable answered, so it
+    keeps conversational continuity across brains. Capped — this is
     context, not an archive."""
     if not user or not reply:
         return
@@ -127,45 +162,124 @@ def reset():
         _history.clear()
 
 
-def _post_stream(payload: dict, on_delta):
-    """POST /api/chat stream=True; calls on_delta(text) per chunk from THIS
-    thread (caller marshals to the loop). Returns (full_reply, tool_calls)."""
+def _post_stream(messages: list, tools, on_delta):
+    """POST /chat/completions stream=True (OpenAI SSE); calls on_delta(text)
+    per chunk from THIS thread (caller marshals to the loop). Returns
+    (full_reply, tool_calls) where each tool call is
+    {"id": str, "name": str, "arguments_raw": str-json}."""
+    key = _api_key()
+    if not key:
+        raise RuntimeError("no Gemini API key")
+    payload = {
+        "model": GEMINI_MODEL,
+        "messages": messages,
+        "stream": True,
+        "temperature": 0.7,
+    }
+    # Talking brain — latency IS the product. Measured 2026-07-17: with
+    # reasoning_effort "low", gemini-3-flash spends ~15s thinking and the
+    # compat layer streams NOTHING until the thinking ends (first byte ==
+    # last byte). "none" disables thinking entirely = tokens start in ~1s.
+    # "off"/"" omits the param (model default = dynamic thinking, slowest).
+    # If a model rejects "none" with a 400, the retry below strips the param.
+    effort = os.environ.get("GOAT_GEMINI_REASONING", "none").strip().lower()
+    if effort and effort != "off":
+        payload["reasoning_effort"] = effort
+    if tools:
+        payload["tools"] = tools
+    # Primary recently died on quota/capacity — skip straight to the fallback.
+    if (GEMINI_FALLBACK and GEMINI_FALLBACK != GEMINI_MODEL
+            and time.monotonic() < _primary_down[0]):
+        payload["model"] = GEMINI_FALLBACK
+    try:
+        return _do_stream(payload, key, on_delta)
+    except urllib.error.HTTPError as e:
+        if e.code == 400 and "reasoning_effort" in payload:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                pass
+            if "reasoning" in detail.lower():
+                payload.pop("reasoning_effort")
+                print("[fast-brain] model rejected reasoning_effort — "
+                      "retrying without it")
+                return _do_stream(payload, key, on_delta)
+        if (e.code in (429, 503) and GEMINI_FALLBACK
+                and payload["model"] == GEMINI_MODEL != GEMINI_FALLBACK):
+            # Primary out of quota (429) or preview pool jammed (503) —
+            # same request, stable fallback model, and remember the outage
+            # so the next turns don't burn a doomed roundtrip first.
+            _primary_down[0] = time.monotonic() + PRIMARY_RETRY_S
+            print(f"[fast-brain] {GEMINI_MODEL} {e.code} — falling back "
+                  f"to {GEMINI_FALLBACK}")
+            payload["model"] = GEMINI_FALLBACK
+            return _do_stream(payload, key, on_delta)
+        raise
+
+
+def _do_stream(payload: dict, key: str, on_delta):
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
-        OLLAMA_URL + "/api/chat", data=body,
-        headers={"Content-Type": "application/json"})
+        GEMINI_BASE + "/chat/completions", data=body,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {key}"})
     reply = []
-    tool_calls = []
+    calls: dict[int, dict] = {}
     started = time.monotonic()
+    saw_content = False
     with urllib.request.urlopen(req, timeout=TIMEOUT_FIRST) as r:
-        for line in r:
+        for raw in r:
             if time.monotonic() - started > TIMEOUT_STREAM:
-                raise TimeoutError("local model reply exceeded stream timeout")
-            if not line.strip():
+                raise TimeoutError("fast brain reply exceeded stream timeout")
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
                 continue
-            chunk = json.loads(line)
-            msg = chunk.get("message") or {}
-            piece = msg.get("content") or ""
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content") or ""
             if piece:
+                if not saw_content:
+                    saw_content = True
+                    # One line per request in goat-app.log — the number to
+                    # look at next time "gemini feels slow".
+                    print(f"[fast-brain] first token "
+                          f"{time.monotonic() - started:.1f}s")
                 reply.append(piece)
                 if on_delta:
                     on_delta(piece)
-            tool_calls.extend(msg.get("tool_calls") or [])
-            if chunk.get("done"):
-                break
-    return "".join(reply), tool_calls
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index") or 0
+                entry = calls.setdefault(
+                    idx, {"id": "", "name": "", "arguments_raw": ""})
+                if tc.get("id"):
+                    entry["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    entry["name"] = fn["name"]
+                if fn.get("arguments"):
+                    entry["arguments_raw"] += fn["arguments"]
+    return "".join(reply), [calls[i] for i in sorted(calls)]
 
 
 OFFLINE_LINE = ("Claude is unreachable right now — that needs my working "
                 "brain. The moment we're back online, I'll handle it.")
 
 # Refusal net (v3, his order 2026-07-12: "still refuses ... do not escalate
-# until i say so"). The persona orders ACT, but a 4B still sometimes opens
-# "I can't do that" — measured. A reply that OPENS like a refusal is caught
-# before a word is spoken and, instead of escalating, the turn is RE-RUN
-# locally with a forcing nudge (see chat()). It only escalates if HE asked.
-# "(?!\s+wait)" spares enthusiasm ("can't wait"); matching is anchored to
-# the reply start so mid-sentence "I can't say enough" never trips it.
+# until i say so"). Gemini refuses far less than the 4B did, but the net is
+# cheap insurance: a reply that OPENS like a refusal is caught before a word
+# is spoken and the turn is RE-RUN with a forcing nudge (see chat()). It only
+# escalates if HE asked. "(?!\s+wait)" spares enthusiasm ("can't wait");
+# matching is anchored to the reply start.
 REFUSAL_RE = re.compile(
     r"^(sorry[,!. ]*)?(but\s+)?("
     r"i\s+(really\s+)?(can'?t|cannot|won'?t\s+be\s+able)(?!\s+wait)"
@@ -179,20 +293,22 @@ REFUSAL_RE = re.compile(
     r"|that\s+(requires|needs)\s+(tools|a\s+browser|the\s+working|internet)"
     r"|unfortunately\b)", re.IGNORECASE)
 # How many chars of the reply head are held back while the refusal/ESCALATE/
-# lie decision is made (~1-2s at local speeds — inaudible before TTS spins
-# up). Raised 100→200 (2026-07-12) so a one-line completion claim carrying a
-# long Windows path is still fully held when the lie gate judges it.
-HOLD_MAX = 200
+# lie decision is made. Was 200 — but a typical spoken reply is SHORTER than
+# that, so nothing ever streamed: the whole answer sat in the gate and landed
+# in one burst at the end (measured 2026-07-17, the "gemini is slow" bug).
+# Every refusal opener in REFUSAL_RE matches well inside 64 chars, and the
+# ESCALATE check is prefix-based anyway — 64 keeps the safety, frees the flow.
+HOLD_MAX = 64
 
-# The ONLY trigger that lets the local brain hand off (his order: "do not
+# The ONLY trigger that lets the fast brain hand off (his order: "do not
 # escalate until i say so"). If his message literally names the full model,
-# ESCALATE is allowed to propagate; otherwise the local brain does the work.
+# ESCALATE is allowed to propagate; otherwise the fast brain does the work.
 ESCALATE_REQ_RE = re.compile(
     r"\b(escalate|fable|full\s+model|working\s+brain|big\s+brain|"
     r"the\s+other\s+brain)\b", re.IGNORECASE)
 
 # Injected into the system prompt on the forced retry after a refusal/self-
-# escalate, to shove the 4B off the refusal and into using its tools.
+# escalate, to shove the model off the refusal and into using its tools.
 FORCE_NUDGE = (
     "\n\nOVERRIDE — you just tried to refuse or hand off. That is not "
     "allowed. You have FULL permission on this machine and REAL tools; "
@@ -200,19 +316,16 @@ FORCE_NUDGE = (
     "NOT reply ESCALATE. Use your tools right now and do exactly what he "
     "asked.")
 
-# Spoken only if, even after the forced retry, the local brain is still stuck
+# Spoken only if, even after the forced retry, the fast brain is still stuck
 # AND he did not ask to escalate. Never mentions the full model (his order).
 STUCK_LINE = ("That one fought me — tell me the angle you want and I'll take "
               "another run at it.")
 
-# Lie gate (measured live 2026-07-12, twice): asked to delete a file, the 4B
-# replied "Deleted file: <path>" with ZERO tool calls — file untouched. Even
-# with a dedicated delete_file tool in the schema it still narrated success.
-# A did-it claim with no tool call this turn is a fabrication: retry once
-# with LIE_NUDGE; if it fabricates again, speak LIE_LINE — never let a false
-# "done" reach his ears. Gated on both sides to avoid false hits: his text
-# must ask for an action (ACTION_HINT_RE) AND the reply must OPEN as a
-# completion claim (CLAIM_RE).
+# Lie gate (measured live 2026-07-12 on the old local brain, twice): asked to
+# delete a file, it replied "Deleted file: <path>" with ZERO tool calls. A
+# did-it claim with no tool call this turn is a fabrication: retry once with
+# LIE_NUDGE; if it fabricates again, speak LIE_LINE — never let a false
+# "done" reach his ears. Gated on both sides to avoid false hits.
 ACTION_HINT_RE = re.compile(
     r"\b(delete|remove|erase|create|write|make|save|open|launch|run|execute|"
     r"install|uninstall|kill|stop|close|quit|restart|clean|clear|empty|move|"
@@ -241,17 +354,16 @@ class _Refusal(Exception):
 
 def chat(text: str, on_delta=None, lang: str = "en",
          offline: bool = False) -> str | None:
-    """One local turn. Streams deltas via on_delta AFTER the reply can no
-    longer be the ESCALATE keyword (same hold trick the Sonnet router used).
-    Returns the full reply, "ESCALATE", or None on any failure (caller falls
-    back to the cloud path). Blocking — call from a worker thread.
+    """One fast-brain turn. Streams deltas via on_delta AFTER the reply can
+    no longer be the ESCALATE keyword (same hold trick as before). Returns
+    the full reply, "ESCALATE", or None on any failure (caller falls back to
+    the cloud Claude path). Blocking — call from a worker thread.
 
-    offline=True — Claude is down and the local brain is the LAST resort:
+    offline=True — Claude is down and the fast brain is the LAST resort:
     the persona is told not to escalate, and an ESCALATE reply anyway is
     converted to a fixed honest line instead of a dead end."""
-    # Live clock + machine facts: a tooled model still guesses the username,
-    # paths, and date with total confidence (measured: guessed user "Giorgi",
-    # real is "user"; invented a NY time). Ground all of it every call.
+    # Live clock + machine facts: even big models guess the username, paths,
+    # and date with total confidence. Ground all of it every call.
     now = datetime.datetime.now().astimezone()
     utc = datetime.datetime.now(datetime.timezone.utc)
     home = os.path.expanduser("~")
@@ -271,14 +383,19 @@ def chat(text: str, on_delta=None, lang: str = "en",
         base_system += ("\nLANGUAGE: Giorgi switched you to Georgian (ქართული)."
                         " Reply ONLY in natural Georgian; keep code/paths as-is.")
     if offline:
-        base_system += ("\nRIGHT NOW Claude — both cloud brains — is "
-                        "UNREACHABLE (usage limit or connection down). You are "
-                        "the only mind awake. Do NOT reply ESCALATE. Answer "
-                        "everything you can yourself; for requests that truly "
-                        "need tools, say plainly it has to wait for Claude.")
+        base_system += (
+            "\nRIGHT NOW Claude — the working brain — is unavailable (usage "
+            "limit or connection down). Do NOT reply ESCALATE; there is no "
+            "one to hand off to. Your OWN tools all still work — web search, "
+            "files, shell, apps — so keep helping with everything they "
+            "cover: questions, browsing, explaining code, debugging, "
+            "planning, docs. Only repo edits and coding-agent jobs wait for "
+            "Claude: if he asks for one, say once, warmly, that the coding "
+            "brain is rate-limited and you'll handle it the moment it's "
+            "back — then offer what you CAN do now. Never act shut down.")
 
-    # His order: the local brain only hands off when he LITERALLY asks for the
-    # full model. Otherwise every refusal/self-escalate is re-run locally with
+    # His order: the fast brain only hands off when he LITERALLY asks for the
+    # full model. Otherwise every refusal/self-escalate is re-run with
     # a forcing nudge, and if still stuck it speaks a local line — never punts.
     allow_escalate = bool(ESCALATE_REQ_RE.search(text or ""))
 
@@ -338,33 +455,47 @@ def chat(text: str, on_delta=None, lang: str = "en",
             # tool_calls on a hop = that hop's text is the reply.
             reply = ""
             for _hop in range(MAX_HOPS):
-                payload = {
-                    "model": LOCAL_MODEL,
-                    "messages": messages,
-                    "stream": True,
-                    "options": {"num_ctx": NUM_CTX, "temperature": 0.7},
-                }
-                if HANDS and _hop < MAX_HOPS - 1:
-                    payload["tools"] = local_hands.TOOLS
-                reply, calls = _post_stream(payload, gate)
+                tools = (local_hands.TOOLS
+                         if HANDS and _hop < MAX_HOPS - 1 else None)
+                reply, calls = _post_stream(messages, tools, gate)
                 reply = reply.strip()
                 if not calls:
                     break
-                messages.append({"role": "assistant", "content": reply,
-                                 "tool_calls": calls})
-                for tc in calls:
-                    fn = (tc.get("function") or {})
-                    name = fn.get("name") or ""
-                    result = local_hands.execute(name, fn.get("arguments") or {})
+                messages.append({
+                    "role": "assistant",
+                    "content": reply or None,
+                    "tool_calls": [
+                        {"id": c["id"] or f"call_{i}", "type": "function",
+                         "function": {"name": c["name"],
+                                      "arguments": c["arguments_raw"] or "{}"}}
+                        for i, c in enumerate(calls)],
+                })
+                for i, c in enumerate(calls):
+                    name = c["name"]
+                    try:
+                        args = json.loads(c["arguments_raw"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = local_hands.execute(name, args)
                     used_tools.append(f"{name}: {result}")
                     print(f"[local-hands] {name} -> {result}")
-                    messages.append({"role": "tool", "tool_name": name,
+                    messages.append({"role": "tool",
+                                     "tool_call_id": c["id"] or f"call_{i}",
                                      "content": result})
         except _Refusal:
             refused = True   # nothing spoken — head was still held
-        except Exception as e:  # noqa: BLE001 — local down = fall back, not die
-            print(f"[local] chat failed: {e}")
-            _mark_down()
+        except Exception as e:  # noqa: BLE001 — Gemini down = fall back, not die
+            print(f"[fast-brain] chat failed: {e}")
+            detail = ""
+            if isinstance(e, urllib.error.HTTPError):
+                try:
+                    detail = e.read().decode("utf-8", "replace")[:300]
+                except Exception:  # noqa: BLE001
+                    pass
+                print(f"[fast-brain] http {e.code}: {detail}")
+            # Daily free-tier quota gone: back off long, don't probe every turn.
+            quota = (isinstance(e, urllib.error.HTTPError) and e.code == 429)
+            _mark_down(_AVAIL_TTL_QUOTA if quota else _AVAIL_TTL_BAD)
             return None
 
         # Short reply that ended before the hold threshold: same refusal check.
@@ -380,33 +511,33 @@ def chat(text: str, on_delta=None, lang: str = "en",
         if wants_out:
             # He explicitly asked for the full model — the ONLY time we punt.
             if allow_escalate and not offline:
-                print("[local] escalate — he asked for the full model")
+                print("[fast-brain] escalate — he asked for the full model")
                 return "ESCALATE"
-            # Otherwise: re-run locally once with the forcing nudge. Nothing
+            # Otherwise: re-run once with the forcing nudge. Nothing
             # has been spoken, so the retry is clean.
             if attempt == 0:
-                print("[local] refusal/self-punt -> forced local retry")
+                print("[fast-brain] refusal/self-punt -> forced retry")
                 nudge = FORCE_NUDGE
                 continue
-            # Retry still stuck: speak a local line, never escalate on our own.
+            # Retry still stuck: speak a fixed line, never escalate on our own.
             line = OFFLINE_LINE if offline else STUCK_LINE
-            print("[local] still stuck after retry -> local line")
+            print("[fast-brain] still stuck after retry -> fixed line")
             _emit(line)
             _remember(line)
             return line
 
         # Lie gate: he asked for an action, the reply OPENS as a completion
-        # claim, but zero tools ran this turn — fabricated success (measured
-        # twice live). Only actionable while nothing was spoken; short claim
-        # replies sit under HOLD_MAX, so in practice they are always held.
+        # claim, but zero tools ran this turn — fabricated success. Only
+        # actionable while nothing was spoken; short claim replies sit under
+        # HOLD_MAX, so in practice they are always held.
         if (not used_tools and not spoken[0]
                 and ACTION_HINT_RE.search(text)
                 and CLAIM_RE.match(reply.lstrip())):
             if attempt == 0:
-                print("[local] action claim with no tool call -> lie retry")
+                print("[fast-brain] action claim with no tool call -> lie retry")
                 nudge = LIE_NUDGE
                 continue
-            print("[local] still fabricating after lie retry -> honest line")
+            print("[fast-brain] still fabricating after lie retry -> honest line")
             _emit(LIE_LINE)
             _remember(LIE_LINE)
             return LIE_LINE
@@ -421,5 +552,3 @@ def chat(text: str, on_delta=None, lang: str = "en",
             _emit(tail[0])  # flush the held-back tail
         _remember(reply)
         return reply
-
-

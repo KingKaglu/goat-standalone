@@ -50,17 +50,32 @@ SESSION_FILE = os.path.join(GOAT_ROOT, ".goat-session-py")
 TRANSCRIPT_FILE = os.path.join(WORKSPACE, "transcript.jsonl")
 TRANSCRIPT_MAX = 400  # lines kept when the file is trimmed
 
-# ---- model router (Giorgi's usage-saver, same design as server.js) ----
-# Every fresh turn starts on the talking model; it answers conversation
-# itself and replies "ESCALATE" for real work, which re-runs the same
-# message on the full model. Fable 5 is the full brain — his explicit pick.
-# Talking model upgraded Haiku → Sonnet 5 (his order 2026-07-10: "haiku is
-# just dumb af and kept lying to me") — smart enough to hold the MODEL
-# TRUTH rule and real conversation, still far cheaper than Fable.
+# ---- manual brain roster (his order 2026-07-17: no auto-routing, no
+# escalation — Giorgi picks each brain by hand from the UI). Three roles,
+# each chosen independently, running concurrently:
+#   talking brain  — Gemini Flash (local_llm). Answers conversation in the
+#                    MIDDLE, out loud, for ZERO Claude usage, and stays up
+#                    even while a work task runs OR Claude's quota is gone.
+#   working brain  — a Claude model for normal work: tools, files, shell,
+#                    shown step-by-step on the LEFT, silent (no voice).
+#   hard brain     — a Claude model for heavy work; same left lane.
+# Nothing switches models on its own anymore — the roster below is the whole
+# of it, and the selected model is set on the work client per dispatch.
 MODEL_FULL = "claude-fable-5"
 MODEL_FAST = "claude-sonnet-5"
+MODEL_OPUS = "claude-opus-4-8"
 # What the footer shows. The UI displays these verbatim — keep them speakable.
-MODEL_NAMES = {MODEL_FULL: "fable 5", MODEL_FAST: "sonnet 5"}
+MODEL_NAMES = {MODEL_FULL: "fable 5", MODEL_FAST: "sonnet 5",
+               MODEL_OPUS: "opus 4.8"}
+# Selectable Claude models for the working / hard roles (display -> id).
+WORK_BRAINS = {"sonnet 5": MODEL_FAST, "fable 5": MODEL_FULL,
+               "opus 4.8": MODEL_OPUS}
+# Talking-brain choices. "gemini flash" = the local_llm transport (always
+# up, free); "sonnet 5" routes talk through a dedicated Claude talk client.
+TALK_BRAINS = {"gemini flash": "gemini", "sonnet 5": MODEL_FAST}
+DEFAULT_TALK = "gemini flash"
+DEFAULT_WORK = "fable 5"
+DEFAULT_HARD = "fable 5"
 
 # ---- token economy (2026-07-10, Giorgi: "GOAT burns way more than Claude
 # Code for the same work — fix it") ----
@@ -423,28 +438,56 @@ APPROVE_RE = re.compile(
 STOP_RE = re.compile(r"\b(stop|cancel|abort|hold on|never ?mind|forget it)\b",
                      re.IGNORECASE)
 
-# Front desk (Phase 3.5 receptionist, ported from Node 2026-07-10): a second
-# session on the talking brain that answers INSTANTLY while the working brain
-# is heads-down — JARVIS chats with Tony while the suit keeps printing.
-RECEP_PERSONA = """
-You are GOAT — Giorgi's JARVIS-style AI — keeping the conversation going while
-your working side is mid-task. Every message starts with a "[main-status]"
-line: what the work is and where it stands. Use it naturally ("the deploy's
-about two minutes out"), never read it aloud verbatim, and never mention
-"main brain", "receptionist", sessions, or models. You are ONE mind: GOAT.
-Rules:
-- 1-3 short spoken sentences, GOAT's voice: calm, warm, dry wit, no filler.
-- Answer instantly: status checks, small talk, opinions, general knowledge,
-  time, this conversation. His input is voice-transcribed and often garbled —
-  decode intent, never mock it.
-- You have NO tools here. Never claim you just checked/did something new —
-  everything you know comes from [main-status] and the conversation.
-- Reply with exactly the single word FORWARD when the message needs the
-  working side: new work orders, changing or extending the current task,
-  file/system/web actions, or anything you cannot answer truthfully
-  without tools. (Stop/cancel orders are handled before you — you won't
-  see them.)
-- Identity is absolute: you are GOAT. Never Claude, never "the assistant".
+# Manual voice/typed dispatch to the WORK lane: he ADDRESSES the working brain
+# by name at the start of the message ("Fable, build…", "working brain: …",
+# "hard brain …"). This is NOT escalation — nothing routes itself — it's the
+# spoken equivalent of pressing the work button, and only fires on an explicit
+# address so ordinary talk ("how does the working brain work?") is untouched.
+WORK_DISPATCH_RE = re.compile(
+    r"^\s*(hey\s+|ok\s+|okay\s+)?"
+    r"(fable|opus|the\s+working\s+brain|working\s+brain|work\s+brain|"
+    r"hard\s+brain|full\s+model)\b", re.IGNORECASE)
+# Which of those addresses means the HARD brain specifically.
+WORK_HARD_RE = re.compile(r"\b(hard|opus)\b", re.IGNORECASE)
+
+# Claude out-of-usage detection (widened 2026-07-17). The CLI's REAL wording
+# is "You've hit your session limit · resets 2:30am (Asia/Tbilisi)" — the old
+# check only knew "usage limit reached|<unix>" and let the raw text leak to
+# the left panel (his order: that must never reach him). Match every known
+# phrasing here; anything caught is replaced with GOAT's own friendly line.
+CLAUDE_LIMIT_RE = re.compile(
+    r"session\s+limit|usage\s+limit|rate\s+limit|weekly\s+limit|"
+    r"limit\s+reached|out\s+of\s+usage|quota|hit\s+your\s+.{0,20}limit",
+    re.IGNORECASE)
+# Human reset wording: "resets 2:30am", "resets at 6pm", "resets 14:00".
+CLAUDE_RESET_RE = re.compile(
+    r"resets?\s+(?:at\s+|around\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
+    re.IGNORECASE)
+
+
+def _describe_tool(block) -> str:
+    """One-line left-panel step from a tool use, e.g. 'edit — ui_qt.py'."""
+    name = getattr(block, "name", "tool")
+    inp = getattr(block, "input", None) or {}
+    path = inp.get("file_path") or inp.get("path")
+    if path:
+        return f"{name} — {os.path.basename(str(path))}"
+    for k in ("command", "pattern", "url", "query", "prompt"):
+        if inp.get(k):
+            return f"{name} — {str(inp[k])[:60]}"
+    return name
+
+# Talk-brain persona for the dedicated Claude talk client — used when he sets
+# the talking brain to Sonnet, or as the cover voice if Gemini is momentarily
+# unreachable. Conversation only; the work lane handles anything with tools.
+TALK_PERSONA = """
+You are GOAT — Giorgi's JARVIS-style AI, in a spoken conversation with him.
+Calm, warm, dry wit, no filler. 1-3 short speakable sentences unless he asks
+for depth. NO emoji — they get read aloud as words. His voice is transcribed
+and often garbled — decode intent, never mock it. You are ONE mind: GOAT,
+never Claude, never "the assistant". You are the talking side; a separate
+working side of you handles files, commands, and builds, so you never need
+tools here and never say you lack them — just talk with him.
 """.strip()
 
 
@@ -552,6 +595,13 @@ class TtsPipeline:
             self._segments.append([start, start + n_samples, text, epoch])
             self._queued_end = start + n_samples
 
+    def speaking(self) -> bool:
+        """Is voice audio still queued or playing? (UI esc barge-in check.)"""
+        with self._lock:
+            if not self.q.empty():
+                return True
+            return self._queued_end > self.audio.played_samples
+
     def spoken_text(self) -> str:
         """Everything the voice has said so far this turn, revealed word by
         word (char-weighted) inside the sentence currently playing."""
@@ -629,22 +679,37 @@ class GoatApp:
         )
         self.tts = TtsPipeline(self.audio, emit)
         self._say_buf = ""
-        # router state — mirrors server.js: which model the session is on,
-        # the last top-level message (re-run on escalation), and the delta
-        # gate that keeps a bare "ESCALATE" from being spoken/shown.
-        self.model = MODEL_FAST
-        self.busy = False
-        self.last_user_text = None
-        self.escalate_pending = False
+        # ---- two independent lanes (his order 2026-07-17) ----
+        # TALK lane: Gemini Flash in the MIDDLE, out loud, always available.
+        # WORK lane: the chosen Claude model on the LEFT, with tools, silent.
+        # They run at the same time — he watches the working brain build on
+        # the left while he keeps talking to Gemini in the middle. Roles are
+        # display names from TALK_BRAINS / WORK_BRAINS; he sets them from the
+        # drawer and nothing overrides his choice (no auto-routing, no
+        # escalation).
+        self.talk_brain = DEFAULT_TALK       # "gemini flash" (or "sonnet 5")
+        self.work_model = DEFAULT_WORK        # normal working brain
+        self.hard_model = DEFAULT_HARD        # heavy working brain
+        # Talk lane state
+        self.talk_busy = False                # a Gemini talk turn is running
+        self.talk_client: ClaudeSDKClient | None = None  # only if talk=Claude
+        self._talk_client_model = None
+        self._talk_lock = asyncio.Lock()      # serialize talk turns (3.10+ safe)
+        # Work lane state (Claude client = self.client)
+        self.model = MODEL_FAST               # model id currently on self.client
+        self.busy = False                     # a WORK turn is in flight
+        self.last_user_text = None            # work text (re-run on rotation)
         self.suppressed = False
-        self._hold_deltas = False
+        self._hold_deltas = False             # kept False now (no ESCALATE gate)
         self._delta_buf = ""
-        # usage watch — session totals, so Giorgi sees the burn and gets a
+        # usage watch — session Claude totals, so Giorgi sees the burn and a
         # spoken heads-up the moment the API says the quota is gone.
         self.usage_in = 0
         self.usage_out = 0
-        # token economy: last main-turn context size, rolling exchange log
-        # for rotation handoffs, and the rotation flags themselves.
+        self.claude_out = False               # True once Claude quota is spent
+        self.claude_reset = ""                # reset clock from the limit error
+        # token economy: last work-turn context size, rolling exchange log for
+        # rotation handoffs, and the rotation flags.
         self._last_ctx = 0
         self._exchanges = deque(maxlen=HANDOFF_KEEP)
         self._reply_acc = ""
@@ -664,46 +729,27 @@ class GoatApp:
         # set_language(). Boot path appends LANG_NOTE_KA to the persona.
         self.language = "en"
         self._last_exchange = time.monotonic()
-        # local-brain exchanges the Claude session hasn't seen yet — bridged
-        # into its next turn so Fable never answers blind to recent chat.
+        # talk-lane exchanges the work (Claude) session hasn't seen yet —
+        # bridged into its next work turn so the working brain isn't blind to
+        # what was just discussed out loud in the middle.
         self._local_unseen: list = []
-        # Brain override from the UI drawer. "auto" = the router decides and
-        # escalation is automatic. A PINNED brain (local/sonnet/fable) stays
-        # put — his order 2026-07-12: "if I set the model pinned, no need to
-        # change in any situation; escalate only when I approve." A pinned
-        # local brain that hits its limit ASKS instead of jumping to Fable.
-        self.brain_mode = "auto"
-        self._pending_escalation = ""  # text awaiting his "yes, escalate"
-        # front desk (receptionist) + work-turn awareness
-        self.recep: ClaudeSDKClient | None = None
-        self._recep_busy = False
+        # work-lane step tracking (drives the left panel)
         self._current_task = ""
         self._work_started = 0.0
         self._last_tool = ""
-        self._turn_has_tools = False  # True once this turn touches a tool
+        self._turn_has_tools = False  # True once a work turn touches a tool
 
     # ---- audio-thread callbacks ----
     def _on_interrupt(self, _preroll):
         if self.mic_muted:
             return
-        if self.busy and self._turn_has_tools:
-            # He's talking over a WORKING turn: stop the voice, never the
-            # work — JARVIS goes quiet, the suit keeps printing. His words
-            # route to the front desk; a spoken stop-order is the brake
-            # (handled in _send_user).
-            self.emit("status", "listening — work continues")
-            self.tts.cancel()
-            self._say_buf = ""
-            return
-        self.emit("status", "interrupted — listening")
+        # Voice barge-in affects only the talking lane's VOICE — the work lane
+        # is silent and keeps running. Cut GOAT off mid-sentence; his next
+        # words start a fresh talk turn (or a spoken "stop" brakes the work
+        # turn, handled in _talk).
+        self.emit("status", "listening")
         self.tts.cancel()
         self._say_buf = ""
-        # Suppress the rest of the killed turn's output; cleared at its result.
-        self.suppressed = True
-        self._hold_deltas = False
-        self._delta_buf = ""
-        if self.loop and self.client:
-            asyncio.run_coroutine_threadsafe(self._safe_interrupt(), self.loop)
 
     async def _safe_interrupt(self):
         try:
@@ -758,36 +804,68 @@ class GoatApp:
         self.emit("ui_color", f"{part}|{color}")
         return True
 
-    def set_brain(self, mode: str):
-        """Brain pin from the UI drawer — thread-safe (plain attribute).
-        auto = router decides; local/sonnet/fable pin fresh turns."""
-        if mode not in ("auto", "local", "sonnet", "fable"):
-            mode = "auto"
-        self.brain_mode = mode
-        self.emit("status", f"brain: {mode}"
-                  + (" — router decides" if mode == "auto" else " pinned"))
+    def set_talk_brain(self, name: str):
+        """Talking-brain pick from the drawer (display name). Gemini Flash is
+        the default and stays up even when Claude is spent; 'sonnet 5' routes
+        talk through a dedicated Claude talk client instead. Thread-safe."""
+        if name not in TALK_BRAINS:
+            name = DEFAULT_TALK
+        self.talk_brain = name
+        self.emit("status", f"talking brain: {name}")
+        if TALK_BRAINS[name] == "gemini":
+            # available() can hit the network — keep it off the Qt thread.
+            def _report():
+                self.emit("talkmodel", local_llm.LOCAL_NAME)
+                if not local_llm.available():
+                    self.emit("status", "gemini out of quota or unreachable — "
+                              "sonnet covers the talk until it's back")
+            threading.Thread(target=_report, daemon=True).start()
+        else:
+            self.emit("talkmodel", _friendly_model_name(TALK_BRAINS[name]))
+
+    def set_work_model(self, name: str):
+        """Working-brain pick (display name) — set on the work client at the
+        next dispatch. Thread-safe."""
+        if name not in WORK_BRAINS:
+            name = DEFAULT_WORK
+        self.work_model = name
+        self.emit("status", f"working brain: {name}")
+
+    def set_hard_model(self, name: str):
+        """Hard-task working-brain pick (display name). Thread-safe."""
+        if name not in WORK_BRAINS:
+            name = DEFAULT_HARD
+        self.hard_model = name
+        self.emit("status", f"hard brain: {name}")
 
     def submit_text(self, text: str):
-        """Typed input from the UI — thread-safe."""
+        """Plain typed/spoken input — goes to the TALKING brain (middle lane).
+        Thread-safe."""
         if self.loop is None or self.loop.is_closed():
             self.emit("status", "engine is down — check python\\goat-app.log")
             return
-        asyncio.run_coroutine_threadsafe(self._send_user(text), self.loop)
+        asyncio.run_coroutine_threadsafe(self._talk(text), self.loop)
+
+    def submit_work(self, text: str, hard: bool = False):
+        """Explicit work order from the UI (work button / Ctrl+Enter, or the
+        hard button / Ctrl+Shift+Enter) — goes to the WORKING brain on the
+        left panel, or the hard-task brain when hard=True. This is the only
+        path work reaches Claude, always his deliberate choice. Thread-safe."""
+        if self.loop is None or self.loop.is_closed():
+            self.emit("status", "engine is down — check python\\goat-app.log")
+            return
+        asyncio.run_coroutine_threadsafe(self._work(text, hard=hard), self.loop)
 
     def submit_files(self, paths: list, note: str = ""):
-        """Files/images from the UI (drop, Ctrl+O, or pasted image) —
-        thread-safe. Skips the fast router: looking at files needs the Read
-        tool, so the fast model would only burn a turn saying ESCALATE."""
+        """Files/images from the UI (drop, Ctrl+O, or pasted image) — a work
+        order (looking at files needs the Read tool), so they run on the
+        working brain's left lane. Thread-safe."""
         if self.loop is None or self.loop.is_closed():
             self.emit("status", "engine is down — check python\\goat-app.log")
             return
-        names = ", ".join(os.path.basename(p) for p in paths)
-        self.emit("you", (note + "  —  " if note else "") + f"[file] {names}")
-        # UI shows image attachments as thumbnails; non-images are ignored there.
-        self.emit("files", "\n".join(paths))
         text = ((note + "\n") if note else "") + "[files from Giorgi]\n" + "\n".join(paths)
-        asyncio.run_coroutine_threadsafe(
-            self._send_user(text, force_full=True, echo=False), self.loop)
+        self.emit("work_files", "\n".join(paths))  # left-panel thumbnails
+        asyncio.run_coroutine_threadsafe(self._work(text), self.loop)
 
     # ---- async side ----
     async def _handle_utterance(self, audio_np: np.ndarray):
@@ -822,62 +900,204 @@ class GoatApp:
             print(f"[wake] not addressed, ignored: {text!r}")
             self.emit("status", "heard — say my name to wake me")
             return
-        await self._send_user(text)
+        await self._talk(text)
 
-    async def _send_user(self, text: str, force_full: bool = False, echo: bool = True):
+    async def _talk(self, text: str, echo: bool = True):
+        """TALKING brain (middle lane): Gemini Flash out loud, zero Claude
+        usage, always available — even while a work turn runs on the left and
+        even when Claude's quota is gone. A short spoken "stop" brakes a
+        running work turn; addressing the working brain by name hands the turn
+        to the left lane. Otherwise plain talk stays here — no auto-routing."""
         text = text.strip()
         if not text:
             return
-        self._last_exchange = time.monotonic()  # conversation is live
+        self._last_exchange = time.monotonic()
         if echo:
             self.emit("you", text)
-        if self.busy:
-            # He's talking while a turn is in flight — JARVIS keeps the
-            # conversation going (Phase 3.5 front desk, ported 2026-07-10).
-            # Stop-orders brake the work; front-desk answers small stuff on
-            # the talking brain; FORWARD (or a failed front desk) steers the
-            # message into the in-flight turn via the SDK's streaming input.
-            if STOP_RE.search(text) and len(text.split()) <= 5:
-                self.suppressed = True
-                self._hold_deltas = False
-                self._delta_buf = ""
+        # Spoken brake on a running work turn.
+        if self.busy and STOP_RE.search(text) and len(text.split()) <= 5:
+            await self._safe_interrupt()
+            self.busy = False
+            self.emit("work_fail", "Stopped.")
+            self.emit("work_done", "")
+            self.tts.mark_reply()
+            self.emit("delta", "")
+            self.tts.say("Stopped.")
+            return
+        # Manual dispatch: he addressed the working brain by name.
+        if WORK_DISPATCH_RE.match(text):
+            await self._work(text, hard=bool(WORK_HARD_RE.search(text[:40])),
+                             echo_you=False)
+            return
+        async with self._talk_lock:
+            self.talk_busy = True
+            if echo:
                 self.tts.cancel()
-                await self._safe_interrupt()
-                self.tts.mark_reply()
-                self.emit("delta", "")  # creates the reply label
-                self.tts.say("Stopped.")
+            self.tts.new_turn()
+            try:
+                brain = TALK_BRAINS.get(self.talk_brain)
+                if brain != "gemini" and self.claude_out:
+                    # His pick is a Claude voice but the quota's spent —
+                    # Gemini covers so talk NEVER goes down with Claude.
+                    self.emit("status", "claude out — gemini covers the talk")
+                    brain = "gemini"
+                if brain == "gemini":
+                    await self._talk_gemini(text)
+                elif not await self._talk_claude(
+                        text, TALK_BRAINS[self.talk_brain]):
+                    # Claude talk failed (limit mid-turn, stream error) —
+                    # Gemini takes the turn instead of leaving him in silence.
+                    await self._talk_gemini(text)
+            finally:
+                self.talk_busy = False
+                self._last_exchange = time.monotonic()
+
+    async def _talk_gemini(self, text: str):
+        """One Gemini talk turn → middle lane + voice. Falls to a Claude cover
+        voice if Gemini is momentarily down; hands to the work lane if he named
+        the working brain mid-sentence."""
+        self.emit("talkmodel", local_llm.LOCAL_NAME)
+        self.emit("delta", "")  # open the middle reply label
+        loop = asyncio.get_running_loop()
+
+        def on_delta(piece: str):
+            loop.call_soon_threadsafe(self._speak_delta, piece)
+
+        try:
+            reply = await asyncio.to_thread(
+                local_llm.chat, text, on_delta, self.language)
+        except Exception as e:  # noqa: BLE001 — talk brain down ≠ mute GOAT
+            self.emit("status", f"talking brain failed: {e}")
+            reply = None
+        if reply == "ESCALATE":
+            if self.claude_out:
+                # He asked for the working brain but the quota's spent. Say it
+                # RIGHT HERE — we already hold the talk lock, so calling
+                # _offline_cover (which takes it) would deadlock.
+                self.emit("work_fail", "Claude is out of usage"
+                          + (f" — resets {self.claude_reset}"
+                             if self.claude_reset else "")
+                          + ". Talk still works.")
+                line = ("Claude is rate-limited right now, so that work has "
+                        "to wait"
+                        + (f" until about {self.claude_reset}"
+                           if self.claude_reset else "")
+                        + ". I can still answer questions, search, and use "
+                        "my own hands for everything else.")
+                self._speak_delta(line)
+                self._finish_talk(text, line)
                 return
-            if self._turn_has_tools and await self._receptionist_answer(text):
-                return
-            # Append to last_user_text (Node parity): if this turn ends in
-            # ESCALATE, the full-model re-run must see his additions too,
-            # not just the message that started the turn.
+            await self._work(text, echo_you=False)
+            return
+        if reply is None:
+            if not self.claude_out:
+                self.emit("status", "gemini offline — sonnet covering the talk")
+                if await self._talk_claude(text, MODEL_FAST):
+                    return
+            # Claude's out too (or the cover also failed) — one honest line,
+            # never silence, never a raw error.
+            self.emit("delta", "")
+            self.tts.say("My talking brain is offline for a moment — "
+                         "give me a few seconds and try again.")
+            return
+        self._finish_talk(text, reply)
+
+    async def _talk_claude(self, text: str, model: str) -> bool:
+        """Talk turn on a dedicated Claude talk client (talk brain = Sonnet, or
+        the Gemini-down cover voice). Streams to the middle + voice, never
+        touches the work client, so it runs alongside a work turn. Returns True
+        when it actually spoke."""
+        try:
+            await self._ensure_talk_client(model)
+        except Exception as e:  # noqa: BLE001
+            self.emit("status", f"talk client failed: {e}")
+            return False
+        self.emit("talkmodel", _friendly_model_name(model))
+        self.emit("delta", "")
+        reply = ""
+        try:
+            await self.talk_client.query(text)
+            async for msg in self.talk_client.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for b in msg.content:
+                        if isinstance(b, TextBlock) and b.text:
+                            reply += b.text
+                            self._speak_delta(b.text)
+                elif isinstance(msg, ResultMessage):
+                    self._track_usage(msg)
+        except Exception as e:  # noqa: BLE001
+            self.emit("status", f"talk turn failed: {e}")
+            return False
+        reply = reply.strip()
+        if not reply:
+            return False
+        self._finish_talk(text, reply, note_gemini=True)
+        return True
+
+    async def _ensure_talk_client(self, model: str):
+        """Lazily spawn / re-model the dedicated talk client (own short
+        conversation-only session, no tools)."""
+        if self.talk_client is None:
+            opts = ClaudeAgentOptions(
+                cwd=WORKSPACE, model=model, effort="low",
+                system_prompt={"type": "preset", "preset": "claude_code",
+                               "append": TALK_PERSONA},
+                setting_sources=[], max_turns=1,
+            )
+            self.talk_client = ClaudeSDKClient(opts)
+            await self.talk_client.connect()
+            self._talk_client_model = model
+        elif self._talk_client_model != model:
+            try:
+                await self.talk_client.set_model(model)
+                self._talk_client_model = model
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _finish_talk(self, text: str, reply: str, note_gemini: bool = False):
+        """Close a talk turn: flush the voice tail, log it, keep both talking
+        brains' memories in step."""
+        self._flush_sentences(force=True)
+        self._exchanges.append((text[:300], reply[:300]))
+        self._local_unseen.append((text[:200], reply[:200]))
+        if note_gemini:
+            # Claude-side talk: mirror it into Gemini's history so the two
+            # talking brains stay coherent if he switches between them.
+            local_llm.note_exchange(text, reply)
+        self._log_exchange(text, reply)
+        self.emit("turn_done", "")
+
+    async def _work(self, text: str, hard: bool = False, echo_you: bool = False):
+        """WORK lane (left panel): run the chosen Claude model WITH tools,
+        streaming each step to the left. Silent — the working brain doesn't
+        speak (Giorgi hears Gemini in the middle) and his order shows as the
+        task on the LEFT, not in the talk column. His deliberate dispatch
+        only; nothing escalates itself here."""
+        text = text.strip()
+        if not text:
+            return
+        if echo_you:
+            self.emit("you", text)  # (unused by default; left panel owns it)
+        target_name = self.hard_model if hard else self.work_model
+        target = WORK_BRAINS.get(target_name, MODEL_FULL)
+        if self.busy:
+            # A work turn is already running — fold this order in so the
+            # running turn sees his additions (Node parity).
             if self.last_user_text:
                 self.last_user_text += "\n" + text
-            self.tts.mark_reply()
+            self.emit("work_add", text[:120])
             await self.client.query(text)
             return
-        mode = self.brain_mode
-        # Pinned-local approval gate: if the local brain earlier asked to
-        # hand a task to Fable, a short "yes" here approves THAT — escalate
-        # the stored task. Anything else drops the pending ask and proceeds
-        # normally (he moved on).
-        if self._pending_escalation:
-            pending = self._pending_escalation
-            self._pending_escalation = ""
-            if APPROVE_RE.search(text) and len(text.split()) <= 6:
-                self.busy = True
-                self.last_user_text = pending
-                self._current_task = pending
-                self._work_started = time.monotonic()
-                self._turn_has_tools = False
-                self._last_tool = ""
-                self._reply_acc = ""
-                if echo:
-                    self.tts.cancel()
-                self.tts.new_turn()
-                await self._escalate()
-                return
+        if self.claude_out:
+            # Quota's gone — don't pretend to start. Note it on the left, and
+            # let Gemini SAY it and pick up what its own hands can do (his
+            # order 2026-07-17: the app must never feel dead because Claude
+            # is out; only repo/coding-agent work waits).
+            self.emit("work_fail", "Claude is out of usage"
+                      + (f" — resets {self.claude_reset}" if self.claude_reset
+                         else "") + ". Talk still works.")
+            await self._offline_cover(text)
+            return
         self.busy = True
         self.last_user_text = text
         self._current_task = text
@@ -885,50 +1105,6 @@ class GoatApp:
         self._turn_has_tools = False
         self._last_tool = ""
         self._reply_acc = ""
-        if echo:
-            # New turn while the old voice is still finishing a tail — cut it,
-            # same as voice barge-in does. (echo=False paths — file drops and
-            # the fresh-session retry — must not clip their own spoken intro.)
-            self.tts.cancel()
-        self.tts.new_turn()
-        # Routing v4 (2026-07-12). AUTO: local brain answers free, ESCALATE
-        # → Fable automatically. PINNED local: stays local, does the work
-        # with its full tools; if it truly can't, it ASKS before escalating.
-        # PINNED sonnet/fable: straight to that Claude model, no local hop.
-        work = force_full or mode == "fable" or bool(WORK_RE.search(text))
-        local_verdict = ""
-        # Georgian never goes local — the 4B garbles it (measured 2026-07-11).
-        # Check the TEXT, not just the language toggle: typed Georgian in
-        # English mode must skip the local brain too.
-        ka_text = bool(KA_RE.search(text))
-        local_ok = (local_llm.available() and not ka_text
-                    and (self.language == "en" or local_llm.LOCAL_KA))
-        # Pinned "local" runs EVERYTHING through the local brain (it has full
-        # machine + web tools now); file drops (force_full) still need real
-        # tools and skip it. Auto runs casual turns local, work → Fable.
-        if (local_ok and mode in ("auto", "local") and not force_full
-                and (mode == "local" or not work)):
-            local_verdict = await self._local_answer(text)
-            if local_verdict == "done":
-                return
-            # local_verdict == "escalate" now fires ONLY when he literally asked
-            # for the full model (his order 2026-07-12: "do not escalate until i
-            # say so" — the local brain no longer self-punts). So don't ask —
-            # fall through and hand it straight to Fable.
-        # "escalate" = the local brain judged this needs tools: straight to
-        # Fable (auto only). "fail"/"" = Ollama died or is absent: Sonnet path.
-        if mode == "fable":
-            target, tagged = MODEL_FULL, False
-        elif mode == "sonnet":
-            # Pinned Sonnet: untagged working turn on the fast model — it uses
-            # tools directly and never escalates itself (his order: pinned
-            # stays put).
-            target, tagged = MODEL_FAST, False
-        else:  # auto (or local that fell through to Claude)
-            full = (work or local_verdict == "escalate"
-                    or self._last_ctx > STICKY_FULL_CTX
-                    or bool(self._pending_handoff))
-            target, tagged = (MODEL_FULL, False) if full else (MODEL_FAST, True)
         if self.model != target:
             try:
                 await self.client.set_model(target)
@@ -936,90 +1112,60 @@ class GoatApp:
             except Exception as e:  # noqa: BLE001
                 self.emit("status", f"model switch failed: {e}")
         self.emit("model", _friendly_model_name(target))
-        self._hold_deltas = tagged
-        self._delta_buf = ""
-        send = ("[fast-turn] " + text) if tagged else text
+        self.emit("work_start", f"{_friendly_model_name(target)}|{text}")
+        # Bridge recent middle-lane chat so the working brain isn't blind to
+        # what was just said out loud.
+        send = text
         if self._local_unseen:
-            # Bridge: the Claude session slept through these local-brain
-            # exchanges — hand it a compact transcript so it never answers
-            # blind to what was just discussed.
             lines = "\n".join(f"him: {u}\nyou: {a}"
                               for u, a in self._local_unseen[-6:])
-            send = ("[chat since your last turn — context only, do not "
-                    "reply to it]\n" + lines + "\n\n" + send)
+            send = ("[chat since your last turn — context only, do not reply "
+                    "to it]\n" + lines + "\n\n" + send)
             self._local_unseen.clear()
         if self._pending_handoff:
             send = self._pending_handoff + "\n\n" + send
             self._pending_handoff = ""
         await self.client.query(send)
 
-    async def _ensure_recep(self):
-        """Front-desk session: talking brain, no tool budget (max_turns=1),
-        fresh each app run. Pre-warmed at boot so the first mid-work answer
-        doesn't pay the spawn tax."""
-        if self.recep is not None:
-            return
-        opts = ClaudeAgentOptions(
-            cwd=WORKSPACE,
-            model=MODEL_FAST,
-            # Front-desk answers are 1-3 spoken sentences with no tools —
-            # deep reasoning is waste here; low effort = cheaper AND faster.
-            effort="low",
-            system_prompt={"type": "preset", "preset": "claude_code",
-                           "append": RECEP_PERSONA},
-            setting_sources=[],
-            max_turns=1,
-        )
-        client = ClaudeSDKClient(opts)
-        await client.connect()
-        self.recep = client
+    async def _offline_cover(self, text: str):
+        """A work order arrived while Claude's quota is spent: Gemini answers
+        in the middle lane instead — one warm line that the coding brain must
+        wait, then it does whatever parts its OWN tools cover (web, files,
+        shell). The app stays alive; only Claude-side work pauses."""
+        reset = (f" It resets around {self.claude_reset}."
+                 if self.claude_reset else "")
+        prompt = ("[Claude — your working brain — is out of usage right now."
+                  + reset + " Giorgi sent the order below to it. Tell him in "
+                  "one warm sentence that repo/coding-agent work waits for "
+                  "Claude, then do whatever parts YOU can with your own "
+                  "tools.]\n" + text)
+        async with self._talk_lock:
+            self.talk_busy = True
+            self.tts.new_turn()
+            try:
+                self.emit("talkmodel", local_llm.LOCAL_NAME)
+                self.emit("delta", "")
+                loop = asyncio.get_running_loop()
 
-    async def _receptionist_answer(self, text: str) -> bool:
-        """JARVIS talks while the suit is building: answer him on the talking
-        brain while the working brain stays heads-down. True = spoken here;
-        False = caller steers the message into the work turn instead."""
-        if self._recep_busy:
-            return False
-        self._recep_busy = True
-        try:
-            # Front desk stays on Sonnet, NOT the local brain — measured
-            # 2026-07-11: the 4B model invents answers under mid-work
-            # pressure ("dark red theme? I'll make it pop", a wrong NY time
-            # stated as fact). Rare turns, cheap model, honesty required.
-            await self._ensure_recep()
-            elapsed = int(time.monotonic() - self._work_started)
-            status = (f"[main-status] working on: {self._current_task[:200]}"
-                      f" | current step: {self._last_tool or 'thinking'}"
-                      f" | elapsed: {elapsed // 60}m{elapsed % 60:02d}s")
-            await self.recep.query(status + "\n" + text)
-            reply = ""
-            async for msg in self.recep.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for b in msg.content:
-                        if isinstance(b, TextBlock):
-                            reply += b.text or ""
-                elif isinstance(msg, ResultMessage):
-                    self._track_usage(msg)
-            reply = reply.strip()
-            if not reply or reply.upper().startswith("FORWARD"):
-                return False
-            self.tts.mark_reply()
-            self.emit("delta", "")  # creates the reply label for the reveal
-            rest = reply
-            while True:
-                m = SENTENCE_RE.match(rest)
-                if not m or not m.group(1).strip():
-                    break
-                self.tts.say(m.group(1))
-                rest = rest[m.end():]
-            if rest.strip():
-                self.tts.say(rest)
-            return True
-        except Exception as e:  # noqa: BLE001 — front desk down ≠ deaf GOAT
-            self.emit("status", f"front desk failed: {e}")
-            return False
-        finally:
-            self._recep_busy = False
+                def on_delta(piece: str):
+                    loop.call_soon_threadsafe(self._speak_delta, piece)
+
+                try:
+                    reply = await asyncio.to_thread(
+                        local_llm.chat, prompt, on_delta, self.language, True)
+                except Exception as e:  # noqa: BLE001 — cover must not crash
+                    self.emit("status", f"offline cover failed: {e}")
+                    reply = None
+                if reply is None or reply == "ESCALATE":
+                    self.emit("delta", "")
+                    self.tts.say("Claude is out of usage right now, and my "
+                                 "fast brain hiccuped too — give me a moment "
+                                 "and ask again.")
+                    return
+                self._finish_talk(text, reply)
+            finally:
+                self.talk_busy = False
+                self._last_exchange = time.monotonic()
 
     def _speak_delta(self, text: str):
         self.emit("delta", text)
@@ -1037,120 +1183,31 @@ class GoatApp:
             self.tts.say(self._say_buf)
             self._say_buf = ""
 
-    async def _local_answer(self, text: str) -> str:
-        """Casual turn on the local brain (Ollama, zero usage). Returns
-        "done" (answered + spoken), "escalate" (needs Fable), or "fail"
-        (Ollama broke — caller uses the cloud path). Streams into the same
-        delta/TTS pipeline as Claude turns."""
-        self.emit("model", local_llm.LOCAL_NAME)
-        loop = asyncio.get_running_loop()
-
-        def on_delta(piece: str):
-            loop.call_soon_threadsafe(self._speak_delta, piece)
-
-        try:
-            reply = await asyncio.to_thread(
-                local_llm.chat, text, on_delta, self.language)
-        except Exception as e:  # noqa: BLE001 — local down ≠ mute GOAT
-            self.emit("status", f"local brain failed: {e}")
-            reply = None
-        if reply == "ESCALATE":
-            return "escalate"
-        if reply is None:
-            self.emit("status", "local brain offline — using cloud")
-            return "fail"
-        self.busy = False
-        self._last_exchange = time.monotonic()
-        self._flush_sentences(force=True)
-        self._exchanges.append((text[:300], reply[:300]))
-        self._local_unseen.append((text[:200], reply[:200]))
-        self._log_exchange(text, reply)
-        self.emit("turn_done", "")
-        return "done"
-
-    async def _local_fallback(self, reason: str) -> bool:
-        """Reverse fallback (his order 2026-07-11): Claude is unreachable —
-        quota gone or the API errored — so the LOCAL brain answers instead
-        of GOAT going mute. Degraded mode: conversation works, tools don't
-        (the persona says so honestly). Returns True if a reply was spoken."""
-        text = self.last_user_text
-        if not text or not local_llm.available():
-            return False
-        self.emit("model", local_llm.LOCAL_NAME)
-        self.emit("status", f"claude unreachable ({reason}) — local brain on")
-        loop = asyncio.get_running_loop()
-
-        def on_delta(piece: str):
-            loop.call_soon_threadsafe(self._speak_delta, piece)
-
-        # Georgian mode: LOCAL_KA gates it as usual; a garbled-Georgian
-        # brain is worse than an English apology, so fall to English.
-        lang = self.language if (self.language == "en"
-                                 or local_llm.LOCAL_KA) else "en"
-        try:
-            reply = await asyncio.to_thread(
-                local_llm.chat, text, on_delta, lang, True)
-        except Exception as e:  # noqa: BLE001
-            self.emit("status", f"local fallback failed: {e}")
-            return False
-        if not reply:
-            return False
-        self._flush_sentences(force=True)
-        self._exchanges.append((text[:300], reply[:300]))
-        self._local_unseen.append((text[:200], reply[:200]))
-        self._log_exchange(text, reply)
-        return True
-
-    async def _escalate(self):
-        self.emit("model", _friendly_model_name(MODEL_FULL))
-        self.emit("status", "switching to the full model")
-        try:
-            await self.client.set_model(MODEL_FULL)
-            self.model = MODEL_FULL
-        except Exception as e:  # noqa: BLE001
-            self.emit("status", f"model switch failed: {e}")
-        self._hold_deltas = False
-        self._delta_buf = ""
-        self.busy = True
-        self._turn_has_tools = False  # re-flags on the full model's first tool
-        self._last_tool = ""
-        await self.client.query(self.last_user_text)
-
     async def _consume(self):
+        """Drives the WORK lane (self.client). Everything here streams to the
+        LEFT panel and NEVER speaks — the voice belongs to the talk lane. On a
+        Claude usage-out or error the work turn ends gracefully; Gemini keeps
+        talking in the middle."""
         async for msg in self.client.receive_messages():
             if isinstance(msg, StreamEvent):
                 ev = msg.event
                 if ev.get("type") == "content_block_delta":
                     delta = ev.get("delta", {})
-                    if delta.get("type") == "text_delta" and not self.suppressed:
-                        text = delta.get("text", "")
-                        if self._hold_deltas:
-                            # Fast turn: the whole reply might be the router
-                            # keyword — hold until it can't be "ESCALATE".
-                            self._delta_buf += text
-                            buf = self._delta_buf.lstrip()
-                            maybe = ("ESCALATE".startswith(buf) if len(buf) < 8
-                                     else buf.startswith("ESCALATE"))
-                            if not maybe:
-                                self._hold_deltas = False
-                                self._speak_delta(self._delta_buf)
-                                self._delta_buf = ""
-                        else:
-                            self._speak_delta(text)
+                    if (delta.get("type") == "text_delta"
+                            and not self.suppressed and not self._compacting):
+                        t = delta.get("text", "")
+                        if t:
+                            self.emit("work_text", t)  # working brain narration
             elif isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         t = (block.text or "").strip()
-                        if (self.model == MODEL_FAST and t.startswith("ESCALATE")
-                                and self.brain_mode == "auto"):
-                            # Auto only — a pinned brain stays put (his order).
-                            self.escalate_pending = True
-                        elif t and not self._compacting:
+                        if t and not self._compacting:
                             self._reply_acc += t + " "
                     elif isinstance(block, ToolUseBlock):
                         self._turn_has_tools = True  # this is a WORK turn now
                         self._last_tool = block.name
-                        self.emit("tool", block.name)
+                        self.emit("work_tool", _describe_tool(block))
             elif isinstance(msg, SystemMessage):
                 if msg.subtype == "init":
                     sid = (msg.data or {}).get("session_id")
@@ -1186,82 +1243,56 @@ class GoatApp:
                     continue
                 self.suppressed = False
                 self.busy = False
-                self._last_exchange = time.monotonic()  # reply just landed
                 err = str(getattr(msg, "result", "") or "").lower()
                 if msg.is_error and "prompt is too long" in err:
-                    # Context window is full — this session can never answer
-                    # again (every turn re-sends the whole history). Start a
-                    # fresh session and retry the message that hit the wall.
-                    self.escalate_pending = False
-                    self._hold_deltas = False
-                    self._delta_buf = ""
+                    # Work session's context is full — start a fresh one and
+                    # retry the order that hit the wall. Silent on the left;
+                    # talk (Gemini) is untouched.
                     try:
                         os.remove(SESSION_FILE)
                     except OSError:
                         pass
-                    # Carry recent exchanges into the fresh session — the
-                    # retry used to arrive with total amnesia.
                     self._pending_handoff = self._handoff_text()
-                    warn = "My context filled up — starting a fresh session, one second."
-                    self.emit("status", "context full — starting fresh session")
-                    self.emit("delta", "")  # creates the reply label for the reveal
-                    self.tts.say(warn)
+                    self.emit("work_step",
+                              "context full — fresh session, retrying")
                     return True  # run() reconnects and retries
                 if self._track_usage(msg):
-                    # Quota is gone — escalating or retrying would just fail
-                    # again. The warning has already been spoken. The LOCAL
-                    # brain takes over so GOAT keeps talking (2026-07-11).
-                    self.escalate_pending = False
-                    self._flush_sentences(force=True)
-                    self._hold_deltas = False
-                    self._delta_buf = ""
-                    await self._local_fallback("usage limit")
-                    self.emit("turn_done", "")
+                    # Quota gone — mark it, show it on the left, keep Gemini
+                    # talking in the middle (his rule 4). No retry.
+                    self.claude_out = True
+                    self.emit("work_fail", "Claude ran out of usage"
+                              + (f" — resets {self.claude_reset}"
+                                 if self.claude_reset else "")
+                              + ". I can still talk.")
+                    self.emit("work_done", "")
                 elif msg.is_error and not self._reply_acc.strip():
-                    # Claude errored with nothing said (API/network/auth down,
-                    # not a content turn) — the local brain answers instead
-                    # of GOAT going silent.
-                    self.escalate_pending = False
-                    self._hold_deltas = False
-                    self._delta_buf = ""
-                    if not await self._local_fallback("api error"):
-                        self.emit("status", f"claude error: {err[:120]}")
-                        self.emit("delta", "")
-                        self.tts.say("I hit an error reaching my mind and "
-                                     "my local brain is down too — "
-                                     "give me a moment and try again.")
-                    self.emit("turn_done", "")
-                elif self.escalate_pending and self.last_user_text:
-                    self.escalate_pending = False
-                    await self._escalate()
+                    # Work errored with nothing produced — surface it on the
+                    # left, don't crash, don't speak (talk owns the voice).
+                    self.emit("work_fail", f"working brain error: {err[:120]}")
+                    self.emit("work_done", "")
                 else:
-                    self.escalate_pending = False
-                    self._flush_sentences(force=True)
-                    self._hold_deltas = False
-                    self._delta_buf = ""
-                    # Turn fully done — log the exchange for future handoffs
-                    # and measure how heavy this session has become.
+                    if self.claude_out:
+                        self.claude_out = False  # a turn landed — quota's back
+                        self.emit("claude", "ok")
+                    # Turn done — log the exchange for future handoffs and
+                    # measure how heavy this session has become.
                     if self.last_user_text:
                         reply = self._reply_acc.strip()
                         self._exchanges.append(
                             (self.last_user_text[:300], reply[:300]))
-                        # Keep the local brain's memory in step with what
-                        # the Claude brains said — one mind, three engines.
+                        # Keep the talking brain's memory in step with the work.
                         local_llm.note_exchange(self.last_user_text, reply)
                         if not self.last_user_text.startswith("[boot-briefing]"):
                             self._log_exchange(self.last_user_text, reply)
                         self._reply_acc = ""
+                    self.emit("work_done", "")
                     u = msg.usage or {}
                     self._last_ctx = ((u.get("input_tokens") or 0)
                                       + (u.get("cache_read_input_tokens") or 0)
                                       + (u.get("cache_creation_input_tokens") or 0))
-                    self.emit("turn_done", "")
                     if self._last_ctx > ROTATE_CTX:
                         # Trim BEFORE the wall. Preferred: the CLI's own
                         # /compact — same session, model-written summary.
-                        # The turn is muted; its ResultMessage (handled
-                        # above) verifies the shrink and falls back to a
-                        # hard rotation if /compact didn't take.
                         if COMPACT_CLI:
                             try:
                                 self._compacting = True
@@ -1315,37 +1346,48 @@ class GoatApp:
                 "naturally; don't mention the rotation unless asked.")
 
     def _track_usage(self, msg: ResultMessage) -> bool:
-        """Accumulate session token totals for the footer, and detect the
-        out-of-usage error. Returns True when the quota is exhausted (the
-        caller then ends the turn instead of escalating)."""
+        """Accumulate session Claude token totals for the UI meter, and detect
+        the out-of-usage error. Returns True when the quota is exhausted."""
         u = msg.usage or {}
         self.usage_in += (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
         self.usage_out += u.get("output_tokens") or 0
         self.emit("usage", f"{self.usage_in}|{self.usage_out}")
 
         text = str(getattr(msg, "result", "") or "")
-        low = text.lower()
-        hit_limit = msg.is_error and ("limit reached" in low or "usage limit" in low
-                                      or "out of usage" in low or "quota" in low)
-        if hit_limit:
+        if msg.is_error and CLAUDE_LIMIT_RE.search(text):
+            self.claude_out = True
             reset = ""
             m = re.search(r"\|(\d{9,11})", text)
-            if m:
+            if m:  # old machine form: "...|<unix-ts>"
                 t = datetime.datetime.fromtimestamp(int(m.group(1)))
-                reset = t.strftime(" It resets around %H:%M.")
-            warn = "Giorgi, we're out of Claude usage." + reset
+                reset = t.strftime("%H:%M")
+            else:  # human form: "resets 2:30am (Asia/Tbilisi)" — his zone
+                m = CLAUDE_RESET_RE.search(text)
+                if m:
+                    h = int(m.group(1)) % 24
+                    mnt = int(m.group(2) or 0)
+                    ap = (m.group(3) or "").lower()
+                    if ap == "pm" and h != 12:
+                        h += 12
+                    elif ap == "am" and h == 12:
+                        h = 0
+                    reset = f"{h:02d}:{mnt:02d}"
+            if reset:
+                self.claude_reset = reset
+            self.emit("claude", "out|" + reset)  # UI meter
+            # Spoken heads-up comes through the talk lane's voice (once).
+            # NEVER the raw CLI error — GOAT's own words only.
+            warn = ("Giorgi, Claude — my working brain — hit its usage limit"
+                    + (f"; it resets around {reset}" if reset else "")
+                    + ". Code and repo work waits until then, but I'm still "
+                    "here — questions, web, files, planning, all of it.")
+            self.emit("limit", warn)
             if not self._limit_warned:
                 self._limit_warned = True
-                self.emit("limit", warn)
-                self.emit("delta", "")  # creates the reply label for the reveal
+                self.emit("delta", "")  # middle reply label — GOAT says it
                 self.tts.say(warn)
             return True
         self._limit_warned = False
-        if msg.is_error and text:
-            self.emit("status", text[:90])
-            # Never fail silently — the "thinking… then idle" mystery.
-            self.emit("delta", "")  # creates the reply label for the reveal
-            self.tts.say("That turn failed on my side — say it again.")
         return False
 
     @staticmethod
@@ -1412,7 +1454,13 @@ class GoatApp:
             tts_edge.set_language(self.language)
             if STT_KA_EXPERIMENT:
                 stt_whisper.LANGUAGE = self.language
-        stt_ok = await asyncio.to_thread(stt_whisper.ensure_server)
+        # Boot latency (2026-07-15): whisper model load, Claude SDK connect,
+        # and mic calibration are independent — run them CONCURRENTLY and
+        # speak the greeting as soon as the mic is calibrated; the ears and
+        # the working brain finish loading behind the greeting instead of
+        # in front of it (old serial chain = every step added to silence).
+        stt_task = asyncio.create_task(
+            asyncio.to_thread(stt_whisper.ensure_server))
 
         persona = PERSONA + (LANG_NOTE_KA if self.language == "ka" else "")
         options = ClaudeAgentOptions(
@@ -1428,12 +1476,14 @@ class GoatApp:
             resume=saved_session_id(),
         )
         self.client = ClaudeSDKClient(options)
-        await self.client.connect()
+        connect_task = asyncio.create_task(self.client.connect())
 
         self.audio.start()
         self.emit("status", "calibrating — stay quiet for 2 seconds")
         await asyncio.to_thread(self.audio.calibrate, 2.0)
         await self._warm_up()
+        stt_ok = await stt_task
+        await connect_task
         if not stt_ok:
             # Boot self-check, spoken: without this the window looks alive
             # while every word he says silently goes nowhere.
@@ -1443,21 +1493,15 @@ class GoatApp:
                          "I can't transcribe you until you restart me.")
         else:
             self.emit("status", "listening — just talk")
-        # Default brain in the footer: local when Ollama is up (the check
-        # runs off-loop — a dead Ollama must not stall boot), Sonnet otherwise.
-        local_up = await asyncio.to_thread(local_llm.available)
-        self.emit("model", local_llm.LOCAL_NAME if local_up
-                  else _friendly_model_name(MODEL_FAST))
+        # Boot footer: the talking brain (Gemini Flash) is the always-on
+        # voice, so the footer shows it; the work brain shows on the left.
+        self.emit("talkmodel", local_llm.LOCAL_NAME)
+        self.emit("model", _friendly_model_name(
+            WORK_BRAINS.get(self.work_model, MODEL_FAST)))
         # This code just booted end to end — it IS the last-good version.
         # Snapshot it so a future bad self-edit always has a way back.
         threading.Thread(target=self_check.snapshot, daemon=True).start()
 
-        async def _prewarm_recep():
-            try:
-                await self._ensure_recep()
-            except Exception as e:  # noqa: BLE001 — front desk is optional
-                self.emit("status", f"front desk offline: {e}")
-        asyncio.create_task(_prewarm_recep())
         if POWER_WATCH:
             asyncio.create_task(self._power_watch())
 
@@ -1465,7 +1509,7 @@ class GoatApp:
         # back after 6+ hours away → GOAT speaks first, JARVIS-style.
         if away_h is not None and away_h >= BRIEFING_AFTER_H:
             now = datetime.datetime.now()
-            await self._send_user(
+            await self._talk(
                 "[boot-briefing] Giorgi just started you after about "
                 f"{away_h:.0f} hours away. It is {now:%A}, {now:%H:%M}.",
                 echo=False)
@@ -1505,16 +1549,10 @@ class GoatApp:
                     self.model = MODEL_FAST
                     self.busy = False
                     self.suppressed = False
-                    self.escalate_pending = False
                     self._hold_deltas = False
                     self._delta_buf = ""
-                    self.emit("model", local_llm.LOCAL_NAME
-                              if await asyncio.to_thread(local_llm.available)
-                              else _friendly_model_name(MODEL_FAST))
-                    self.emit("status", "reconnected — listening")
-                    self.emit("delta", "")
-                    self.tts.say("Hit a snag and reconnected — "
-                                 "say that again?")
+                    self.emit("talkmodel", local_llm.LOCAL_NAME)
+                    self.emit("status", "reconnected — working brain back")
                     continue
                 if not wants_fresh:
                     break  # stream ended cleanly — normal shutdown
@@ -1524,28 +1562,23 @@ class GoatApp:
                 self.client = ClaudeSDKClient(options)
                 await self.client.connect()
                 self.model = MODEL_FAST
-                self.emit("model", local_llm.LOCAL_NAME
-                          if await asyncio.to_thread(local_llm.available)
-                          else _friendly_model_name(MODEL_FAST))
                 if self._rotate_only:
                     # Proactive rotation, not a wall hit: nothing to retry —
-                    # the next thing Giorgi says carries the handoff.
+                    # the next work order carries the handoff.
                     self._rotate_only = False
                     retried_text = None
-                    self.emit("status", "fresh session — listening")
+                    self.emit("status", "fresh session — working brain ready")
                     continue
-                self.emit("status", "fresh session — listening")
+                self.emit("status", "fresh session — working brain ready")
                 if self.last_user_text and self.last_user_text != retried_text:
                     retried_text = self.last_user_text
-                    # Retry on the full model: the turn that filled the
-                    # context was almost certainly real work.
-                    await self._send_user(self.last_user_text,
-                                          force_full=True, echo=False)
+                    # Retry the work order that filled the context.
+                    await self._work(self.last_user_text, echo_you=False)
         finally:
             self.shutdown_audio()
-            if self.recep is not None:
+            if self.talk_client is not None:
                 try:
-                    await self.recep.disconnect()
+                    await self.talk_client.disconnect()
                 except Exception:  # noqa: BLE001
                     pass
             await self.client.disconnect()

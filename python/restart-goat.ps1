@@ -37,7 +37,7 @@ function LaunchGoat {
 }
 
 # 1. PREFLIGHT — while the old instance is still alive and talking.
-$pf = Start-Process python -ArgumentList 'self_check.py', 'preflight' `
+$pf = Start-Process py -ArgumentList '-3.13', 'self_check.py', 'preflight' `
         -WorkingDirectory $py -WindowStyle Hidden -Wait -PassThru
 if ($pf.ExitCode -ne 0) {
     Log "PREFLIGHT FAILED - restart ABORTED, current app left running. Fix the code or run: python self_check.py rollback"

@@ -42,4 +42,6 @@ End If
 ' which killed the engine thread at boot while the window stayed up.
 ' Window style 0 hides the console anyway.
 sh.CurrentDirectory = APP_DIR
-sh.Run "cmd /c python ui_qt.py >> goat-app.log 2>&1", 0, False
+' py -3.13 pinned: Ada-SI's install (2026-07-14) put Python 3.12 first on
+' PATH; bare "python" then lost PySide6/numpy and GOAT died at import.
+sh.Run "cmd /c py -3.13 ui_qt.py >> goat-app.log 2>&1", 0, False
