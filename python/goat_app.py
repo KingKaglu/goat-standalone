@@ -68,8 +68,7 @@ MODEL_OPUS = "claude-opus-4-8"
 MODEL_NAMES = {MODEL_FULL: "fable 5", MODEL_FAST: "sonnet 5",
                MODEL_OPUS: "opus 4.8"}
 # Selectable Claude models for the working / hard roles (display -> id).
-WORK_BRAINS = {"sonnet 5": MODEL_FAST, "fable 5": MODEL_FULL,
-               "opus 4.8": MODEL_OPUS}
+WORK_BRAINS = {"fable 5": MODEL_FULL, "opus 4.8": MODEL_OPUS}
 # Talking-brain choices. "gemini flash" = the local_llm transport (always
 # up, free); "sonnet 5" routes talk through a dedicated Claude talk client.
 TALK_BRAINS = {"gemini flash": "gemini", "sonnet 5": MODEL_FAST}
@@ -1497,7 +1496,7 @@ class GoatApp:
         # voice, so the footer shows it; the work brain shows on the left.
         self.emit("talkmodel", local_llm.LOCAL_NAME)
         self.emit("model", _friendly_model_name(
-            WORK_BRAINS.get(self.work_model, MODEL_FAST)))
+            WORK_BRAINS.get(self.work_model, MODEL_FULL)))
         # This code just booted end to end — it IS the last-good version.
         # Snapshot it so a future bad self-edit always has a way back.
         threading.Thread(target=self_check.snapshot, daemon=True).start()

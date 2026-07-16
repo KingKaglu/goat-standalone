@@ -72,7 +72,7 @@ def make_app(client):
     app._talk_client_model = None
     app._talk_lock = asyncio.Lock()
     # work lane
-    app.work_model = "sonnet 5"
+    app.work_model = "fable 5"
     app.hard_model = "fable 5"
     app.model = g.MODEL_FAST
     app.busy = False
@@ -243,7 +243,7 @@ async def main():
         # 4. hard dispatch -> hard_model, not work_model
         c = MockClient()
         app = make_app(c)
-        app.work_model = "sonnet 5"
+        app.work_model = "fable 5"
         app.hard_model = "opus 4.8"
         await app._work("do the heavy refactor", hard=True)
         check("hard work -> hard_model",
@@ -651,11 +651,11 @@ async def main():
     import ui_qt
     check("UI default roles present",
           ui_qt.DEFAULT_CFG["talk_brain"] == "gemini flash"
-          and ui_qt.DEFAULT_CFG["work_model"] == "sonnet 5"
+          and ui_qt.DEFAULT_CFG["work_model"] == "fable 5"
           and ui_qt.DEFAULT_CFG["hard_model"] == "fable 5")
     check("UI brain option lists",
           ui_qt.TALK_OPTS == ["gemini flash", "sonnet 5"]
-          and ui_qt.WORK_OPTS == ["sonnet 5", "fable 5", "opus 4.8"])
+          and ui_qt.WORK_OPTS == ["fable 5", "opus 4.8"])
 
     def _clamped(v):
         return min(ui_qt.UI_SCALE_MAX, max(ui_qt.UI_SCALE_MIN, float(v)))

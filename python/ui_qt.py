@@ -129,7 +129,7 @@ TEXT_SIZES = {"small": 24, "normal": 32, "large": 40}
 #   working brain  — the left lane, tools, for normal work.
 #   hard brain     — the left lane, for heavy work.
 TALK_OPTS = ["gemini flash", "sonnet 5"]
-WORK_OPTS = ["sonnet 5", "fable 5", "opus 4.8"]
+WORK_OPTS = ["fable 5", "opus 4.8"]
 # Global interface zoom — one factor scales EVERY font/padding in the app.
 # Drawer offers presets; voice can set any value in [MIN,MAX] via set_ui_scale.
 UI_SCALES = {"100%": 1.0, "125%": 1.25, "150%": 1.5, "175%": 1.75, "200%": 2.0}
