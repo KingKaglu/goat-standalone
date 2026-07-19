@@ -194,16 +194,42 @@ def save_ui_config(cfg: dict):
 # Sizes bumped 2026-07-11, then made globally scalable 2026-07-12 (Giorgi:
 # "increase the icon/UI sizes by 50%" — GOAT resizes its OWN interface).
 # Every px passes through _s(scale): one control zooms the whole app.
+#
+# 2026-07-20 "instrument, refined" (Giorgi picked direction A):
+#   voice  — Segoe UI Variable Display for GOAT's spoken lines (Georgian
+#            glyphs fall through to plain Segoe UI automatically),
+#   machine — Cascadia Mono for everything the MACHINE says about itself
+#            (clock, state, steps, models, shortcuts, meters),
+#   bones  — hairline rules at ~40% of the theme's faint tone.
+# Palettes, the string, and the one-accent law are untouched.
+VOICE_FONT = "'Segoe UI Variable Display', 'Segoe UI'"
+BODY_FONT = "'Segoe UI Variable Text', 'Segoe UI'"
+MONO_FONT = "'Cascadia Mono', 'Consolas'"
+
+
+def hairline(t: dict, alpha: int = 100) -> str:
+    """rgba() of the theme's faint tone — rules that whisper, not shout."""
+    h = t["faint"].lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def build_style(t: dict, reply_px: int = 30, scale: float = 1.0) -> str:
     def s(px: int) -> int:
         return max(1, round(px * scale))
     reply = max(1, round(reply_px * scale))
+    hair = hairline(t)
+    hair_soft = hairline(t, 70)
     return f"""
-QWidget {{ color: {t['paper']}; font-family: 'Segoe UI'; }}
+QWidget {{ color: {t['paper']}; font-family: {BODY_FONT}; }}
 QLabel#wordmark {{
   color: {t['dim']}; font-size: {s(15)}px; letter-spacing: 5px; font-weight: 600;
 }}
-QLabel#stateword {{ color: {t['accent']}; font-size: {s(15)}px; letter-spacing: 2px; }}
+QLabel#statedot {{ color: {t['accent']}; font-size: {s(9)}px; }}
+QLabel#stateword {{
+  color: {t['accent']}; font-family: {MONO_FONT};
+  font-size: {s(13)}px; letter-spacing: 2px;
+}}
 QPushButton#winbtn {{
   background: transparent; color: {t['faint']}; border: none;
   font-size: {s(15)}px; padding: {s(3)}px {s(12)}px;
@@ -211,49 +237,65 @@ QPushButton#winbtn {{
 QPushButton#winbtn:hover {{ color: {t['paper']}; }}
 QPushButton#themebtn {{
   background: transparent; color: {t['dim']}; border: none;
-  font-size: {s(14)}px; letter-spacing: 2px; padding: {s(3)}px {s(12)}px;
+  font-family: {MONO_FONT}; font-size: {s(12)}px; letter-spacing: 2px;
+  padding: {s(3)}px {s(12)}px;
 }}
 QPushButton#themebtn:hover {{ color: {t['accent']}; }}
 QPushButton#micbtn {{
   background: transparent; color: {t['dim']}; border: none;
-  font-size: {s(14)}px; letter-spacing: 2px; padding: {s(3)}px {s(12)}px;
+  font-family: {MONO_FONT}; font-size: {s(12)}px; letter-spacing: 2px;
+  padding: {s(3)}px {s(12)}px;
 }}
 QPushButton#micbtn:hover {{ color: {t['paper']}; }}
 QPushButton#micbtn[muted="true"] {{ color: {t['accent']}; }}
 QPushButton#sendbtn {{
-  background: transparent; color: {t['faint']}; border: none;
-  border-bottom: 1px solid {t['faint']};
-  font-size: {s(16)}px; padding: {s(6)}px {s(14)}px;
+  background: transparent; color: {t['dim']}; border: none;
+  border-bottom: 1px solid {hair};
+  font-family: {MONO_FONT}; font-size: {s(12)}px; letter-spacing: 1px;
+  padding: {s(6)}px {s(12)}px;
 }}
 QPushButton#sendbtn:hover {{ color: {t['accent']};
   border-bottom: 1px solid {t['accent']}; }}
 QLabel#youNow {{
-  color: {t['accent']}; font-size: {s(18)}px; letter-spacing: 1px; margin-top: {s(18)}px;
+  color: {t['accent']}; font-size: {s(18)}px; letter-spacing: 1px; margin-top: {s(26)}px;
 }}
 QLabel#replyNow {{
-  color: {t['paper']}; font-size: {reply}px; font-weight: 300;
+  color: {t['paper']}; font-family: {VOICE_FONT};
+  font-size: {reply}px; font-weight: 300;
 }}
-QLabel#youOld {{ color: {t['you_old']}; font-size: {s(16)}px; margin-top: {s(18)}px; }}
-QLabel#replyOld {{ color: {t['reply_old']}; font-size: {s(20)}px; font-weight: 300; }}
-QLabel#toolLine {{ color: {t['faint']}; font-size: {s(15)}px; font-style: italic; }}
-QLabel#footer {{ color: {t['faint']}; font-size: {s(14)}px; letter-spacing: 1px; }}
+QLabel#youOld {{ color: {t['you_old']}; font-size: {s(16)}px; margin-top: {s(26)}px; }}
+QLabel#replyOld {{
+  color: {t['reply_old']}; font-family: {VOICE_FONT};
+  font-size: {s(20)}px; font-weight: 300;
+}}
+QLabel#toolLine {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(13)}px; }}
+QLabel#footer {{
+  color: {t['faint']}; font-family: {MONO_FONT};
+  font-size: {s(12)}px; letter-spacing: 1px;
+}}
+QLabel#prompt {{ color: {t['accent']}; font-family: {MONO_FONT}; font-size: {s(17)}px; }}
+QWidget#hrule {{ background: {hair_soft}; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
-QScrollBar:vertical {{ background: transparent; width: {s(6)}px; margin: 0; }}
-QScrollBar::handle:vertical {{ background: {t['faint']}; border-radius: 3px; min-height: {s(30)}px; }}
+QScrollBar:vertical {{ background: transparent; width: {s(3)}px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {hair}; border-radius: {s(1)}px; min-height: {s(30)}px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QLineEdit#cmd {{
-  background: transparent; border: none; border-bottom: 1px solid {t['faint']};
+  background: transparent; border: none; border-bottom: 1px solid {hair_soft};
   padding: {s(10)}px {s(2)}px; font-size: {s(19)}px; color: {t['paper']};
   selection-background-color: {t['sel']};
 }}
 QLineEdit#cmd:focus {{ border-bottom: 1px solid {t['accent']}; }}
 QLabel#epigraph {{
-  color: {t['faint']}; font-size: {s(24)}px; font-weight: 300; letter-spacing: 4px;
+  color: {t['faint']}; font-family: {VOICE_FONT};
+  font-size: {s(24)}px; font-weight: 300; letter-spacing: 4px;
 }}
-QLabel#clock {{ color: {t['dim']}; font-size: {s(15)}px; letter-spacing: 2px; }}
+QLabel#clock {{
+  color: {t['dim']}; font-family: {MONO_FONT};
+  font-size: {s(13)}px; letter-spacing: 2px;
+}}
 QLabel#paneltitle {{
-  color: {t['dim']}; font-size: {s(14)}px; letter-spacing: 4px; font-weight: 600;
+  color: {t['dim']}; font-size: {s(13)}px; letter-spacing: 4px; font-weight: 600;
 }}
 QLabel#optlabel {{ color: {t['dim']}; font-size: {s(14)}px; letter-spacing: 1px; }}
 QPushButton#optbtn {{
@@ -264,24 +306,28 @@ QPushButton#optbtn:hover {{ color: {t['paper']}; }}
 QPushButton#optbtn[on="true"] {{ color: {t['accent']}; }}
 QPushButton#actbtn {{
   background: transparent; color: {t['paper']}; border: none;
-  border-bottom: 1px solid {t['faint']}; font-size: {s(16)}px; padding: {s(5)}px {s(14)}px;
+  border-bottom: 1px solid {hair}; font-size: {s(16)}px; padding: {s(5)}px {s(14)}px;
 }}
 QPushButton#actbtn:hover {{ color: {t['accent']};
   border-bottom: 1px solid {t['accent']}; }}
 QPushButton#workbtn {{
   background: transparent; color: {t['dim']}; border: none;
-  border-bottom: 1px solid {t['faint']};
-  font-size: {s(15)}px; padding: {s(6)}px {s(12)}px;
+  border-bottom: 1px solid {hair};
+  font-family: {MONO_FONT}; font-size: {s(12)}px; letter-spacing: 1px;
+  padding: {s(6)}px {s(12)}px;
 }}
 QPushButton#workbtn:hover {{ color: {t['accent']};
   border-bottom: 1px solid {t['accent']}; }}
-QLabel#workmodel {{ color: {t['accent']}; font-size: {s(13)}px; letter-spacing: 2px; }}
+QLabel#workmodel {{
+  color: {t['accent']}; font-family: {MONO_FONT};
+  font-size: {s(12)}px; letter-spacing: 2px;
+}}
 QLabel#workidle {{ color: {t['faint']}; font-size: {s(15)}px; }}
 QLabel#worktask {{ color: {t['paper']}; font-size: {s(16)}px; font-weight: 400; margin-top: {s(6)}px; }}
-QLabel#workstep {{ color: {t['accent']}; font-size: {s(14)}px; }}
-QLabel#workdone {{ color: {t['dim']}; font-size: {s(14)}px; }}
+QLabel#workstep {{ color: {t['accent']}; font-family: {MONO_FONT}; font-size: {s(13)}px; }}
+QLabel#workdone {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(13)}px; }}
 QLabel#worktext {{ color: {t['faint']}; font-size: {s(13)}px; font-style: italic; }}
-QLabel#workfail {{ color: {t['accent']}; font-size: {s(15)}px; font-weight: 500; }}
+QLabel#workfail {{ color: {t['accent']}; font-family: {MONO_FONT}; font-size: {s(13)}px; font-weight: 500; }}
 """
 
 
@@ -669,8 +715,16 @@ class WorkPanel(QWidget):
         self._bg = QColor("#0b0a09")
         self._bg.setAlpha(70)
         self._line = QColor("#3d3a34")
+        self._line.setAlpha(110)
         self._cur_step = None    # the in-progress step label ("▸ …")
         self._text_label = None  # rolling narration label for this turn
+        # Ledger clock: elapsed mm:ss in the header while a turn runs —
+        # answers "how long has it been at this?" at a glance.
+        self._t0 = 0.0
+        self._model_name = ""
+        self._tick = QTimer(self)
+        self._tick.setInterval(1000)
+        self._tick.timeout.connect(self._on_tick)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 10, 16, 12)
@@ -681,6 +735,10 @@ class WorkPanel(QWidget):
         self.sub = QLabel("idle")
         self.sub.setObjectName("workmodel")
         outer.addWidget(self.sub)
+        head_rule = QWidget()
+        head_rule.setObjectName("hrule")
+        head_rule.setFixedHeight(1)
+        outer.addWidget(head_rule)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -704,9 +762,23 @@ class WorkPanel(QWidget):
         self._bg = QColor(t["bg_bot"])
         self._bg.setAlpha(80)
         self._line = QColor(t["faint"])
+        self._line.setAlpha(110)  # lane rule whispers like the other hairlines
         self.update()
 
+    def _on_tick(self):
+        if self._t0:
+            up = int(time.time() - self._t0)
+            self.sub.setText(
+                f"{self._model_name} · working · {up // 60}:{up % 60:02d}")
+
+    def _elapsed_str(self) -> str:
+        if not self._t0:
+            return ""
+        up = int(time.time() - self._t0)
+        return f"{up // 60}:{up % 60:02d}"
+
     def set_model(self, name: str):
+        self._model_name = name
         if self._cur_step is None and self.win and not self.win_busy():
             self.sub.setText(f"{name} · idle")
 
@@ -741,7 +813,10 @@ class WorkPanel(QWidget):
             self._idle.deleteLater()
             self._idle = None
         self._mark_cur_done()
-        self.sub.setText(f"{model} · working")
+        self._model_name = model
+        self._t0 = time.time()
+        self._tick.start()
+        self.sub.setText(f"{model} · working · 0:00")
         self._add("— " + " ".join(task.split())[:200], "worktask")
         self._text_label = None
 
@@ -762,13 +837,18 @@ class WorkPanel(QWidget):
 
     def done(self):
         self._mark_cur_done()
-        self.sub.setText("idle")
-        self._add("✓ done", "workdone")
+        took = self._elapsed_str()
+        self._tick.stop()
+        self._t0 = 0.0
+        self.sub.setText(f"{self._model_name} · idle" if self._model_name else "idle")
+        self._add("✓ done" + (f" · {took}" if took else ""), "workdone")
         self._text_label = None
 
     def fail(self, reason: str):
         self._mark_cur_done()
-        self.sub.setText("idle")
+        self._tick.stop()
+        self._t0 = 0.0
+        self.sub.setText(f"{self._model_name} · idle" if self._model_name else "idle")
         self._add("⚠ " + reason, "workfail")
         self._text_label = None
 
@@ -833,6 +913,10 @@ class GoatWindow(QWidget):
         bar.setContentsMargins(34, 22, 22, 0)
         wordmark = QLabel("G O A T")
         wordmark.setObjectName("wordmark")
+        # Live dot: the accent breathes next to the state word — instrument
+        # tell-tale, not decoration.
+        self.statedot = QLabel("●")
+        self.statedot.setObjectName("statedot")
         self.stateword = QLabel("booting")
         self.stateword.setObjectName("stateword")
         # Mic toggle lives in the titlebar — the single most-used switch of a
@@ -862,7 +946,9 @@ class GoatWindow(QWidget):
         b_close.setObjectName("winbtn")
         b_close.clicked.connect(QApplication.quit)
         bar.addWidget(wordmark)
-        bar.addSpacing(18)
+        bar.addSpacing(20)
+        bar.addWidget(self.statedot)
+        bar.addSpacing(7)
         bar.addWidget(self.stateword)
         bar.addStretch(1)
         self.clock = QLabel("")
@@ -888,7 +974,7 @@ class GoatWindow(QWidget):
 
         # ---- the page: conversation as typography ----
         self.col = QVBoxLayout()
-        self.col.setSpacing(6)
+        self.col.setSpacing(12)  # paragraphs, not a wall (2026-07-20)
         self.col.addStretch(1)
         host = QWidget()
         host.setLayout(self.col)
@@ -934,22 +1020,34 @@ class GoatWindow(QWidget):
         # ---- command field (always there — speak or type, both first-class) ----
         # Enter → talking brain (Gemini, middle). Ctrl+Enter → working brain
         # (left). Ctrl+Shift+Enter → hard brain (left). His manual dispatch.
+        # One hairline closes the page; the input rail sits under it
+        # ("instrument, refined" 2026-07-20 — shortcut clutter now lives in
+        # ONE footer line, the field itself just invites).
+        rule = QWidget()
+        rule.setObjectName("hrule")
+        rule.setFixedHeight(1)
+        rule_row = QHBoxLayout()
+        rule_row.setContentsMargins(34, 8, 34, 0)
+        rule_row.addWidget(rule)
+        lay.addLayout(rule_row)
+
+        prompt = QLabel("❯")
+        prompt.setObjectName("prompt")
         self.input = QLineEdit()
         self.input.setObjectName("cmd")
-        self.input.setPlaceholderText(
-            "talk to the talking brain — enter  ·  work: ctrl+enter  ·  hard: ctrl+shift+enter")
+        self.input.setPlaceholderText("say the word — or type")
         self.input.returnPressed.connect(self._submit)
-        send_btn = QPushButton("talk ↵")
+        send_btn = QPushButton("TALK ↵")
         send_btn.setObjectName("sendbtn")
         send_btn.setCursor(Qt.PointingHandCursor)
         send_btn.setToolTip("send to the talking brain — or press enter")
         send_btn.clicked.connect(self._submit)
-        work_btn = QPushButton("work ⌃↵")
+        work_btn = QPushButton("WORK ⌃↵")
         work_btn.setObjectName("workbtn")
         work_btn.setCursor(Qt.PointingHandCursor)
         work_btn.setToolTip("send to the working brain — or ctrl+enter")
         work_btn.clicked.connect(lambda: self._submit_work(False))
-        hard_btn = QPushButton("hard ⌃⇧↵")
+        hard_btn = QPushButton("HARD ⌃⇧↵")
         hard_btn.setObjectName("workbtn")
         hard_btn.setCursor(Qt.PointingHandCursor)
         hard_btn.setToolTip("send to the hard-task working brain — or ctrl+shift+enter")
@@ -958,23 +1056,26 @@ class GoatWindow(QWidget):
         cmd_row.setContentsMargins(0, 0, 0, 6)
         cmd_row.setSpacing(0)
         cmd_row.addStretch(5)
+        cmd_row.addWidget(prompt)
+        cmd_row.addSpacing(10)
         cmd_row.addWidget(self.input, stretch=8)
+        cmd_row.addSpacing(8)
         cmd_row.addWidget(send_btn)
         cmd_row.addWidget(work_btn)
         cmd_row.addWidget(hard_btn)
         cmd_row.addStretch(1)
         lay.addLayout(cmd_row)
 
-        # ---- footer: one quiet line ----
+        # ---- footer: ONE quiet mono line — shortcuts left, live meter right ----
+        hint = QLabel("esc voice · ⌃m mic · ⌃t theme · ⌃k type · ⌃n new · ⌃, settings")
+        hint.setObjectName("footer")
         self.footer = QLabel("")
         self.footer.setObjectName("footer")
         foot_row = QHBoxLayout()
         foot_row.setContentsMargins(34, 4, 34, 18)
-        foot_row.addWidget(self.footer)
-        foot_row.addStretch(1)
-        hint = QLabel("esc quiets voice · ctrl+m mic · ctrl+k type · ctrl+n new chat · ctrl+, settings")
-        hint.setObjectName("footer")
         foot_row.addWidget(hint)
+        foot_row.addStretch(1)
+        foot_row.addWidget(self.footer)
         lay.addLayout(foot_row)
 
         self.event_sig.connect(self._on_event)
@@ -1442,7 +1543,7 @@ class GoatWindow(QWidget):
         else:
             claude = ""
         self.footer.setText(
-            f"talk {self._model} · {mic} · {up // 60:02d}:{up % 60:02d}{claude}")
+            f"{self._model} · {mic} · {up // 60:02d}:{up % 60:02d}{claude}")
         self.clock.setText(time.strftime("%H:%M"))
         # Keep the fade lip glued across resizes (33ms — geometry set is cheap).
         if self.fade.width() != self.scroll.width():
