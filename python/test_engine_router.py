@@ -90,6 +90,9 @@ def make_app(client):
     app._work_started = 0.0
     app._last_tool = ""
     app._turn_has_tools = False
+    app._work_done_at = 0.0
+    app._work_failed = False
+    app._last_work_summary = ""
     app._last_ctx = 0
     app._exchanges = deque(maxlen=g.HANDOFF_KEEP)
     app._reply_acc = ""
@@ -109,15 +112,17 @@ class FakeLocal:
         self.chats = []
         self.noted = []
         self.offline = []
+        self.statuses = []
         self.LOCAL_KA = False
         self.LOCAL_NAME = "gemini flash"
 
     def available(self):
         return self.up
 
-    def chat(self, text, on_delta=None, lang="en", offline=False):
+    def chat(self, text, on_delta=None, lang="en", offline=False, status=""):
         self.chats.append(text)
         self.offline.append(offline)
+        self.statuses.append(status)
         if self.reply and self.reply != "ESCALATE" and on_delta:
             on_delta(self.reply)
         return self.reply
@@ -282,6 +287,86 @@ async def main():
         check("addressing 'hard brain' uses hard_model",
               c.models == [g.MODEL_OPUS],
               f"models={c.models}")
+
+        # 7b. mid-sentence address dispatches too (2026-07-18: his real
+        #     sentence got a stuck line instead of the work lane)
+        g.local_llm = fake = FakeLocal(up=True, reply="should not answer")
+        c = MockClient()
+        app = make_app(c)
+        app.hard_model = "opus 4.8"
+        await app._talk("okay, okay, thank you, how are you? please, ask "
+                        "the opus 4.8 to update goat's readme on github, "
+                        "okay?")
+        check("mid-sentence 'ask the opus' dispatches to the HARD brain",
+              fake.chats == [] and len(c.queries) == 1
+              and c.models == [g.MODEL_OPUS],
+              f"chats={fake.chats} models={c.models}")
+
+        # 7c. talking ABOUT the brains does not dispatch
+        g.local_llm = fake = FakeLocal(up=True, reply="They split the work.")
+        c = MockClient()
+        app = make_app(c)
+        await app._talk("tell me about the working brain and fable")
+        check("talking about the brains stays plain talk",
+              fake.chats and c.queries == [],
+              f"chats={fake.chats} queries={c.queries}")
+
+        # 7d. status QUESTION about the working brain stays TALK, and Gemini
+        #     receives the live status (2026-07-18: "hey what is working
+        #     brain doing" got ignored — no window into the work lane)
+        g.local_llm = fake = FakeLocal(up=True, reply="It's on the readme now.")
+        c = MockClient()
+        app = make_app(c)
+        app.busy = True
+        app._current_task = "update goat's readme on github"
+        app._work_started = time.monotonic() - 130
+        app._last_tool = "Edit"
+        await app._talk("hey what is working brain doing")
+        check("status question stays talk; live status reaches Gemini",
+              c.queries == [] and len(fake.chats) == 1
+              and "update goat's readme" in fake.statuses[0]
+              and "busy" in fake.statuses[0]
+              and "Edit" in fake.statuses[0],
+              f"queries={c.queries} statuses={fake.statuses}")
+
+        # 7e. Gemini punts ESCALATE on a status question -> deterministic
+        #     spoken status, never dispatching the QUESTION as a job
+        g.local_llm = fake = FakeLocal(up=True, reply="ESCALATE")
+        c = MockClient()
+        app = make_app(c)
+        app.busy = True
+        app._current_task = "refactor the parser"
+        app._work_started = time.monotonic()
+        await app._talk("what is the working brain doing right now?")
+        check("ESCALATE on a status question -> spoken status, no dispatch",
+              c.queries == []
+              and any("refactor the parser" in s for s in app.tts.spoken),
+              f"queries={c.queries} spoken={app.tts.spoken}")
+
+        # 7f. after the work turn ends, the status note carries the outcome
+        g.local_llm = fake = FakeLocal(up=True, reply="Yes — it wrapped up.")
+        c = MockClient()
+        app = make_app(c)
+        app._current_task = "run the test suite"
+        app._work_done_at = time.monotonic() - 30
+        app._last_work_summary = "all 58 tests green"
+        await app._talk("is fable done with the work?")
+        check("finished-job outcome reaches the talking brain",
+              c.queries == [] and "finished" in fake.statuses[0]
+              and "all 58 tests green" in fake.statuses[0],
+              f"queries={c.queries} statuses={fake.statuses}")
+
+        # 7g. the status regex never eats a real dispatch that happens to
+        #     contain an outcome verb ("…to finish the tests")
+        g.local_llm = fake = FakeLocal(up=True, reply="should not answer")
+        c = MockClient()
+        app = make_app(c)
+        app.hard_model = "opus 4.8"
+        await app._talk("how are you? please ask the opus to finish the tests")
+        check("dispatch containing an outcome verb still dispatches",
+              fake.chats == [] and len(c.queries) == 1
+              and c.models == [g.MODEL_OPUS],
+              f"chats={fake.chats} queries={c.queries}")
 
         # 8. Gemini reply 'ESCALATE' (he literally asked) -> work lane
         g.local_llm = fake = FakeLocal(up=True, reply="ESCALATE")

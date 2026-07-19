@@ -448,6 +448,34 @@ WORK_DISPATCH_RE = re.compile(
     r"hard\s+brain|full\s+model)\b", re.IGNORECASE)
 # Which of those addresses means the HARD brain specifically.
 WORK_HARD_RE = re.compile(r"\b(hard|opus)\b", re.IGNORECASE)
+# Mid-sentence dispatch (2026-07-18: "please, ask the opus 4.8 to update
+# goat's readme" got a stuck line — the address regex above only looks at
+# the message START). "ask/tell/have/get/let [the] <brain>" anywhere in the
+# sentence is just as deliberate as an opening address. Word boundaries keep
+# "asked"/"tell me about the working brain" from firing.
+WORK_ASK_RE = re.compile(
+    r"\b(ask|tell|have|get|let)\s+(the\s+)?"
+    r"(fable|opus|working\s+brain|work\s+brain|hard\s+brain|full\s+model)\b",
+    re.IGNORECASE)
+# A status QUESTION about the working brain ("hey what is working brain
+# doing", "is fable done?", "how's the work going?") is TALK, not dispatch —
+# 2026-07-18 he asked exactly that and the question fell through to the
+# silent work lane (question text contains "working brain", which the
+# ESCALATE allow-list honors), so the middle lane said nothing = "ignored".
+# Checked BEFORE dispatch, and again as a net if Gemini replies ESCALATE.
+WORK_STATUS_ASK_RE = re.compile(
+    # question-inverted forms only ("what is X doing", "is X done") so a
+    # statement or an order ("tell fable it is done…", "ask opus to finish
+    # the tests") can never false-match and lose its dispatch.
+    r"(?:\b(?:what(?:'s|\s+is|\s+are)?|how(?:'s|\s+is|\s+are)?)\s+(?:the\s+)?"
+    r"(?:work(?:ing)?\s+brain|work\s+lane|fable|opus|claude|work|it)\b"
+    r".{0,40}\b(?:doing|going|coming(?:\s+along)?|busy|up\s+to|working\s+on|"
+    r"done|finish(?:ed)?|status|progress)\b)"
+    r"|(?:\b(?:is|are|did|has)\s+(?:the\s+)?"
+    r"(?:work(?:ing)?\s+brain|fable|opus|claude|it)\b.{0,30}"
+    r"\b(?:done|finish(?:ed)?|busy|still\s+(?:working|going|running)|"
+    r"working\s+on|progress)\b)",
+    re.IGNORECASE)
 
 # Claude out-of-usage detection (widened 2026-07-17). The CLI's REAL wording
 # is "You've hit your session limit · resets 2:30am (Asia/Tbilisi)" — the old
@@ -484,9 +512,16 @@ You are GOAT — Giorgi's JARVIS-style AI, in a spoken conversation with him.
 Calm, warm, dry wit, no filler. 1-3 short speakable sentences unless he asks
 for depth. NO emoji — they get read aloud as words. His voice is transcribed
 and often garbled — decode intent, never mock it. You are ONE mind: GOAT,
-never Claude, never "the assistant". You are the talking side; a separate
-working side of you handles files, commands, and builds, so you never need
-tools here and never say you lack them — just talk with him.
+never Claude, never "the assistant".
+You are the talking side, and you HAVE hands: quick machine actions — open
+an app or website, volume, a short shell command, a quick file peek — you DO
+immediately yourself, then report in one short sentence. Never mention
+permissions, approvals, prompts, or "this session" — nothing gates you.
+Heavy work (code edits, repo changes, long builds) belongs to your working
+side: tell him to send it to the working brain, don't start it here.
+A [live working-brain status] note may prefix his message — that is the real,
+current state of your working side. If he asks what it's doing or whether
+it's done, answer from that note; never claim you can't see the work lane.
 """.strip()
 
 
@@ -737,6 +772,11 @@ class GoatApp:
         self._work_started = 0.0
         self._last_tool = ""
         self._turn_has_tools = False  # True once a work turn touches a tool
+        # work-lane OUTCOME tracking — feeds the talking brain's live status
+        # note so "what is the working brain doing?" gets a real answer.
+        self._work_done_at = 0.0      # monotonic time the last work turn ended
+        self._work_failed = False     # last work turn errored / hit the limit
+        self._last_work_summary = ""  # short tail of the last work reply
 
     # ---- audio-thread callbacks ----
     def _on_interrupt(self, _preroll):
@@ -923,9 +963,13 @@ class GoatApp:
             self.emit("delta", "")
             self.tts.say("Stopped.")
             return
-        # Manual dispatch: he addressed the working brain by name.
-        if WORK_DISPATCH_RE.match(text):
-            await self._work(text, hard=bool(WORK_HARD_RE.search(text[:40])),
+        # Manual dispatch: he addressed the working brain by name — as the
+        # opener ("Fable, build…") or mid-sentence ("please ask the opus to…").
+        # A status QUESTION about it ("what is the working brain doing?") is
+        # talk, not dispatch — Gemini answers it from the live status note.
+        if (not WORK_STATUS_ASK_RE.search(text)
+                and (WORK_DISPATCH_RE.match(text) or WORK_ASK_RE.search(text))):
+            await self._work(text, hard=bool(WORK_HARD_RE.search(text[:80])),
                              echo_you=False)
             return
         async with self._talk_lock:
@@ -964,11 +1008,22 @@ class GoatApp:
 
         try:
             reply = await asyncio.to_thread(
-                local_llm.chat, text, on_delta, self.language)
+                local_llm.chat, text, on_delta, self.language,
+                status=self._work_status_line())
         except Exception as e:  # noqa: BLE001 — talk brain down ≠ mute GOAT
             self.emit("status", f"talking brain failed: {e}")
             reply = None
         if reply == "ESCALATE":
+            if WORK_STATUS_ASK_RE.search(text):
+                # He asked ABOUT the work, Gemini punted anyway — answer the
+                # status question deterministically instead of dispatching
+                # his question as a job (seen live 2026-07-18: "what is
+                # working brain doing" vanished into the silent work lane).
+                line = ("Here's the working side: "
+                        + self._work_status_line() + ".")
+                self._speak_delta(line)
+                self._finish_talk(text, line)
+                return
             if self.claude_out:
                 # He asked for the working brain but the quota's spent. Say it
                 # RIGHT HERE — we already hold the talk lock, so calling
@@ -986,7 +1041,8 @@ class GoatApp:
                 self._speak_delta(line)
                 self._finish_talk(text, line)
                 return
-            await self._work(text, echo_you=False)
+            await self._work(text, hard=bool(WORK_HARD_RE.search(text[:80])),
+                             echo_you=False)
             return
         if reply is None:
             if not self.claude_out:
@@ -1014,8 +1070,12 @@ class GoatApp:
         self.emit("talkmodel", _friendly_model_name(model))
         self.emit("delta", "")
         reply = ""
+        # Same live window into the work lane that Gemini gets — so this
+        # voice can also answer "what is the working brain doing?".
+        send = (f"[live working-brain status: {self._work_status_line()}]\n\n"
+                + text)
         try:
-            await self.talk_client.query(text)
+            await self.talk_client.query(send)
             async for msg in self.talk_client.receive_response():
                 if isinstance(msg, AssistantMessage):
                     for b in msg.content:
@@ -1035,13 +1095,20 @@ class GoatApp:
 
     async def _ensure_talk_client(self, model: str):
         """Lazily spawn / re-model the dedicated talk client (own short
-        conversation-only session, no tools)."""
+        session — conversation plus QUICK actions)."""
         if self.talk_client is None:
             opts = ClaudeAgentOptions(
                 cwd=WORKSPACE, model=model, effort="low",
+                # bypassPermissions matches the work client — without it the
+                # cover voice hits Claude Code's approval gate on its first
+                # tool call and starts telling Giorgi to "tap the prompt"
+                # (seen live 2026-07-17: "open chrome" stonewalled). And
+                # max_turns=1 gave no room to act at all — 4 covers one
+                # quick action plus the spoken result.
+                permission_mode="bypassPermissions",
                 system_prompt={"type": "preset", "preset": "claude_code",
                                "append": TALK_PERSONA},
-                setting_sources=[], max_turns=1,
+                setting_sources=[], max_turns=4,
             )
             self.talk_client = ClaudeSDKClient(opts)
             await self.talk_client.connect()
@@ -1065,6 +1132,42 @@ class GoatApp:
             local_llm.note_exchange(text, reply)
         self._log_exchange(text, reply)
         self.emit("turn_done", "")
+
+    def _work_status_line(self) -> str:
+        """One live line about the WORK lane, fed to the talking brain every
+        talk turn so "what is the working brain doing?" gets a real answer
+        (his ask 2026-07-18 — before this, Gemini had no window into the
+        left lane and the question fell through to the silent work lane)."""
+        name = _friendly_model_name(self.model)
+        if self.claude_out:
+            return ("the working brain (Claude) is OUT OF USAGE"
+                    + (f" — resets around {self.claude_reset}"
+                       if self.claude_reset else "")
+                    + "; coding/repo jobs wait until then")
+        if self.busy and self._compacting:
+            return (f"{name} is tidying its own context between jobs — "
+                    "a few seconds, then it's free")
+        if self.busy:
+            mins = int((time.monotonic() - self._work_started) // 60)
+            age = f"about {mins} min in" if mins else "just started"
+            line = (f"{name} is busy right now ({age}) on: "
+                    f"\"{self._current_task[:160]}\"")
+            if self._last_tool:
+                line += f" — latest step: {self._last_tool}"
+            tail = self._reply_acc.strip()
+            if tail:
+                line += f" — its latest note: …{tail[-200:]}"
+            return line
+        if self._work_done_at:
+            mins = int((time.monotonic() - self._work_done_at) // 60)
+            ago = f"about {mins} min ago" if mins else "just now"
+            verdict = "FAILED" if self._work_failed else "finished"
+            line = (f"idle — its last job {verdict} {ago}: "
+                    f"\"{self._current_task[:120]}\"")
+            if self._last_work_summary:
+                line += f" — outcome: {self._last_work_summary[:220]}"
+            return line
+        return "idle — no job given to it yet this session"
 
     async def _work(self, text: str, hard: bool = False, echo_you: bool = False):
         """WORK lane (left panel): run the chosen Claude model WITH tools,
@@ -1151,7 +1254,8 @@ class GoatApp:
 
                 try:
                     reply = await asyncio.to_thread(
-                        local_llm.chat, prompt, on_delta, self.language, True)
+                        local_llm.chat, prompt, on_delta, self.language, True,
+                        status=self._work_status_line())
                 except Exception as e:  # noqa: BLE001 — cover must not crash
                     self.emit("status", f"offline cover failed: {e}")
                     reply = None
@@ -1255,10 +1359,15 @@ class GoatApp:
                     self.emit("work_step",
                               "context full — fresh session, retrying")
                     return True  # run() reconnects and retries
+                self._work_done_at = time.monotonic()
                 if self._track_usage(msg):
                     # Quota gone — mark it, show it on the left, keep Gemini
                     # talking in the middle (his rule 4). No retry.
                     self.claude_out = True
+                    self._work_failed = True
+                    self._last_work_summary = ("it hit Claude's usage limit "
+                                               "mid-job; the job waits for "
+                                               "the reset")
                     self.emit("work_fail", "Claude ran out of usage"
                               + (f" — resets {self.claude_reset}"
                                  if self.claude_reset else "")
@@ -1267,12 +1376,16 @@ class GoatApp:
                 elif msg.is_error and not self._reply_acc.strip():
                     # Work errored with nothing produced — surface it on the
                     # left, don't crash, don't speak (talk owns the voice).
+                    self._work_failed = True
+                    self._last_work_summary = f"it errored: {err[:150]}"
                     self.emit("work_fail", f"working brain error: {err[:120]}")
                     self.emit("work_done", "")
                 else:
                     if self.claude_out:
                         self.claude_out = False  # a turn landed — quota's back
                         self.emit("claude", "ok")
+                    self._work_failed = False
+                    self._last_work_summary = self._reply_acc.strip()[-250:]
                     # Turn done — log the exchange for future handoffs and
                     # measure how heavy this session has become.
                     if self.last_user_text:

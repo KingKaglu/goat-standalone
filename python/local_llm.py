@@ -194,17 +194,20 @@ def _post_stream(messages: list, tools, on_delta):
     try:
         return _do_stream(payload, key, on_delta)
     except urllib.error.HTTPError as e:
-        if e.code == 400 and "reasoning_effort" in payload:
+        if e.code == 400:
+            # e.read() is ONE-SHOT — log the body here or lose it forever
+            # (learned 2026-07-17: an empty "http 400:" hid the real cause).
             detail = ""
             try:
                 detail = e.read().decode("utf-8", "replace")
             except Exception:  # noqa: BLE001
                 pass
-            if "reasoning" in detail.lower():
+            if "reasoning" in detail.lower() and "reasoning_effort" in payload:
                 payload.pop("reasoning_effort")
                 print("[fast-brain] model rejected reasoning_effort — "
                       "retrying without it")
                 return _do_stream(payload, key, on_delta)
+            print(f"[fast-brain] http 400 body: {detail[:400]}")
         if (e.code in (429, 503) and GEMINI_FALLBACK
                 and payload["model"] == GEMINI_MODEL != GEMINI_FALLBACK):
             # Primary out of quota (429) or preview pool jammed (503) —
@@ -213,6 +216,19 @@ def _post_stream(messages: list, tools, on_delta):
             _primary_down[0] = time.monotonic() + PRIMARY_RETRY_S
             print(f"[fast-brain] {GEMINI_MODEL} {e.code} — falling back "
                   f"to {GEMINI_FALLBACK}")
+            payload["model"] = GEMINI_FALLBACK
+            return _do_stream(payload, key, on_delta)
+        raise
+    except OSError as e:
+        # Primary STALLED (connect/read timeout, seen live 2026-07-17 —
+        # capacity hangs don't always come back as a clean 503). Fall back
+        # only when NOTHING streamed yet: a mid-reply retry would make GOAT
+        # start the answer over out loud.
+        if (getattr(e, "goat_clean_stall", False) and GEMINI_FALLBACK
+                and payload["model"] == GEMINI_MODEL != GEMINI_FALLBACK):
+            _primary_down[0] = time.monotonic() + PRIMARY_RETRY_S
+            print(f"[fast-brain] {GEMINI_MODEL} stalled "
+                  f"({type(e).__name__}) — falling back to {GEMINI_FALLBACK}")
             payload["model"] = GEMINI_FALLBACK
             return _do_stream(payload, key, on_delta)
         raise
@@ -228,46 +244,64 @@ def _do_stream(payload: dict, key: str, on_delta):
     calls: dict[int, dict] = {}
     started = time.monotonic()
     saw_content = False
-    with urllib.request.urlopen(req, timeout=TIMEOUT_FIRST) as r:
-        for raw in r:
-            if time.monotonic() - started > TIMEOUT_STREAM:
-                raise TimeoutError("fast brain reply exceeded stream timeout")
-            line = raw.decode("utf-8", "replace").strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            choices = chunk.get("choices") or []
-            if not choices:
-                continue
-            delta = choices[0].get("delta") or {}
-            piece = delta.get("content") or ""
-            if piece:
-                if not saw_content:
-                    saw_content = True
-                    # One line per request in goat-app.log — the number to
-                    # look at next time "gemini feels slow".
-                    print(f"[fast-brain] first token "
-                          f"{time.monotonic() - started:.1f}s")
-                reply.append(piece)
-                if on_delta:
-                    on_delta(piece)
-            for tc in delta.get("tool_calls") or []:
-                idx = tc.get("index") or 0
-                entry = calls.setdefault(
-                    idx, {"id": "", "name": "", "arguments_raw": ""})
-                if tc.get("id"):
-                    entry["id"] = tc["id"]
-                fn = tc.get("function") or {}
-                if fn.get("name"):
-                    entry["name"] = fn["name"]
-                if fn.get("arguments"):
-                    entry["arguments_raw"] += fn["arguments"]
+    got_data = False  # any SSE line at all — a stall before this is retryable
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_FIRST) as r:
+            for raw in r:
+                got_data = True
+                if time.monotonic() - started > TIMEOUT_STREAM:
+                    raise TimeoutError(
+                        "fast brain reply exceeded stream timeout")
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                piece = delta.get("content") or ""
+                if piece:
+                    if not saw_content:
+                        saw_content = True
+                        # One line per request in goat-app.log — the number
+                        # to look at next time "gemini feels slow".
+                        print(f"[fast-brain] first token "
+                              f"{time.monotonic() - started:.1f}s")
+                    reply.append(piece)
+                    if on_delta:
+                        on_delta(piece)
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index") or 0
+                    entry = calls.setdefault(
+                        idx, {"id": "", "name": "", "arguments_raw": "",
+                              "extra": {}})
+                    if tc.get("id"):
+                        entry["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        entry["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        entry["arguments_raw"] += fn["arguments"]
+                    # Gemini 3 attaches thought signatures (extra_content
+                    # etc.) to tool calls and REJECTS the follow-up request
+                    # if they aren't echoed back — keep unknown fields.
+                    for k, v in tc.items():
+                        if k not in ("index", "id", "type", "function"):
+                            entry["extra"][k] = v
+    except urllib.error.HTTPError:
+        raise  # real HTTP status — handled (429/503/400) by the caller
+    except OSError as e:
+        # Timeout/connection drop. Mark whether it happened BEFORE any data
+        # arrived — only that kind is safe to retry on the fallback model.
+        e.goat_clean_stall = not got_data
+        raise
     return "".join(reply), [calls[i] for i in sorted(calls)]
 
 
@@ -304,8 +338,8 @@ HOLD_MAX = 64
 # escalate until i say so"). If his message literally names the full model,
 # ESCALATE is allowed to propagate; otherwise the fast brain does the work.
 ESCALATE_REQ_RE = re.compile(
-    r"\b(escalate|fable|full\s+model|working\s+brain|big\s+brain|"
-    r"the\s+other\s+brain)\b", re.IGNORECASE)
+    r"\b(escalate|fable|opus|full\s+model|working\s+brain|work\s+brain|"
+    r"hard\s+brain|big\s+brain|the\s+other\s+brain)\b", re.IGNORECASE)
 
 # Injected into the system prompt on the forced retry after a refusal/self-
 # escalate, to shove the model off the refusal and into using its tools.
@@ -353,7 +387,7 @@ class _Refusal(Exception):
 
 
 def chat(text: str, on_delta=None, lang: str = "en",
-         offline: bool = False) -> str | None:
+         offline: bool = False, status: str = "") -> str | None:
     """One fast-brain turn. Streams deltas via on_delta AFTER the reply can
     no longer be the ESCALATE keyword (same hold trick as before). Returns
     the full reply, "ESCALATE", or None on any failure (caller falls back to
@@ -361,7 +395,11 @@ def chat(text: str, on_delta=None, lang: str = "en",
 
     offline=True — Claude is down and the fast brain is the LAST resort:
     the persona is told not to escalate, and an ESCALATE reply anyway is
-    converted to a fixed honest line instead of a dead end."""
+    converted to a fixed honest line instead of a dead end.
+
+    status — one live line about the WORK lane (busy on what / last result),
+    injected into the system prompt so "what is the working brain doing?"
+    gets a real answer instead of a shrug (his ask 2026-07-18)."""
     # Live clock + machine facts: even big models guess the username, paths,
     # and date with total confidence. Ground all of it every call.
     now = datetime.datetime.now().astimezone()
@@ -382,6 +420,15 @@ def chat(text: str, on_delta=None, lang: str = "en",
     if lang == "ka":
         base_system += ("\nLANGUAGE: Giorgi switched you to Georgian (ქართული)."
                         " Reply ONLY in natural Georgian; keep code/paths as-is.")
+    if status:
+        base_system += (
+            "\n\nLIVE WORKING-BRAIN STATUS (real, right now — this is what "
+            "your working side is doing):\n" + status + "\n"
+            "If Giorgi asks what the working brain / Claude / the work is "
+            "doing, how it's going, or whether it's done, answer from this "
+            "note in your own words — never say you can't see it. A QUESTION "
+            "about the work is not an order to hand off: do NOT reply "
+            "ESCALATE to a status question.")
     if offline:
         base_system += (
             "\nRIGHT NOW Claude — the working brain — is unavailable (usage "
@@ -467,7 +514,9 @@ def chat(text: str, on_delta=None, lang: str = "en",
                     "tool_calls": [
                         {"id": c["id"] or f"call_{i}", "type": "function",
                          "function": {"name": c["name"],
-                                      "arguments": c["arguments_raw"] or "{}"}}
+                                      "arguments": c["arguments_raw"] or "{}"},
+                         # thought signatures etc. — Gemini 3 400s without them
+                         **c.get("extra", {})}
                         for i, c in enumerate(calls)],
                 })
                 for i, c in enumerate(calls):
