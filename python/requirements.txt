@@ -3,7 +3,7 @@ numpy
 scipy
 silero-vad
 livekit
-claude-agent-sdk
+claude-agent-sdk>=0.2.152
 httpx
 edge-tts
 soundfile

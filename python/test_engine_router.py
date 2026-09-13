@@ -14,7 +14,7 @@ import time
 from collections import deque
 
 import goat_app as g
-from claude_agent_sdk import ResultMessage
+from claude_agent_sdk import ResultMessage, StreamEvent
 
 
 class MockTTS:
@@ -72,9 +72,14 @@ def make_app(client):
     app._talk_client_model = None
     app._talk_lock = asyncio.Lock()
     # work lane
-    app.work_model = "fable 5"
-    app.hard_model = "fable 5"
+    app.work_model = g.DEFAULT_WORK
+    app.hard_model = g.DEFAULT_WORK
     app.model = g.MODEL_FAST
+    app.effort = g.DEFAULT_EFFORT
+    app.loop = None
+    app._work_options = None
+    app._effort_dirty = False
+    app._reopen_only = False
     app.busy = False
     app.last_user_text = None
     app.claude_out = False
@@ -237,7 +242,7 @@ async def main():
         g.local_llm = fake = FakeLocal(up=True, reply="nope")
         c = MockClient()
         app = make_app(c)
-        app.work_model = "fable 5"
+        app.work_model = "opus 5"
         await app._work("fix the scroll bug in the app")
         check("work -> working brain (work_model), Gemini skipped",
               fake.chats == [] and c.queries == ["fix the scroll bug in the app"]
@@ -248,11 +253,11 @@ async def main():
         # 4. hard dispatch -> hard_model, not work_model
         c = MockClient()
         app = make_app(c)
-        app.work_model = "fable 5"
-        app.hard_model = "opus 4.8"
+        app.work_model = "opus 5"
+        app.hard_model = "fable 5.1"
         await app._work("do the heavy refactor", hard=True)
         check("hard work -> hard_model",
-              c.models == [g.MODEL_OPUS]
+              c.models == [g.MODEL_FABLE]
               and c.queries == ["do the heavy refactor"],
               f"models={c.models} queries={c.queries}")
 
@@ -272,7 +277,7 @@ async def main():
         g.local_llm = fake = FakeLocal(up=True, reply="should not be used")
         c = MockClient()
         app = make_app(c)
-        app.work_model = "fable 5"
+        app.work_model = "opus 5"
         await app._talk("working brain, build the parser")
         check("addressing 'working brain' dispatches to the work lane",
               fake.chats == [] and c.queries == ["working brain, build the parser"]
@@ -282,10 +287,10 @@ async def main():
         # 7. addressing the HARD brain by name uses hard_model
         c = MockClient()
         app = make_app(c)
-        app.hard_model = "opus 4.8"
+        app.hard_model = "fable 5.1"
         await app._talk("hard brain, run the heavy migration")
         check("addressing 'hard brain' uses hard_model",
-              c.models == [g.MODEL_OPUS],
+              c.models == [g.MODEL_FABLE],
               f"models={c.models}")
 
         # 7b. mid-sentence address dispatches too (2026-07-18: his real
@@ -293,13 +298,13 @@ async def main():
         g.local_llm = fake = FakeLocal(up=True, reply="should not answer")
         c = MockClient()
         app = make_app(c)
-        app.hard_model = "opus 4.8"
+        app.hard_model = "fable 5.1"
         await app._talk("okay, okay, thank you, how are you? please, ask "
                         "the opus 4.8 to update goat's readme on github, "
                         "okay?")
         check("mid-sentence 'ask the opus' dispatches to the HARD brain",
               fake.chats == [] and len(c.queries) == 1
-              and c.models == [g.MODEL_OPUS],
+              and c.models == [g.MODEL_FABLE],
               f"chats={fake.chats} models={c.models}")
 
         # 7c. talking ABOUT the brains does not dispatch
@@ -361,18 +366,18 @@ async def main():
         g.local_llm = fake = FakeLocal(up=True, reply="should not answer")
         c = MockClient()
         app = make_app(c)
-        app.hard_model = "opus 4.8"
+        app.hard_model = "fable 5.1"
         await app._talk("how are you? please ask the opus to finish the tests")
         check("dispatch containing an outcome verb still dispatches",
               fake.chats == [] and len(c.queries) == 1
-              and c.models == [g.MODEL_OPUS],
+              and c.models == [g.MODEL_FABLE],
               f"chats={fake.chats} queries={c.queries}")
 
         # 8. Gemini reply 'ESCALATE' (he literally asked) -> work lane
         g.local_llm = fake = FakeLocal(up=True, reply="ESCALATE")
         c = MockClient()
         app = make_app(c)
-        app.work_model = "fable 5"
+        app.work_model = "opus 5"
         await app._talk("please just handle that for me")
         check("Gemini ESCALATE hands the turn to the work lane",
               c.queries == ["please just handle that for me"]
@@ -533,7 +538,7 @@ async def main():
         app.last_user_text = "big work"
         wants_fresh = await app._consume()
         check("compact fires past 60k and session survives",
-              "/compact" in c.queries and wants_fresh is None
+              "/compact" in c.queries and wants_fresh is False
               and app._last_ctx == 9000 and not app._compacting,
               f"queries={c.queries} wants_fresh={wants_fresh} ctx={app._last_ctx}")
 
@@ -568,15 +573,74 @@ async def main():
         app.last_user_text = "hello"
         wants_fresh = await app._consume()
         check("small session untouched",
-              wants_fresh is None and "/compact" not in c.queries
+              wants_fresh is False and "/compact" not in c.queries
               and app._last_ctx == 5000,
               f"queries={c.queries}")
+
+        # 17a. …and the panel is told how full the session is (the meter)
+        ctx_ev = [e for e in app.events if e[0] == "work_ctx"]
+        check("session fill reaches the work panel meter",
+              ctx_ev and ctx_ev[-1][1] == f"5000|{g.ROTATE_CTX}",
+              f"work_ctx={ctx_ev}")
+
+        # 17b. thinking depth (2026-09-14): the dial moves, the session is
+        #      kept, and _consume asks run() for a rebuild instead of exiting.
+        c = MockClient(script=[])
+        app = make_app(c)
+        app.set_effort("low")
+        moved = (app.effort == "low" and app._effort_dirty
+                 and has(app, "effort"))
+        app._reopen_only = True
+        wants_fresh = await app._consume()
+        check("effort change asks for a session-keeping reopen",
+              moved and wants_fresh is True,
+              f"effort={app.effort} dirty={app._effort_dirty} "
+              f"wants_fresh={wants_fresh}")
+
+        # 17c. an unknown level is ignored (no reopen on a typo / bad voice
+        #      transcription — that would drop the session for nothing).
+        app = make_app(c)
+        app.set_effort("maximum")
+        check("unknown thinking level is refused",
+              app.effort == g.DEFAULT_EFFORT and not app._effort_dirty,
+              f"effort={app.effort} dirty={app._effort_dirty}")
+
+        # 17d. summarized thinking reaches the left panel as work_think
+        def _ev(delta):
+            return StreamEvent(uuid="u", session_id="s",
+                               event={"type": "content_block_delta",
+                                      "delta": delta})
+        think_ev = _ev({"type": "thinking_delta",
+                        "thinking": "checking the config first"})
+        text_ev = _ev({"type": "text_delta", "text": "done"})
+        c = MockClient(script=[think_ev, text_ev, result_msg()])
+        app = make_app(c)
+        app.busy = True
+        app.last_user_text = "task"
+        await app._consume()
+        kinds = [e[0] for e in app.events]
+        check("thinking summaries stream to the work panel",
+              "work_think" in kinds and "work_text" in kinds
+              and kinds.index("work_think") < kinds.index("work_text"),
+              f"events={kinds}")
+
+        # 17e. thinking is muted while a /compact turn runs (it is not his
+        #      work and must not litter the ledger)
+        c = MockClient(script=[think_ev, result_msg()])
+        app = make_app(c)
+        app.busy = True
+        app._compacting = True
+        app.last_user_text = "task"
+        await app._consume()
+        check("compact turn does not leak thinking into the ledger",
+              "work_think" not in [e[0] for e in app.events],
+              f"events={[e[0] for e in app.events]}")
 
         # 18. work bridges recent talk-lane chat as context
         g.local_llm = fake = FakeLocal(up=True, reply="Sounds fun.")
         c = MockClient()
         app = make_app(c)
-        app.work_model = "fable 5"
+        app.work_model = "opus 5"
         await app._talk("thinking about a beach day")
         await app._work("build the beach-day planner")
         check("work turn bridges unseen talk-lane chat",
@@ -736,11 +800,13 @@ async def main():
     import ui_qt
     check("UI default roles present",
           ui_qt.DEFAULT_CFG["talk_brain"] == "gemini flash"
-          and ui_qt.DEFAULT_CFG["work_model"] == "fable 5"
-          and ui_qt.DEFAULT_CFG["hard_model"] == "fable 5")
+          and ui_qt.DEFAULT_CFG["work_model"] == "opus 5"
+          and ui_qt.EFFORT_OPTS[-1] == "max"
+          and ui_qt.DEFAULT_CFG["effort"] == "max"
+          and ui_qt.DEFAULT_CFG["hard_model"] == "opus 5")
     check("UI brain option lists",
           ui_qt.TALK_OPTS == ["gemini flash", "sonnet 5"]
-          and ui_qt.WORK_OPTS == ["fable 5", "opus 4.8"])
+          and ui_qt.WORK_OPTS == ["opus 5", "fable 5.1"])
 
     def _clamped(v):
         return min(ui_qt.UI_SCALE_MAX, max(ui_qt.UI_SCALE_MIN, float(v)))

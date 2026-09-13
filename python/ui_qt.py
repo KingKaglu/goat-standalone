@@ -46,6 +46,7 @@ import time
 from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
+    QSize,
     QPointF,
     QPropertyAnimation,
     QRect,
@@ -69,6 +70,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
     QScrollArea,
@@ -129,7 +131,18 @@ TEXT_SIZES = {"small": 24, "normal": 32, "large": 40}
 #   working brain  — the left lane, tools, for normal work.
 #   hard brain     — the left lane, for heavy work.
 TALK_OPTS = ["gemini flash", "sonnet 5"]
-WORK_OPTS = ["fable 5", "opus 4.8"]
+# Roster refreshed 2026-09-14: Opus 5 replaces Opus 4.8, Fable 5.1 replaces
+# Fable 5. Opus 5 leads because Fable bills from a credit bucket his account
+# doesn't have (measured) — picking Fable still works, the engine just falls
+# back to Opus 5 instead of dead-ending the work lane.
+WORK_OPTS = ["opus 5", "fable 5.1"]
+# Old names, so a saved config from before the refresh lands on the model
+# that replaced its pick instead of being silently reset.
+WORK_OPTS_RENAMED = {"fable 5": "fable 5.1", "opus 4.8": "opus 5",
+                     "opus 4.6": "opus 5", "sonnet 4.6": "opus 5"}
+# Thinking depth on the work lane (his order 2026-09-14: "highest thinking").
+# Same ladder the API exposes; "max" is the top and the default.
+EFFORT_OPTS = ["low", "medium", "high", "xhigh", "max"]
 # Global interface zoom — one factor scales EVERY font/padding in the app.
 # Drawer offers presets; voice can set any value in [MIN,MAX] via set_ui_scale.
 UI_SCALES = {"100%": 1.0, "125%": 1.25, "150%": 1.5, "175%": 1.75, "200%": 2.0}
@@ -146,7 +159,8 @@ COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
 DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
                "lang": "en", "talk_brain": "gemini flash",
-               "work_model": "fable 5", "hard_model": "fable 5",
+               "work_model": "opus 5", "hard_model": "opus 5",
+               "effort": "max",
                "scale": 1.0, "colors": {},
                "geom": None}  # [x, y, w, h] — remembered window box
 
@@ -170,10 +184,11 @@ def load_ui_config() -> dict:
         cfg["lang"] = "en"
     if cfg["talk_brain"] not in TALK_OPTS:
         cfg["talk_brain"] = "gemini flash"
-    if cfg["work_model"] not in WORK_OPTS:
-        cfg["work_model"] = "fable 5"
-    if cfg["hard_model"] not in WORK_OPTS:
-        cfg["hard_model"] = "fable 5"
+    for key in ("work_model", "hard_model"):
+        if cfg[key] not in WORK_OPTS:
+            cfg[key] = WORK_OPTS_RENAMED.get(cfg[key], "opus 5")
+    if cfg["effort"] not in EFFORT_OPTS:
+        cfg["effort"] = "max"
     try:
         cfg["scale"] = min(UI_SCALE_MAX, max(UI_SCALE_MIN, float(cfg["scale"])))
     except (TypeError, ValueError):
@@ -327,6 +342,16 @@ QLabel#worktask {{ color: {t['paper']}; font-size: {s(16)}px; font-weight: 400; 
 QLabel#workstep {{ color: {t['accent']}; font-family: {MONO_FONT}; font-size: {s(13)}px; }}
 QLabel#workdone {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(13)}px; }}
 QLabel#worktext {{ color: {t['faint']}; font-size: {s(13)}px; font-style: italic; }}
+/* Reasoning summaries (adaptive thinking, display=summarized). Quieter than
+   a step and set in the voice face, because this is the brain talking to
+   itself — it must read as thought, not as a logged action. */
+QLabel#workthink {{
+  color: {t['dim']}; font-family: {VOICE_FONT}; font-size: {s(13)}px;
+  font-style: italic; padding-left: {s(10)}px;
+  border-left: 1px solid {hairline(t, 70)}; margin: {s(2)}px 0; }}
+QLabel#workctx {{
+  color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px;
+  letter-spacing: 1px; padding-top: {s(4)}px; }}
 QLabel#workfail {{ color: {t['accent']}; font-family: {MONO_FONT}; font-size: {s(13)}px; font-weight: 500; }}
 """
 
@@ -574,6 +599,73 @@ class TopFade(QWidget):
         p.fillRect(self.rect(), g)
 
 
+class FlowLayout(QLayout):
+    """Left-aligned row of buttons that WRAPS instead of clipping.
+
+    The drawer is 24% of the window, and a row like the thinking ladder
+    (low…max) already fills it at 100%; at 150% interface scale a plain
+    QHBoxLayout just pushed the last options past the edge with no scrollbar
+    to reach them. Wrapping keeps every switch reachable at every scale.
+    """
+
+    def __init__(self, parent=None, spacing: int = 10):
+        super().__init__(parent)
+        self._items: list = []
+        self._space = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    # -- QLayout plumbing
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._lay(QRect(0, 0, width, 0), test=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._lay(rect, test=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for it in self._items:
+            size = size.expandedTo(it.minimumSize())
+        return size
+
+    def _lay(self, rect: QRect, test: bool) -> int:
+        x, y, line_h = rect.x(), rect.y(), 0
+        for it in self._items:
+            hint = it.sizeHint()
+            nxt = x + hint.width()
+            if nxt > rect.right() and line_h > 0:      # doesn't fit — wrap
+                x = rect.x()
+                y += line_h + self._space
+                nxt = x + hint.width()
+                line_h = 0
+            if not test:
+                it.setGeometry(QRect(QPoint(x, y), hint))
+            x = nxt + self._space
+            line_h = max(line_h, hint.height())
+        return y + line_h - rect.y()
+
+
 class SettingsPanel(QWidget):
     """Quiet right-hand drawer: every switch GOAT and the UI expose.
     Same design law as the rest — typography, one accent, no chrome."""
@@ -615,8 +707,7 @@ class SettingsPanel(QWidget):
 
         def row(label, key, options, handler):
             lay.addWidget(self._mklabel(label))
-            h = QHBoxLayout()
-            h.setSpacing(2)
+            h = FlowLayout(spacing=2)
             btns = []
             for opt in options:
                 b = QPushButton(opt)
@@ -625,13 +716,13 @@ class SettingsPanel(QWidget):
                 b.clicked.connect(lambda _=False, o=opt: handler(o))
                 h.addWidget(b)
                 btns.append((opt, b))
-            h.addStretch(1)
             lay.addLayout(h)
             self._groups[key] = btns
 
         row("talking brain", "talk_brain", TALK_OPTS, self.win.set_talk_opt)
         row("working brain", "work_model", WORK_OPTS, self.win.set_work_opt)
         row("hard brain", "hard_model", WORK_OPTS, self.win.set_hard_opt)
+        row("thinking", "effort", EFFORT_OPTS, self.win.set_effort_opt)
         row("theme", "theme", THEME_ORDER, self.win.set_theme_opt)
         row("interface size", "scale", list(UI_SCALES), self.win.set_scale_opt)
         row("text size", "text", list(TEXT_SIZES), self.win.set_text_opt)
@@ -703,6 +794,44 @@ class SettingsPanel(QWidget):
         p.drawLine(0, 0, 0, self.height())
 
 
+class CtxMeter(QWidget):
+    """How full the working brain's session is, against the trim line.
+
+    GOAT has always known this number — it decides when the session gets
+    compacted or rotated — but it lived only in the log. On the panel it
+    answers the question he actually asks ("is it about to forget?") without
+    him having to ask it. One hairline track, one accent fill, no chrome.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(3)
+        self._frac = 0.0
+        self._track = QColor("#3d3a34")
+        self._fill = QColor("#c8622a")
+
+    def set_theme(self, t: dict):
+        self._track = QColor(t["faint"])
+        self._track.setAlpha(90)
+        self._fill = QColor(t["accent"])
+        self.update()
+
+    def set_frac(self, frac: float):
+        frac = max(0.0, min(1.0, frac))
+        if abs(frac - self._frac) > 0.001:
+            self._frac = frac
+            self.update()
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        y = self.height() - 1
+        p.setPen(QPen(self._track, 1))
+        p.drawLine(0, y, self.width(), y)
+        if self._frac > 0:
+            p.setPen(QPen(self._fill, 1))
+            p.drawLine(0, y, int(self.width() * self._frac), y)
+
+
 class WorkPanel(QWidget):
     """Left lane: what the WORKING brain is doing right now — the task, each
     live step (marked ✓ the moment the next begins or the turn ends), and the
@@ -718,6 +847,10 @@ class WorkPanel(QWidget):
         self._line.setAlpha(110)
         self._cur_step = None    # the in-progress step label ("▸ …")
         self._text_label = None  # rolling narration label for this turn
+        self._think_label = None  # rolling reasoning label for this block
+        # Thinking depth, shown in the sub line from the first paint — the
+        # engine confirms it on bind, but the saved setting is true already.
+        self._effort = str(getattr(win, "cfg", {}).get("effort", "") or "")
         # Ledger clock: elapsed mm:ss in the header while a turn runs —
         # answers "how long has it been at this?" at a glance.
         self._t0 = 0.0
@@ -758,18 +891,51 @@ class WorkPanel(QWidget):
         self._idle.setWordWrap(True)
         self.col.insertWidget(0, self._idle)
 
+        # Session-fill instrument, pinned to the bottom of the lane. Hidden
+        # until the first turn reports a size — an empty meter says nothing.
+        self.meter = CtxMeter()
+        self.ctx_label = QLabel("")
+        self.ctx_label.setObjectName("workctx")
+        outer.addWidget(self.meter)
+        outer.addWidget(self.ctx_label)
+        self.meter.hide()
+        self.ctx_label.hide()
+
+    def context(self, used: int, trim: int):
+        """Session fill after a turn: 'context 23k · trims at 60k'."""
+        self.meter.show()
+        self.ctx_label.show()
+        self.meter.set_frac(used / trim if trim else 0.0)
+        self.ctx_label.setText(
+            f"context {_fmt_tok(used)} · trims at {_fmt_tok(trim)}")
+
     def set_theme(self, t: dict):
         self._bg = QColor(t["bg_bot"])
         self._bg.setAlpha(80)
         self._line = QColor(t["faint"])
         self._line.setAlpha(110)  # lane rule whispers like the other hairlines
+        self.meter.set_theme(t)
         self.update()
+
+    def _sub(self, tail: str) -> str:
+        """Header sub-line: brain · thinking depth · state. The depth is on
+        screen at all times because at max effort a silent minute is normal
+        and he should never have to guess whether that is the setting."""
+        bits = [self._model_name or "idle"]
+        if self._effort:
+            bits.append(self._effort)
+        bits.append(tail)
+        return " · ".join(b for b in bits if b)
+
+    def set_effort(self, level: str):
+        self._effort = level
+        self.sub.setText(self._sub("working · " + self._elapsed_str()
+                                   if self._t0 else "idle"))
 
     def _on_tick(self):
         if self._t0:
             up = int(time.time() - self._t0)
-            self.sub.setText(
-                f"{self._model_name} · working · {up // 60}:{up % 60:02d}")
+            self.sub.setText(self._sub(f"working · {up // 60}:{up % 60:02d}"))
 
     def _elapsed_str(self) -> str:
         if not self._t0:
@@ -780,7 +946,7 @@ class WorkPanel(QWidget):
     def set_model(self, name: str):
         self._model_name = name
         if self._cur_step is None and self.win and not self.win_busy():
-            self.sub.setText(f"{name} · idle")
+            self.sub.setText(self._sub("idle"))
 
     def win_busy(self) -> bool:
         return bool(self.win and self.win.goat and self.win.goat.busy)
@@ -816,16 +982,31 @@ class WorkPanel(QWidget):
         self._model_name = model
         self._t0 = time.time()
         self._tick.start()
-        self.sub.setText(f"{model} · working · 0:00")
+        self.sub.setText(self._sub("working · 0:00"))
         self._add("— " + " ".join(task.split())[:200], "worktask")
         self._text_label = None
+        self._think_label = None
 
     def step(self, desc: str):
         self._mark_cur_done()
         self._cur_step = self._add("▸ " + desc, "workstep")
         self._text_label = None
+        self._think_label = None
+
+    def think(self, piece: str):
+        """Streamed thinking summary. One rolling label per reasoning block:
+        the next step, note, or narration closes it, so the ledger reads as
+        thought → action → thought instead of one endless paragraph."""
+        if self._idle is not None:
+            self._idle.deleteLater()
+            self._idle = None
+        if self._think_label is None:
+            self._think_label = self._add("… ", "workthink")
+        self._think_label.setText((self._think_label.text() + piece)[-700:])
+        self._down()
 
     def text(self, piece: str):
+        self._think_label = None
         if self._text_label is None:
             self._text_label = self._add("", "worktext")
         self._text_label.setText((self._text_label.text() + piece)[-1200:])
@@ -834,23 +1015,26 @@ class WorkPanel(QWidget):
     def add(self, note: str):
         self._add("+ " + note, "workstep")
         self._text_label = None
+        self._think_label = None
 
     def done(self):
         self._mark_cur_done()
         took = self._elapsed_str()
         self._tick.stop()
         self._t0 = 0.0
-        self.sub.setText(f"{self._model_name} · idle" if self._model_name else "idle")
+        self.sub.setText(self._sub("idle"))
         self._add("✓ done" + (f" · {took}" if took else ""), "workdone")
         self._text_label = None
+        self._think_label = None
 
     def fail(self, reason: str):
         self._mark_cur_done()
         self._tick.stop()
         self._t0 = 0.0
-        self.sub.setText(f"{self._model_name} · idle" if self._model_name else "idle")
+        self.sub.setText(self._sub("idle"))
         self._add("⚠ " + reason, "workfail")
         self._text_label = None
+        self._think_label = None
 
     def files(self, paths: list):
         for p in paths:
@@ -1067,7 +1251,8 @@ class GoatWindow(QWidget):
         lay.addLayout(cmd_row)
 
         # ---- footer: ONE quiet mono line — shortcuts left, live meter right ----
-        hint = QLabel("esc voice · ⌃m mic · ⌃t theme · ⌃k type · ⌃n new · ⌃, settings")
+        hint = QLabel("esc voice · ⌃m mic · ⌃t theme · ⌃e think · "
+                     "⌃k type · ⌃n new · ⌃, settings")
         hint.setObjectName("footer")
         self.footer = QLabel("")
         self.footer.setObjectName("footer")
@@ -1088,6 +1273,7 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+O"), self, self._pick_files)
         QShortcut(QKeySequence("Ctrl+M"), self, self.toggle_mic)
         QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
+        QShortcut(QKeySequence("Ctrl+E"), self, self.cycle_effort)
         # Manual work dispatch: Ctrl+Enter → working brain, +Shift → hard.
         QShortcut(QKeySequence("Ctrl+Return"), self, lambda: self._submit_work(False))
         QShortcut(QKeySequence("Ctrl+Enter"), self, lambda: self._submit_work(False))
@@ -1154,6 +1340,15 @@ class GoatWindow(QWidget):
         self.panel.set_theme(t)
         self.panel.refresh()
 
+    def cycle_effort(self):
+        """Ctrl+E — step the work lane's thinking depth up the ladder and
+        wrap. Same dial as the drawer row; the engine reopens its session."""
+        i = EFFORT_OPTS.index(self.cfg["effort"]) if self.cfg["effort"] in EFFORT_OPTS else len(EFFORT_OPTS) - 1
+        self.set_effort_opt(EFFORT_OPTS[(i + 1) % len(EFFORT_OPTS)])
+        self.work_panel.set_effort(self.cfg["effort"])
+        self._on_event("status", f"thinking: {self.cfg['effort']}")
+        self.panel.refresh()
+
     def cycle_theme(self):
         i = THEME_ORDER.index(self._theme_name) if self._theme_name in THEME_ORDER else 0
         name = THEME_ORDER[(i + 1) % len(THEME_ORDER)]
@@ -1182,7 +1377,11 @@ class GoatWindow(QWidget):
 
     def _place_panel(self):
         # Below the title bar — window controls and the ≡ stay reachable.
-        w = max(320, int(self.canvas.width() * 0.24))
+        # Width tracks the interface scale: at 150% the type is 1.5x, so a
+        # fixed 24% strip would fit half the switches it fits at 100%.
+        scale = float(self.cfg.get("scale", 1.0) or 1.0)
+        w = max(int(320 * scale), int(self.canvas.width() * 0.24))
+        w = min(w, int(self.canvas.width() * 0.6))
         top = self._titlebar_h
         self.panel.setGeometry(self.canvas.width() - w, top,
                                w, self.canvas.height() - top)
@@ -1283,15 +1482,25 @@ class GoatWindow(QWidget):
         self._save()
 
     def set_work_opt(self, name: str):
-        self.cfg["work_model"] = name if name in WORK_OPTS else "fable 5"
+        self.cfg["work_model"] = name if name in WORK_OPTS else "opus 5"
         if self.goat:
             self.goat.set_work_model(self.cfg["work_model"])
         self._save()
 
     def set_hard_opt(self, name: str):
-        self.cfg["hard_model"] = name if name in WORK_OPTS else "fable 5"
+        self.cfg["hard_model"] = name if name in WORK_OPTS else "opus 5"
         if self.goat:
             self.goat.set_hard_model(self.cfg["hard_model"])
+        self._save()
+
+    def set_effort_opt(self, level: str):
+        """Thinking depth on the work lane. The engine can't re-effort a live
+        session, so it reopens the work client (same conversation) itself."""
+        if level not in EFFORT_OPTS:
+            level = "max"
+        self.cfg["effort"] = level
+        if self.goat:
+            self.goat.set_effort(level)
         self._save()
 
     def set_lang_opt(self, label: str):
@@ -1336,8 +1545,10 @@ class GoatWindow(QWidget):
         # model + persona note itself from this attribute.
         goat.language = self.cfg["lang"]
         goat.talk_brain = self.cfg.get("talk_brain", "gemini flash")
-        goat.work_model = self.cfg.get("work_model", "fable 5")
-        goat.hard_model = self.cfg.get("hard_model", "fable 5")
+        goat.work_model = self.cfg.get("work_model", "opus 5")
+        goat.hard_model = self.cfg.get("hard_model", "opus 5")
+        goat.effort = self.cfg.get("effort", "max")
+        self.work_panel.set_effort(self.cfg.get("effort", "max"))
         self.panel.refresh()
 
     # ---- session actions ----
@@ -1725,6 +1936,22 @@ class GoatWindow(QWidget):
             self.work_panel.step(data)
         elif kind == "work_text":
             self.work_panel.text(data)
+        elif kind == "work_ctx":
+            used, _, trim = data.partition("|")
+            try:
+                self.work_panel.context(int(used), int(trim))
+            except ValueError:
+                pass
+        elif kind == "work_think":
+            # Reasoning summary from the work lane (adaptive thinking).
+            self.work_panel.think(data)
+        elif kind == "effort":
+            # Thinking depth changed (drawer, or GOAT itself) — show it and
+            # light the right button in the drawer.
+            self.cfg["effort"] = data if data in EFFORT_OPTS else "max"
+            self.work_panel.set_effort(self.cfg["effort"])
+            self.panel.refresh()
+            self._save()
         elif kind == "work_add":
             self.work_panel.add(data)
         elif kind == "work_files":

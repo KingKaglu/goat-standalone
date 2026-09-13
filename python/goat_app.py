@@ -61,20 +61,42 @@ TRANSCRIPT_MAX = 400  # lines kept when the file is trimmed
 #   hard brain     — a Claude model for heavy work; same left lane.
 # Nothing switches models on its own anymore — the roster below is the whole
 # of it, and the selected model is set on the work client per dispatch.
-MODEL_FULL = "claude-fable-5"
+# Roster refreshed 2026-09-14 (his order: "latest models, highest thinking").
+# MODEL_FULL is the DEFAULT working brain and the fallback for every lookup.
+MODEL_FULL = "claude-opus-5"      # was claude-opus-4-8
 MODEL_FAST = "claude-sonnet-5"
-MODEL_OPUS = "claude-opus-4-8"
+MODEL_FABLE = "claude-fable-5-1"  # was claude-fable-5 (Fable 5.1, GA 2026-09-01)
+# Measured 2026-09-14 on his account: `claude --model claude-fable-5-1 -p …`
+# answers "You're out of usage credits" — the Fable tier bills from a
+# separate credit bucket he has none of, while Opus 5 / Sonnet 5 answer
+# normally. Fable therefore stays SELECTABLE but is no longer the default
+# (it silently killed every work dispatch), and the work client carries
+# fallback_model=MODEL_FULL so picking it can never dead-end the left lane.
 # What the footer shows. The UI displays these verbatim — keep them speakable.
-MODEL_NAMES = {MODEL_FULL: "fable 5", MODEL_FAST: "sonnet 5",
-               MODEL_OPUS: "opus 4.8"}
+MODEL_NAMES = {MODEL_FULL: "opus 5", MODEL_FAST: "sonnet 5",
+               MODEL_FABLE: "fable 5.1"}
 # Selectable Claude models for the working / hard roles (display -> id).
-WORK_BRAINS = {"fable 5": MODEL_FULL, "opus 4.8": MODEL_OPUS}
+WORK_BRAINS = {"opus 5": MODEL_FULL, "fable 5.1": MODEL_FABLE}
 # Talking-brain choices. "gemini flash" = the local_llm transport (always
 # up, free); "sonnet 5" routes talk through a dedicated Claude talk client.
 TALK_BRAINS = {"gemini flash": "gemini", "sonnet 5": MODEL_FAST}
 DEFAULT_TALK = "gemini flash"
-DEFAULT_WORK = "fable 5"
-DEFAULT_HARD = "fable 5"
+DEFAULT_WORK = "opus 5"
+DEFAULT_HARD = "opus 5"
+
+# ---- thinking depth (his order 2026-09-14: "the highest thinking") ----
+# Effort is what buys thinking depth on the current models: adaptive thinking
+# is always on, and output_config.effort decides how deep it goes. "max" is
+# the top of the range; the drawer can dial it down for cheap/fast turns.
+# Applied on the WORK client only — the talk lane is latency-bound and stays
+# at "low" (a spoken answer that thinks for 20s is a broken answer).
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT = os.environ.get("GOAT_EFFORT", "max").strip().lower()
+if DEFAULT_EFFORT not in EFFORT_LEVELS:
+    DEFAULT_EFFORT = "max"
+# Thinking summaries stream to the left panel so the work lane shows reasoning
+# as it happens instead of a silent gap before the first tool call.
+THINKING_CFG = {"type": "adaptive", "display": "summarized"}
 
 # ---- token economy (2026-07-10, Giorgi: "GOAT burns way more than Claude
 # Code for the same work — fix it") ----
@@ -349,8 +371,9 @@ Your replies are read aloud by text-to-speech:
 YOUR TWO BRAINS (know thyself — his order 2026-07-10: use models wisely,
 never waste the big brain on idle talk):
 You run on a two-tier brain and you KNOW it. Sonnet 5 is your talking brain —
-every fresh turn starts there. Fable 5 is your working brain — expensive,
-reserved for turns that need tools. Tokens are your fuel; the working brain
+every fresh turn starts there. Opus 5 is your working brain (Fable 5.1 when
+he picks it in the drawer) — expensive, thinking at maximum effort, reserved
+for turns that need tools. Tokens are your fuel; the working brain
 burns them fast. A JARVIS that fires the reactor to answer "what time is it"
 is a badly built JARVIS.
 - The "[fast-turn]" tag on his message = you are the talking brain right now.
@@ -373,7 +396,8 @@ is a badly built JARVIS.
   the big model, and you never need to ask to come back down.
 - MODEL TRUTH (his order, 2026-07-10 — the old fast model lied about this
   and it broke his trust): if he asks which model is answering, tell the
-  truth, derived ONLY from the tag: tagged = sonnet 5, untagged = fable 5.
+  truth, derived ONLY from the tag: tagged = sonnet 5, untagged = the
+  working brain he has selected (Opus 5 unless he switched it to Fable 5.1).
   NEVER claim to be the full model on a tagged turn. NEVER claim you
   switched models or promise "now we're on X" — a reply cannot switch
   anything; only escalation or the app switches. If he orders a switch to
@@ -724,13 +748,20 @@ class GoatApp:
         self.talk_brain = DEFAULT_TALK       # "gemini flash" (or "sonnet 5")
         self.work_model = DEFAULT_WORK        # normal working brain
         self.hard_model = DEFAULT_HARD        # heavy working brain
+        # Thinking depth on the work lane. Effort is fixed when the client
+        # connects (there is no set_effort on a live session), so changing it
+        # from the drawer flags a reopen that the next dispatch performs.
+        self.effort = DEFAULT_EFFORT
+        self._work_options = None             # the live ClaudeAgentOptions
+        self._effort_dirty = False            # reopen before the next turn
+        self._reopen_only = False             # reopen WITHOUT losing the session
         # Talk lane state
         self.talk_busy = False                # a Gemini talk turn is running
         self.talk_client: ClaudeSDKClient | None = None  # only if talk=Claude
         self._talk_client_model = None
         self._talk_lock = asyncio.Lock()      # serialize talk turns (3.10+ safe)
         # Work lane state (Claude client = self.client)
-        self.model = MODEL_FAST               # model id currently on self.client
+        self.model = WORK_BRAINS.get(DEFAULT_WORK, MODEL_FULL)  # id on self.client
         self.busy = False                     # a WORK turn is in flight
         self.last_user_text = None            # work text (re-run on rotation)
         self.suppressed = False
@@ -861,6 +892,36 @@ class GoatApp:
             threading.Thread(target=_report, daemon=True).start()
         else:
             self.emit("talkmodel", _friendly_model_name(TALK_BRAINS[name]))
+
+    def set_effort(self, level: str):
+        """Thinking depth for the work lane (low…max). Thread-safe: the live
+        session can't be re-efforted, so this only flags the reopen and the
+        next dispatch does it (with resume=, so the conversation survives)."""
+        level = (level or "").strip().lower()
+        if level not in EFFORT_LEVELS or level == self.effort:
+            return
+        self.effort = level
+        self._effort_dirty = True
+        self.emit("effort", level)
+        self.emit("status", f"thinking: {level}")
+        if self.loop is not None and not self.loop.is_closed():
+            asyncio.run_coroutine_threadsafe(self._apply_effort(), self.loop)
+
+    async def _apply_effort(self):
+        """Close the work client so run() rebuilds it at the new effort. The
+        session id is kept, so the conversation carries over; a turn already
+        in flight is never cut — this waits it out first."""
+        for _ in range(900):          # ≤90s — a long turn still finishes
+            if not self.busy:
+                break
+            await asyncio.sleep(0.1)
+        if not self._effort_dirty:
+            return                    # someone else already applied it
+        self._reopen_only = True
+        try:
+            await self.client.disconnect()   # ends _consume → run() reopens
+        except Exception:  # noqa: BLE001
+            pass
 
     def set_work_model(self, name: str):
         """Working-brain pick (display name) — set on the work client at the
@@ -1301,6 +1362,15 @@ class GoatApp:
                         t = delta.get("text", "")
                         if t:
                             self.emit("work_text", t)  # working brain narration
+                    elif (delta.get("type") == "thinking_delta"
+                            and not self.suppressed and not self._compacting):
+                        # Adaptive thinking, display="summarized": the model's
+                        # own summary of what it is working out. At max effort
+                        # this is the difference between a live instrument and
+                        # a frozen panel — it fills the gap before tool one.
+                        t = delta.get("thinking", "")
+                        if t:
+                            self.emit("work_think", t)
             elif isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
@@ -1341,6 +1411,7 @@ class GoatApp:
                         self.emit("status", "compact failed — rotated instead")
                         return True
                     self._last_ctx = after
+                    self.emit("work_ctx", f"{after}|{ROTATE_CTX}")
                     self.emit("status",
                               f"context compacted to {after // 1000}k — usage saved")
                     continue
@@ -1402,6 +1473,10 @@ class GoatApp:
                     self._last_ctx = ((u.get("input_tokens") or 0)
                                       + (u.get("cache_read_input_tokens") or 0)
                                       + (u.get("cache_creation_input_tokens") or 0))
+                    # How full this session is, and how close to the trim.
+                    # The number drives every rotation decision below, so the
+                    # left panel shows it instead of keeping it a secret.
+                    self.emit("work_ctx", f"{self._last_ctx}|{ROTATE_CTX}")
                     if self._last_ctx > ROTATE_CTX:
                         # Trim BEFORE the wall. Preferred: the CLI's own
                         # /compact — same session, model-written summary.
@@ -1428,6 +1503,12 @@ class GoatApp:
                         self._pending_handoff = self._handoff_text()
                         self.emit("status", "context rotated — usage saved")
                         return True  # run() reconnects fresh, no retry
+        # Stream ended. A clean end normally means shutdown — unless the
+        # thinking dial moved, in which case _apply_effort() closed the
+        # client on purpose and run() should rebuild it at the new effort.
+        if self._reopen_only:
+            return True
+        return False
 
     def _log_exchange(self, user: str, reply: str):
         """Append to the on-disk transcript (UI repaints the tail at boot).
@@ -1578,7 +1659,16 @@ class GoatApp:
         options = ClaudeAgentOptions(
             cwd=WORKSPACE,
             permission_mode="bypassPermissions",
-            model=MODEL_FAST,
+            model=WORK_BRAINS.get(self.work_model, MODEL_FULL),
+            # Every current model thinks adaptively; effort is the dial, and
+            # he asked for the top of it. display="summarized" is what makes
+            # the reasoning visible on the left instead of a silent gap.
+            effort=self.effort,
+            thinking=THINKING_CFG,
+            # If the picked brain can't serve (Fable's separate credit
+            # bucket, or an overload), the turn lands on Opus 5 instead of
+            # dying. Without this a credit-less Fable pick kills work.
+            fallback_model=MODEL_FULL,
             system_prompt={"type": "preset", "preset": "claude_code", "append": persona},
             include_partial_messages=True,
             # "project" = ONLY workspace/.claude — GOAT's own skill library.
@@ -1587,6 +1677,8 @@ class GoatApp:
             setting_sources=["project"],
             resume=saved_session_id(),
         )
+        self._work_options = options
+        self.model = options.model
         self.client = ClaudeSDKClient(options)
         connect_task = asyncio.create_task(self.client.connect())
 
@@ -1658,7 +1750,7 @@ class GoatApp:
                     options.resume = saved_session_id()
                     self.client = ClaudeSDKClient(options)
                     await self.client.connect()
-                    self.model = MODEL_FAST
+                    self.model = options.model
                     self.busy = False
                     self.suppressed = False
                     self._hold_deltas = False
@@ -1668,12 +1760,25 @@ class GoatApp:
                     continue
                 if not wants_fresh:
                     break  # stream ended cleanly — normal shutdown
+                if self._reopen_only and self._effort_dirty:
+                    # Thinking dial moved — same session, new effort.
+                    self._reopen_only = False
+                    self._effort_dirty = False
+                    options.effort = self.effort
+                    options.resume = saved_session_id()
+                    self.client = ClaudeSDKClient(options)
+                    await self.client.connect()
+                    self.model = options.model
+                    self.busy = False
+                    self.suppressed = False
+                    self.emit("status", f"thinking at {self.effort} — ready")
+                    continue
                 # Context full: fresh session, retry the wall-hit message.
                 await self.client.disconnect()
                 options.resume = None
                 self.client = ClaudeSDKClient(options)
                 await self.client.connect()
-                self.model = MODEL_FAST
+                self.model = options.model
                 if self._rotate_only:
                     # Proactive rotation, not a wall hit: nothing to retry —
                     # the next work order carries the handoff.

@@ -33,17 +33,21 @@ SECRETS_FILE = os.path.join(GOAT_ROOT, ".goat-secrets.json")
 GEMINI_BASE = os.environ.get(
     "GOAT_GEMINI_BASE",
     "https://generativelanguage.googleapis.com/v1beta/openai")
-# His rule (2026-07-17 goal): "the gemini model flash 3.5 needs to be
-# talking brain". gemini-3.5-flash is stable, live on his key (verified:
-# first token 4.1s with reasoning off), and quota-separate from the preview.
-GEMINI_MODEL = os.environ.get("GOAT_GEMINI_MODEL", "gemini-3.5-flash")
+# Talking brain, refreshed 2026-09-14 (his order: latest models).
+# gemini-3.8-flash shipped 2026-09-02 and is the newest Flash; measured live
+# on his key the same day through this exact OpenAI-compat path with
+# reasoning_effort="none": 1.6s round trip (3.7-flash 3.6s, 3.5-flash 0.8s).
+# Latency IS the product here, so the fallback below stays the fastest
+# known-good model rather than the next-newest one.
+GEMINI_MODEL = os.environ.get("GOAT_GEMINI_MODEL", "gemini-3.8-flash")
 # His order 2026-07-17 ("do it"): Gemini is the ALWAYS-ON talking brain —
 # when the primary 429s (quota) or 503s (capacity), the SAME request re-runs
 # on this second model (separate free bucket) before anything touches
-# Claude. NOT gemini-2.5-flash: that one 404s for new accounts (measured —
-# same trap as the Ada-SI install). Empty string disables the chain.
+# Claude. gemini-3.5-flash is the fallback: 0.8s to answer, verified live
+# 2026-09-14. NOT gemini-2.5-flash: that one 404s for new accounts (measured
+# — same trap as the Ada-SI install). Empty string disables the chain.
 GEMINI_FALLBACK = os.environ.get("GOAT_GEMINI_FALLBACK",
-                                 "gemini-3-flash-preview")
+                                 "gemini-3.5-flash")
 # Once the primary dies, go STRAIGHT to the fallback for a while instead of
 # paying a doomed roundtrip on every turn. Monotonic deadline, mutable holder.
 PRIMARY_RETRY_S = 900.0

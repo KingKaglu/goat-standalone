@@ -1,6 +1,68 @@
 # GOAT State — handoff brief
 
-Updated: 2026-07-12 (local brain v3 — no guardrails, no self-escalation)
+Updated: 2026-09-14 (latest models + max thinking + panel instruments)
+
+## Model refresh + thinking depth (2026-09-14, Giorgi: "update my GOAT
+## personal AI application to the latest models and to the highest thinking,
+## make sure it has better interface as well")
+- ROSTER: MODEL_FULL = claude-opus-5 (was claude-opus-4-8), MODEL_FABLE =
+  claude-fable-5-1 (was claude-fable-5, GA 2026-09-01), MODEL_FAST =
+  claude-sonnet-5 unchanged. WORK_BRAINS / WORK_OPTS = ["opus 5",
+  "fable 5.1"]; DEFAULT_WORK = DEFAULT_HARD = "opus 5".
+- ROOT CAUSE FOUND while probing: `claude --model claude-fable-5` AND
+  `claude-fable-5-1` both answer "You're out of usage credits" on his
+  account — the Fable tier bills from a separate credit bucket. The old
+  default work brain was "fable 5", so EVERY work dispatch was dead on
+  arrival. Opus 5 / Sonnet 5 / Opus 4.8 all answer fine. Fable stays
+  selectable; the work client now carries fallback_model=MODEL_FULL so the
+  pick can never dead-end the left lane again.
+- THINKING: work client gets effort (default "max", GOAT_EFFORT env) plus
+  thinking={"type":"adaptive","display":"summarized"}. Verified live on
+  claude-agent-sdk 0.2.152: thinking_delta events arrive with text.
+  There is NO set_effort on a live session, so changing the dial closes the
+  work client (_apply_effort waits out a running turn), _consume returns
+  True via _reopen_only, and run() rebuilds with resume=<session id> — the
+  conversation survives the change.
+- TALK BRAIN: gemini-3.8-flash (shipped 2026-09-02; 1.6s round trip on his
+  key), fallback gemini-3.5-flash (0.8s, the fastest known-good). Old
+  gemini-3-flash-preview fallback retired.
+- SDK: claude-agent-sdk 0.2.114 -> 0.2.152 (`pip install -U` alone reported
+  "already satisfied" — the explicit ==0.2.152 pin is what moved it);
+  requirements.txt now floors at that version.
+- INTERFACE: (1) thinking summaries stream into the left panel as a rolling
+  italic line (#workthink) — at max effort the old panel sat silent for a
+  minute before the first tool; (2) the ledger sub-line reads
+  "opus 5 · max · working · 0:12" so the depth is always on screen;
+  (3) drawer gains a "thinking" row (low…max) and Ctrl+E cycles it;
+  (4) drawer rows now use a wrapping FlowLayout and the drawer width follows
+  the interface scale — at 150% the 5-button rows used to clip past the edge
+  with no scrollbar; (5) new context meter at the bottom of the work lane
+  ("context 23k · trims at 60k" + hairline bar) from the number GOAT already
+  computed for rotation but never showed.
+- CONFIG: load_ui_config() migrates old picks (WORK_OPTS_RENAMED: fable 5 ->
+  fable 5.1, opus 4.8 -> opus 5) instead of resetting them; "effort"
+  defaults to "max".
+- TRAP (new, cost me his settings): a Qt review-render script that calls
+  apply_theme/set_ui_scale/resize WRITES ui-config.json — one review run
+  moved his saved theme to ember, scale to 1.5 and geometry to the offscreen
+  -4200,-4200 box. Point ui_qt.UI_CONFIG at a temp file before rendering.
+- 67/67 router tests pass; booted live and verified on screen (header reads
+  "opus 5 · max · idle", boot briefing spoken).
+
+
+## Sonnet 5 deleted from work lane (2026-07-17, Giorgi: "delete my thing
+## with Sonnet 5 so I can see the actual working brain do its job")
+- WORK_BRAINS (goat_app.py) and WORK_OPTS (ui_qt.py) now offer only
+  fable 5 + opus 4.8; DEFAULT_WORK and every fallback/coercion path is
+  "fable 5". Talk lane untouched (gemini flash primary, sonnet 5 still a
+  talk option). Commits 6b4e145 + 0a8ec5d, pushed to GitHub.
+- TRAP: editing ui-config.json while the app runs is futile — the app
+  rewrites it from its in-memory cfg on every _save(). Enforce defaults
+  in load_ui_config() validation instead; stale "sonnet 5" in the JSON
+  now coerces to "fable 5" at load.
+- TRAP (recurring): bare `python` is 3.12 with no numpy — preflight and
+  tests must run via `py -3.13` (same pin as start-goat-app.vbs).
+- 56/56 router tests + PREFLIGHT PASS on this version.
 
 ## Local brain v3 — no guardrails, never self-escalates (2026-07-12, Giorgi:
 ## "i dont want my local Ai to have any guardlines ... full access ... it

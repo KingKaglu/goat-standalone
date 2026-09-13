@@ -17,7 +17,7 @@ Built by [KingKaglu](https://github.com/KingKaglu) as a personal assistant. It's
 - **Self-growing skill library** — it writes its own reusable skills into `workspace/.claude/skills/` (long-term memory, machine health, file map, self-upgrade procedure…).
 - **Self-edit safety net** — when it edits its own code, a preflight check validates the change and auto-rolls back if it would break the app.
 - **Watchers** — a background power watcher speaks up when AC drops or the battery runs low (`GOAT_WATCH=off` to disable).
-- **Settings drawer** — ≡ or Ctrl+, : four themes (ember/paper/phosphor/graphite), text size, voice on/off + level, **language (English / ქართული)**, wake word, mic mute, always-on-top, new chat/restart. Preferences persist in `ui-config.json`.
+- **Settings drawer** — ≡ or Ctrl+, : talking/working/hard brain, **thinking depth (low…max)**, four themes (ember/paper/phosphor/graphite), interface + text size, voice on/off + level, **language (English / ქართული)**, wake word, mic mute, always-on-top, new chat/restart. Rows wrap, so every switch stays reachable at any interface scale. Preferences persist in `ui-config.json`.
 - **Georgian mode** — GOAT answers in Georgian, spoken with Microsoft's ka-GE neural voice, and **hears Georgian speech** through Gladia's cloud STT (~4s per utterance, free tier 10h/month) — put your key in `.goat-secrets.json` as `{"gladia_api_key": "..."}` (gitignored). Without a key, voice input stays English and typed Georgian works. Note: in Georgian mode utterance audio goes to Gladia's servers; English mode is 100% local. (Local Whisper Georgian was measured unusable — romanization/hallucinations; `GOAT_STT_KA=on` re-enables that experiment.)
 - **Continuity** — recent exchanges persist to `workspace/transcript.jsonl` and repaint (dimmed) after a restart; the Claude session itself resumes too.
 - **STT that learns** — mishearings you correct are saved to `stt-fixes.json` and fed back into Whisper's vocabulary prompt, so recognition improves over time.
@@ -31,7 +31,8 @@ Built by [KingKaglu](https://github.com/KingKaglu) as a personal assistant. It's
                                                             ▼
                                           model router
                                           ├─ talking brain: Gemini Flash (casual chat, free) — replies ESCALATE for real work
-                                          └─ working brain: claude-fable-5 (tools)  ·  claude-opus-4.8 (heavy)
+                                          └─ working brain: claude-opus-5 (tools)  ·  claude-fable-5-1 (optional)
+                                             thinking: adaptive, effort low…max (default max)
                                           (Claude via the Agent SDK — your Claude Code login)
                                                             │ reply
                                                             ▼
@@ -39,7 +40,7 @@ Built by [KingKaglu](https://github.com/KingKaglu) as a personal assistant. It's
 ```
 
 1. **Hearing**: the mic runs through WebRTC AEC3 echo cancellation and voice-activity detection, then audio goes to a local `whisper-server.exe` (whisper.cpp) that stays resident so transcription takes ~1 second.
-2. **Thinking**: casual chat is answered by **Google's Gemini Flash** (`local_llm.py` — free tier, keeps its own memory of the conversation, and can even do quick machine actions like opening an app). It replies `ESCALATE` for anything needing real tools or heavy work, which re-runs the message on Claude via the **Claude Agent SDK**; obvious work (fix/build/search/run…) skips straight there. The Claude side runs **Fable 5** for tool work and **Opus 4.8** for heavy sessions; past 60k tokens it compacts itself and carries on. There is **no Claude API key in this repo** — the SDK uses your own local Claude Code sign-in. The Gemini key goes in `.goat-secrets.json` as `{"gemini_api_key": "..."}` (or the `GEMINI_API_KEY` env var); without it, chat simply falls back to Claude. Swap the fast model with `GOAT_GEMINI_MODEL`.
+2. **Thinking**: casual chat is answered by **Google's Gemini Flash** (`local_llm.py` — `gemini-3.8-flash`, free tier, keeps its own memory of the conversation, and can even do quick machine actions like opening an app). It replies `ESCALATE` for anything needing real tools or heavy work, which re-runs the message on Claude via the **Claude Agent SDK**; obvious work (fix/build/search/run…) skips straight there. The Claude side runs **Opus 5** for tool work, with **Fable 5.1** selectable in the drawer, and thinks adaptively at the effort you pick (low…max, default **max**) — the reasoning summary streams into the left panel as it works. Past 60k tokens it compacts itself and carries on. There is **no Claude API key in this repo** — the SDK uses your own local Claude Code sign-in. The Gemini key goes in `.goat-secrets.json` as `{"gemini_api_key": "..."}` (or the `GEMINI_API_KEY` env var); without it, chat simply falls back to Claude. Swap the fast model with `GOAT_GEMINI_MODEL`.
 3. **Speaking**: replies stream to Microsoft Edge TTS (the "Ava" voice) when online, or fall back to Piper, a fully local TTS, when offline.
 4. **UI**: a minimal native window (PySide6/Qt) with live captions, Ctrl+K to type instead of talk, and drag-and-drop files for analysis.
 
@@ -84,7 +85,7 @@ Also know:
 - **English only (speech)**: Whisper runs the `base.en` English model. It will not transcribe Georgian or other languages out of the box (you can swap in a multilingual `ggml` model yourself).
 - **The persona is personal.** `PERSONA` in `python/goat_app.py` is written for Giorgi by name, and `stt_whisper.py`'s `SEED_VOCAB` biases recognition toward his vocabulary. **Edit both before using it as your own** — replace the name, tweak the character, change the vocab.
 - **It has real hands.** GOAT can read/write files and run shell commands on your machine. That's the point, but understand it before you run it.
-- **Model IDs may need updating.** `MODEL_FULL` (Fable 5, the working brain) / `MODEL_OPUS` at the top of `goat_app.py` name specific Claude models; if your account doesn't have them, set ones you do have.
+- **Model IDs may need updating.** `MODEL_FULL` (Opus 5, the working brain) and `MODEL_FABLE` at the top of `goat_app.py` name specific Claude models; if your account doesn't have them, set ones you do have. Note that the Fable tier bills from its own credit bucket — on an account without those credits it answers *"You're out of usage credits"*, which is why Opus 5 is the default and `fallback_model` is wired to it.
 - **Free chat brain is optional but recommended.** Drop a Google [Gemini](https://ai.google.dev) key into `.goat-secrets.json` as `{"gemini_api_key": "..."}` — casual conversation then runs on Gemini Flash's free tier and costs zero Claude usage. No key = GOAT quietly uses Claude for everything, as before.
 
 ## Install
@@ -134,8 +135,9 @@ Headless mode (no window, console only): `python goat_app.py`.
 - **Just talk.** It's always listening. Speak normally; pause; it answers.
 - **Interrupt it** by talking over it — it stops (or, if it's mid-task, mutes the voice and keeps working while the front-desk brain answers you).
 - **Type any time** — the input line at the bottom is always there (Ctrl+K focuses it). Drop or paste files into the window for analysis.
-- **≡ or Ctrl+,** — settings drawer: themes, text size, voice/level, wake word, mic mute, always-on-top, copy reply, new chat, restart.
+- **≡ or Ctrl+,** — settings drawer: brains, thinking depth, themes, text size, voice/level, wake word, mic mute, always-on-top, copy reply, new chat, restart.
 - **Ctrl+T** — cycle themes without opening the drawer.
+- **Ctrl+E** — step the working brain's thinking depth (low → medium → high → xhigh → max). The engine reopens its session at the new depth and keeps the conversation.
 - **"stop" / "cancel" / "hold on"** — kills the current task.
 - **"restart GOAT"** — fresh session (context is otherwise kept for the whole session).
 - **"run diagnostics" / "are you okay"** — GOAT runs `goat_doctor.py` and reports.
@@ -183,7 +185,7 @@ JARVIS-ის სტილის AI დესკტოპ-ასისტენ�
 - **თვითმზარდი უნარების ბიბლიოთეკა** — საკუთარ განმეორებად უნარებს თვითონვე წერს `workspace/.claude/skills/`-ში (გრძელვადიანი მეხსიერება, ლეპტოპის ჯანმრთელობა, ფაილების რუკა, თვითგანახლების პროცედურა…).
 - **თვითრედაქტირების დამცავი ბადე** — როცა საკუთარ კოდს ასწორებს, წინასწარი შემოწმება ცვლილებას ამოწმებს და გაფუჭების შემთხვევაში ავტომატურად აბრუნებს.
 - **მეთვალყურეები** — ფონური კვების მეთვალყურე ხმამაღლა გაფრთხილებს, როცა დენი წყდება ან ბატარეა იწურება (`GOAT_WATCH=off` თიშავს).
-- **პარამეტრების პანელი** — ≡ ან Ctrl+, : ოთხი თემა (ember/paper/phosphor/graphite), ტექსტის ზომა, ხმა ჩართვა/გამორთვა + სიმაღლე, **ენა (English / ქართული)**, გამოღვიძების სიტყვა, მიკროფონის დადუმება, ყოველთვის-ზემოთ, ახალი საუბარი/გადატვირთვა. პარამეტრები ინახება `ui-config.json`-ში.
+- **პარამეტრების პანელი** — ≡ ან Ctrl+, : მოსაუბრე/მუშა/მძიმე ტვინი, **აზროვნების სიღრმე (low…max)**, ოთხი თემა (ember/paper/phosphor/graphite), ინტერფეისისა და ტექსტის ზომა, ხმა ჩართვა/გამორთვა + სიმაღლე, **ენა (English / ქართული)**, გამოღვიძების სიტყვა, მიკროფონის დადუმება, ყოველთვის-ზემოთ, ახალი საუბარი/გადატვირთვა. პარამეტრები ინახება `ui-config.json`-ში.
 - **ქართული რეჟიმი** — GOAT ქართულად გპასუხობს Microsoft-ის ka-GE ნეირონული ხმით და **ქართულ მეტყველებასაც ისმენს** Gladia-ს ღრუბლოვანი STT-ით (~4წმ ფრაზაზე, უფასო 10სთ/თვეში) — გასაღები ჩაწერე `.goat-secrets.json`-ში: `{"gladia_api_key": "..."}` (git-ში არ ხვდება). გასაღების გარეშე ხმოვანი შეყვანა ინგლისურად რჩება, ქართულად წერა კი მუშაობს. გაითვალისწინე: ქართულ რეჟიმში ხმის ჩანაწერები Gladia-ს სერვერებზე მიდის; ინგლისური რეჟიმი 100% ლოკალურია.
 - **უწყვეტობა** — ბოლო საუბრები ინახება `workspace/transcript.jsonl`-ში და გადატვირთვის შემდეგ ეკრანზე ბრუნდება (მიმქრალებული); Claude-სესიაც გრძელდება.
 - **მეტყველების ამოცნობა, რომელიც სწავლობს** — შესწორებული შეცდომები ინახება `stt-fixes.json`-ში და Whisper-ის ლექსიკონს უბრუნდება, ასე რომ ამოცნობა დროთა განმავლობაში უმჯობესდება.
@@ -192,7 +194,7 @@ JARVIS-ის სტილის AI დესკტოპ-ასისტენ�
 ## როგორ მუშაობს
 
 1. **სმენა**: მიკროფონი გადის WebRTC AEC3 ექოს გაუქმებას და ხმის აქტივობის დეტექციას, შემდეგ აუდიო მიდის ლოკალურ `whisper-server.exe`-ზე (whisper.cpp), რომელიც მუდმივად ჩართულია — ტრანსკრიფცია ~1 წამში.
-2. **აზროვნება**: ჩვეულებრივ საუბარს **Google-ის Gemini Flash** პასუხობს (`local_llm.py` — უფასო დონე, საკუთარ მეხსიერებას ინახავს, სწრაფი მოქმედებებიც შეუძლია). რეალურ სამუშაოზე ის `ESCALATE`-ს პასუხობს და შეტყობინება Claude-ზე გადადის **Claude Agent SDK**-ით; აშკარა სამუშაო (fix/build/search/run…) პირდაპირ მიდის. Claude-ის მხარე **Fable 5**-ს იყენებს ხელსაწყოებისთვის და **Opus 4.8**-ს მძიმე სესიებისთვის. **ამ რეპოზიტორიაში Claude-ის API გასაღები არ არის** — SDK შენს ლოკალურ Claude Code ავტორიზაციას იყენებს. Gemini-ს გასაღები ჩაწერე `.goat-secrets.json`-ში: `{"gemini_api_key": "..."}`; მის გარეშე საუბარი Claude-ზე გადადის.
+2. **აზროვნება**: ჩვეულებრივ საუბარს **Google-ის Gemini Flash** პასუხობს (`local_llm.py` — უფასო დონე, საკუთარ მეხსიერებას ინახავს, სწრაფი მოქმედებებიც შეუძლია). რეალურ სამუშაოზე ის `ESCALATE`-ს პასუხობს და შეტყობინება Claude-ზე გადადის **Claude Agent SDK**-ით; აშკარა სამუშაო (fix/build/search/run…) პირდაპირ მიდის. Claude-ის მხარე **Opus 5**-ს იყენებს ხელსაწყოებისთვის (**Fable 5.1** პანელიდან ირჩევა) და ფიქრობს ადაპტურად შენ მიერ არჩეული სიღრმით (low…max, ნაგულისხმევი **max**) — მსჯელობის შეჯამება მარცხენა პანელში იშლება. **ამ რეპოზიტორიაში Claude-ის API გასაღები არ არის** — SDK შენს ლოკალურ Claude Code ავტორიზაციას იყენებს. Gemini-ს გასაღები ჩაწერე `.goat-secrets.json`-ში: `{"gemini_api_key": "..."}`; მის გარეშე საუბარი Claude-ზე გადადის.
 3. **ლაპარაკი**: პასუხები Microsoft Edge TTS-ით („Ava"-ს ხმა) ჟღერს, ინტერნეტის გარეშე კი Piper-ზე — სრულად ლოკალურ TTS-ზე — გადადის.
 4. **ინტერფეისი**: მინიმალისტური ნატიური ფანჯარა (PySide6/Qt): ცოცხალი სუბტიტრები, Ctrl+K ტექსტით მისაწერად, ფაილების ჩაგდება ანალიზისთვის.
 
@@ -212,7 +214,7 @@ JARVIS-ის სტილის AI დესკტოპ-ასისტენ�
 - **მეტყველება მხოლოდ ინგლისურად**: Whisper-ს ინგლისური `base.en` მოდელი უზის. ქართულს (და სხვა ენებს) პირდაპირ ვერ გაშიფრავს — შეგიძლია თვითონ ჩაანაცვლო მრავალენოვანი `ggml` მოდელით.
 - **პერსონა პირადულია.** `python/goat_app.py`-ში `PERSONA` გიორგისთვისაა დაწერილი სახელით, ხოლო `stt_whisper.py`-ის `SEED_VOCAB` მის ლექსიკაზეა მორგებული. **სანამ საკუთარ ასისტენტად გამოიყენებ, ორივე შეცვალე** — სახელი, ხასიათი, ლექსიკა.
 - **ნამდვილი ხელები აქვს.** GOAT-ს შეუძლია შენს კომპიუტერზე ფაილების წერა და ბრძანებების გაშვება. ეს მისი დანიშნულებაა, მაგრამ გაშვებამდე ეს კარგად გქონდეს გააზრებული.
-- **მოდელების ID-ები შეიძლება შესაცვლელი იყოს.** `goat_app.py`-ის თავში `MODEL_FULL` (Fable 5, მუშა ტვინი)/`MODEL_OPUS` კონკრეტულ Claude მოდელებს ასახელებს; თუ შენს ანგარიშს ისინი არ აქვს, ჩაწერე ის მოდელები, რომლებიც გაქვს.
+- **მოდელების ID-ები შეიძლება შესაცვლელი იყოს.** `goat_app.py`-ის თავში `MODEL_FULL` (Opus 5, მუშა ტვინი)/`MODEL_FABLE` კონკრეტულ Claude მოდელებს ასახელებს; თუ შენს ანგარიშს ისინი არ აქვს, ჩაწერე ის მოდელები, რომლებიც გაქვს.
 
 ## დაყენება
 
@@ -263,6 +265,7 @@ Headless რეჟიმი (ფანჯრის გარეშე, კონ
 - **წერე ნებისმიერ დროს** — შესაყვანი ველი ეკრანის ბოლოში ყოველთვის დგას (Ctrl+K აფოკუსებს). ფაილები ჩააგდე ან ჩასვი ფანჯარაში ანალიზისთვის.
 - **≡ ან Ctrl+,** — პარამეტრები: თემები, ტექსტის ზომა, ხმა/სიმაღლე, გამოღვიძების სიტყვა, მიკროფონი, ყოველთვის-ზემოთ, პასუხის კოპირება, ახალი საუბარი, გადატვირთვა.
 - **Ctrl+T** — თემების ცვლა პანელის გახსნის გარეშე.
+- **Ctrl+E** — მუშა ტვინის აზროვნების სიღრმის ცვლა (low → medium → high → xhigh → max).
 - **"stop" / "cancel" / "hold on"** — მიმდინარე დავალებას აჩერებს.
 - **"restart GOAT"** — ახალი სესია (სხვა შემთხვევაში კონტექსტი მთელი სესიის განმავლობაში ინახება).
 - **"run diagnostics" / "are you okay"** — GOAT უშვებს `goat_doctor.py`-ს და გატყობინებს.
