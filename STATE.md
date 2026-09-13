@@ -1,6 +1,49 @@
 # GOAT State — handoff brief
 
-Updated: 2026-09-14 (latest models + max thinking + panel instruments)
+Updated: 2026-09-14 (bilingual hearing — he speaks Georgian, GOAT answers Georgian)
+
+## Bilingual hearing (2026-09-14, his goal: "set up now that GOAT will listen
+## to my georgian and will not hear english when I speak georgian, make sure
+## it is perfect and it feels like a conversation")
+- MEASURED FIRST, then built. Bake-off on synthesized ka-GE speech + his one
+  captured real-mic WAV: scribe_v2 pinned to "ka" = 1.6s / 7.3% WER;
+  scribe_v2 with NO language_code (auto-detect) = 1.5s / 7.3% (identical);
+  gemini-3.8-flash audio = 2.9s / 11.3%; local whisper = unusable (romanizes).
+  On ENGLISH, scribe auto == local whisper in both text and speed (~1.1s).
+  => one ear can carry both languages at no cost in quality or latency.
+- KEYTERMS were the rest of the gap: without them "ფასმეტრი" came back
+  "თასმეტრის" and "Chrome" as "ქრომი"; with a Georgian keyterm seed both land
+  exactly. KEYTERM_SEED now carries his projects and the words around them.
+- NEW MODE "auto" (drawer: ორივე, Ctrl+L): every utterance is auto-detected,
+  and the language of THAT turn drives the reply language, the TTS voice, and
+  a per-dispatch directive to the work lane. en mode still = 100% local
+  whisper, zero cloud audio; ka mode still pins Georgian.
+- LANGUAGE IS DECIDED BY ALPHABET, not by the API's guess: script_lang() reads
+  the Georgian block U+10A0-U+10FF. Scribe's own language_probability was 0.65
+  on a short "გამარჯობა, როგორ ხარ?" — the alphabet never wobbles. The API
+  code ('kat'/'eng') is only the tie-breaker for letterless transcripts.
+- VOICE DISPATCH IN GEORGIAN: WORK_DISPATCH_RE / WORK_HARD_RE / STOP_RE /
+  WORK_STATUS_ASK_RE all gained Georgian forms (ოპუს\w*, ფეიბლ\w*, მუშა ტვინ,
+  მძიმე ტვინ; გაჩერდი/შეწყვიტე/მოიცა; "რას აკეთებს…", "დაასრულა?"). Stems use
+  \w* because Georgian declines (ოპუსი/ოპუსს/ოპუსმა).
+- FROM THE FIRST LIVE TURNS (he spoke Georgian at 00:46): replies came back
+  with a Mtavruli capital ("Კარგად") — Georgian has no capitals in running
+  text — so every language note now says plain Mkhedruli, and also that his
+  speech arrives garbled and must be read through, never echoed back.
+- CONTINUITY: the UI remembers the language of the last turn (cfg last_lang)
+  and bilingual mode resumes in it after a restart.
+- TRAP: PowerShell 5.1 `Out-File -Encoding utf8` writes a BOM, and
+  load_ui_config()'s json.load threw on it — which SILENTLY reset every
+  preference to defaults. Loader now reads utf-8-sig.
+- TRAP: the Bash tool collapses doubled backslashes in heredocs, so an edit
+  script matching source text containing "
+" silently fails to match —
+  build those patterns from chr(92).
+- TRAP: cp1252 console kills any Georgian print; run every ka test with
+  PYTHONIOENCODING=utf-8.
+- 78/78 router tests (6 new bilingual-routing + 4 Georgian-dispatch cases).
+  Verified end to end with the real ear and real brains, and live on his mic.
+
 
 ## Model refresh + thinking depth (2026-09-14, Giorgi: "update my GOAT
 ## personal AI application to the latest models and to the highest thinking,

@@ -150,7 +150,9 @@ UI_SCALE_MIN, UI_SCALE_MAX = 0.7, 2.5
 # GOAT's speaker level (multiplier on the synthesized voice only).
 VOICE_LEVELS = {"quiet": 0.6, "normal": 1.0, "loud": 1.4}
 
-LANGS = {"english": "en", "ქართული": "ka"}
+# "ორივე" (both) = the bilingual ear: scribe auto-detects each utterance
+# and GOAT answers in whatever language that utterance was in.
+LANGS = {"english": "en", "ქართული": "ka", "ორივე": "auto"}
 
 # Friendly UI-part name → palette key(s) the color tool can override.
 COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
@@ -160,7 +162,7 @@ DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
                "lang": "en", "talk_brain": "gemini flash",
                "work_model": "opus 5", "hard_model": "opus 5",
-               "effort": "max",
+               "effort": "max", "last_lang": "en",
                "scale": 1.0, "colors": {},
                "geom": None}  # [x, y, w, h] — remembered window box
 
@@ -168,7 +170,11 @@ DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
 def load_ui_config() -> dict:
     cfg = dict(DEFAULT_CFG)
     try:
-        with open(UI_CONFIG, encoding="utf-8") as f:
+        # utf-8-SIG: PowerShell's `Out-File -Encoding utf8` (5.1) writes a
+        # BOM, and a BOM made json.load throw — which silently reset every
+        # preference he had (theme, brains, effort) to the defaults. Reading
+        # BOM-tolerantly costs nothing and makes that class of edit safe.
+        with open(UI_CONFIG, encoding="utf-8-sig") as f:
             saved = json.load(f)
         if isinstance(saved, dict):
             cfg.update({k: v for k, v in saved.items() if k in cfg})
@@ -189,6 +195,8 @@ def load_ui_config() -> dict:
             cfg[key] = WORK_OPTS_RENAMED.get(cfg[key], "opus 5")
     if cfg["effort"] not in EFFORT_OPTS:
         cfg["effort"] = "max"
+    if cfg["last_lang"] not in ("en", "ka"):
+        cfg["last_lang"] = "en"
     try:
         cfg["scale"] = min(UI_SCALE_MAX, max(UI_SCALE_MIN, float(cfg["scale"])))
     except (TypeError, ValueError):
@@ -1079,6 +1087,7 @@ class GoatWindow(QWidget):
         self._status_hold = 0.0  # until this time, hud_tick may not stomp
         self._usage = ""
         self._claude_out = False   # Claude quota spent? (footer meter)
+        self._turnlang = ""        # language of the last turn (bilingual mode)
         self._claude_reset = ""    # reset clock when out
 
         outer = QVBoxLayout(self)
@@ -1251,7 +1260,7 @@ class GoatWindow(QWidget):
         lay.addLayout(cmd_row)
 
         # ---- footer: ONE quiet mono line — shortcuts left, live meter right ----
-        hint = QLabel("esc voice · ⌃m mic · ⌃t theme · ⌃e think · "
+        hint = QLabel("esc voice · ⌃m mic · ⌃t theme · ⌃e think · ⌃l language · "
                      "⌃k type · ⌃n new · ⌃, settings")
         hint.setObjectName("footer")
         self.footer = QLabel("")
@@ -1274,6 +1283,7 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+M"), self, self.toggle_mic)
         QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
         QShortcut(QKeySequence("Ctrl+E"), self, self.cycle_effort)
+        QShortcut(QKeySequence("Ctrl+L"), self, self.cycle_lang)
         # Manual work dispatch: Ctrl+Enter → working brain, +Shift → hard.
         QShortcut(QKeySequence("Ctrl+Return"), self, lambda: self._submit_work(False))
         QShortcut(QKeySequence("Ctrl+Enter"), self, lambda: self._submit_work(False))
@@ -1347,6 +1357,17 @@ class GoatWindow(QWidget):
         self.set_effort_opt(EFFORT_OPTS[(i + 1) % len(EFFORT_OPTS)])
         self.work_panel.set_effort(self.cfg["effort"])
         self._on_event("status", f"thinking: {self.cfg['effort']}")
+        self.panel.refresh()
+
+    def cycle_lang(self):
+        """Ctrl+L — english → ქართული → ორივე (bilingual) and round again.
+        Same switch as the drawer row; the engine takes it from there."""
+        codes = list(LANGS.values())
+        i = codes.index(self.cfg["lang"]) if self.cfg["lang"] in codes else 0
+        nxt = codes[(i + 1) % len(codes)]
+        label = next(l for l, c in LANGS.items() if c == nxt)
+        self.set_lang_opt(label)
+        self._on_event("status", f"language: {label}")
         self.panel.refresh()
 
     def cycle_theme(self):
@@ -1548,6 +1569,9 @@ class GoatWindow(QWidget):
         goat.work_model = self.cfg.get("work_model", "opus 5")
         goat.hard_model = self.cfg.get("hard_model", "opus 5")
         goat.effort = self.cfg.get("effort", "max")
+        if self.cfg.get("lang") == "auto":
+            goat.turn_lang = self.cfg.get("last_lang", "en")
+            self._turnlang = goat.turn_lang
         self.work_panel.set_effort(self.cfg.get("effort", "max"))
         self.panel.refresh()
 
@@ -1753,8 +1777,14 @@ class GoatWindow(QWidget):
             claude = f" · claude {self._usage}"
         else:
             claude = ""
+        # In bilingual mode the ear can flip per sentence — show which
+        # language the last turn landed in, so a mishearing is visible
+        # immediately instead of only in the reply.
+        heard = (f" · hearing {self._turnlang}"
+                 if self._turnlang and self.cfg.get("lang") == "auto" else "")
         self.footer.setText(
-            f"{self._model} · {mic} · {up // 60:02d}:{up % 60:02d}{claude}")
+            f"{self._model} · {mic} · {up // 60:02d}:{up % 60:02d}"
+            f"{heard}{claude}")
         self.clock.setText(time.strftime("%H:%M"))
         # Keep the fade lip glued across resizes (33ms — geometry set is cheap).
         if self.fade.width() != self.scroll.width():
@@ -1936,6 +1966,13 @@ class GoatWindow(QWidget):
             self.work_panel.step(data)
         elif kind == "work_text":
             self.work_panel.text(data)
+        elif kind == "turnlang":
+            # Remember it: in bilingual mode the next boot resumes in the
+            # language the conversation was actually in.
+            self._turnlang = data
+            if data in ("en", "ka") and self.cfg.get("last_lang") != data:
+                self.cfg["last_lang"] = data
+                self._save()
         elif kind == "work_ctx":
             used, _, trim = data.partition("|")
             try:

@@ -422,8 +422,13 @@ def chat(text: str, on_delta=None, lang: str = "en",
         f"When he says 'my desktop/downloads/files', use the paths above — "
         f"don't ask, don't guess a different username.")
     if lang == "ka":
-        base_system += ("\nLANGUAGE: Giorgi switched you to Georgian (ქართული)."
-                        " Reply ONLY in natural Georgian; keep code/paths as-is.")
+        base_system += (
+            "\nLANGUAGE: He is speaking Georgian (ქართული) — reply ONLY in "
+            "natural Georgian, plain Mkhedruli, never MTAVRULI or capitalized "
+            "letters (კარგად, never Კარგად). His words arrive through cloud "
+            "transcription that garbles casual speech: answer what he MEANT, "
+            "never mention the garble or echo it back. Keep code, paths and "
+            "identifiers exactly as they are.")
     if status:
         base_system += (
             "\n\nLIVE WORKING-BRAIN STATUS (real, right now — this is what "

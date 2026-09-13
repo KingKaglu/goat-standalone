@@ -6,9 +6,17 @@ replay-verified against captured WAVs. Scribe (scribe_v2) transcribed the
 same WAVs near-perfectly, so it is the primary route; Gladia stays as
 fallback if the Scribe key/route breaks.
 
-Used ONLY when GOAT is in Georgian mode AND a key exists — English mode
-stays 100% local. Privacy note: in Georgian mode utterance audio goes to
-the cloud STT provider's servers.
+Used when GOAT is in Georgian mode OR bilingual ("auto") mode AND a key
+exists — plain English mode stays 100% local. Privacy note: in those modes
+utterance audio goes to the cloud STT provider's servers.
+
+Measured 2026-09-14 (synthesized ka-GE speech + the captured real-mic WAV):
+scribe_v2 with NO language_code (auto-detect) is exactly as accurate as
+forcing "ka" (7.3% WER either way, ~1.5s) and just as good as local whisper
+on English (1.0-1.2s, same text) — so one ear can carry both languages and
+he never has to flip a switch mid-conversation. Keyterms fix what was left:
+without them "ფასმეტრი" came back "თასმეტრის" and "Chrome" as "ქრომი";
+with them both land exactly.
 
 Keys live in .goat-secrets.json at the project root (gitignored via the
 .goat-* pattern) as {"elevenlabs_api_key": "...", "gladia_api_key": "..."}
@@ -33,6 +41,9 @@ SECRETS_FILE = os.path.join(GOAT_ROOT, ".goat-secrets.json")
 SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 GLADIA_BASE = "https://api.gladia.io/v2"
 DEBUG_DIR = os.path.join(GOAT_ROOT, "python", "stt-debug")
+# Language scribe reported for the last utterance ('ka'/'en'/None). Only a
+# tie-breaker — script_lang() decides whenever the text has letters.
+_LAST_HEARD: list = [None]
 
 
 def _debug_log(audio, sample_rate, text, note):
@@ -80,7 +91,14 @@ def available() -> bool:
 
 # Names/terms Scribe should be biased toward hearing; stt-fixes.json values
 # are folded in too, so every learned correction also becomes a hint.
-KEYTERM_SEED = ["GOAT", "გიორგი", "Claude", "Fable"]
+KEYTERM_SEED = [
+    "GOAT", "გოატი", "გიორგი", "Claude", "ქლოდი", "Fable", "Opus", "Gemini",
+    # his own projects and the words he says around them — these are exactly
+    # the tokens a general ka model guesses wrong (measured: ფასმეტრი →
+    # "თასმეტრის"), and they are what most of his orders are ABOUT.
+    "ფასმეტრი", "ფასმეტრის", "fasmetri", "Chrome", "Vercel", "GitHub",
+    "დეპლოი", "ბილდი", "კომიტი", "ბრაუზერი", "ტერმინალი", "სქრიპტი",
+]
 
 
 def _keyterms() -> list[str]:
@@ -95,23 +113,28 @@ def _keyterms() -> list[str]:
     return terms[:90]  # >100 keyterms triggers 20s minimum billing
 
 
-def _scribe(key: str, wav: bytes, language: str) -> str | None:
-    """One blocking POST (~2s); returns raw transcript or None on failure."""
+def _scribe(key: str, wav: bytes, language: str | None):
+    """One blocking POST (~1.5s). Returns (raw transcript, language code as
+    scribe heard it) or (None, None) on failure. language=None means
+    auto-detect, which measures identical to forcing a language and is what
+    lets one ear carry Georgian and English in the same conversation."""
     try:
-        r = httpx.post(SCRIBE_URL, headers={"xi-api-key": key},
-                       data={"model_id": "scribe_v2",
-                             "language_code": language,
-                             # sound labels like "(სიცილი)" would pollute chat
-                             "tag_audio_events": "false",
-                             "temperature": "0",
-                             "keyterms": _keyterms()},
+        data = {"model_id": "scribe_v2",
+                # sound labels like "(სიცილი)" would pollute chat
+                "tag_audio_events": "false",
+                "temperature": "0",
+                "keyterms": _keyterms()}
+        if language:
+            data["language_code"] = language
+        r = httpx.post(SCRIBE_URL, headers={"xi-api-key": key}, data=data,
                        files={"file": ("u.wav", wav, "audio/wav")},
                        timeout=30.0)
         r.raise_for_status()
-        return r.json().get("text") or ""
+        j = r.json()
+        return (j.get("text") or ""), (j.get("language_code") or "")
     except httpx.HTTPError as e:
         print("[scribe] request failed:", e)
-        return None
+        return None, None
 
 
 def _gladia(key: str, wav: bytes, language: str) -> str | None:
@@ -149,8 +172,33 @@ def _gladia(key: str, wav: bytes, language: str) -> str | None:
         return None
 
 
+def script_lang(text: str) -> str | None:
+    """Which language a piece of text IS, by alphabet — 'ka', 'en', or None
+    for neither (digits, punctuation, empty). The Georgian block is
+    U+10A0-U+10FF. This outranks the API's language guess: a transcript in
+    Georgian letters IS Georgian, whatever the confidence score said."""
+    if not text:
+        return None
+    if any("Ⴀ" <= ch <= "ჿ" for ch in text):
+        return "ka"
+    if any(ch.isascii() and ch.isalpha() for ch in text):
+        return "en"
+    return None
+
+
+def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
+                    force: str | None = None):
+    """float32 [-1,1] mono → (text, language) where language is 'ka' or 'en'.
+    force=None auto-detects (bilingual mode); force='ka' pins the model.
+    Same '' / None contract as transcribe(). Blocking — worker thread."""
+    text = transcribe(audio, sample_rate, force)
+    if not text:
+        return text, None
+    return text, (script_lang(text) or _LAST_HEARD[0] or "en")
+
+
 def transcribe(audio: np.ndarray, sample_rate: int = 16000,
-               language: str = "ka"):
+               language: str | None = "ka"):
     """float32 [-1,1] mono → text in the requested language.
     Blocking (~2-4s) — call from a worker thread."""
     scribe_key = _scribe_key()
@@ -164,11 +212,14 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000,
     wavfile.write(buf, sample_rate, pcm)
     wav = buf.getvalue()
 
-    engine, text = "scribe", None
+    engine, text, heard = "scribe", None, ""
     if scribe_key is not None:
-        text = _scribe(scribe_key, wav, language)
+        text, heard = _scribe(scribe_key, wav, language)
     if text is None and gladia_key is not None:
-        engine, text = "gladia", _gladia(gladia_key, wav, language)
+        engine, text = "gladia", _gladia(gladia_key, wav, language or "ka")
+    # ISO-639-3 out of scribe ('kat'/'eng') — kept as the tie-breaker for
+    # transcripts with no letters at all ("2026", "ok.").
+    _LAST_HEARD[0] = {"kat": "ka", "geo": "ka"}.get((heard or "")[:3], None)         or ("en" if heard else None)
     if text is None:
         return None
 

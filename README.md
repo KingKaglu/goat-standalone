@@ -17,7 +17,8 @@ Built by [KingKaglu](https://github.com/KingKaglu) as a personal assistant. It's
 - **Self-growing skill library** — it writes its own reusable skills into `workspace/.claude/skills/` (long-term memory, machine health, file map, self-upgrade procedure…).
 - **Self-edit safety net** — when it edits its own code, a preflight check validates the change and auto-rolls back if it would break the app.
 - **Watchers** — a background power watcher speaks up when AC drops or the battery runs low (`GOAT_WATCH=off` to disable).
-- **Settings drawer** — ≡ or Ctrl+, : talking/working/hard brain, **thinking depth (low…max)**, four themes (ember/paper/phosphor/graphite), interface + text size, voice on/off + level, **language (English / ქართული)**, wake word, mic mute, always-on-top, new chat/restart. Rows wrap, so every switch stays reachable at any interface scale. Preferences persist in `ui-config.json`.
+- **Bilingual hearing** — speak Georgian or English and GOAT answers in the language you used, sentence by sentence. The Georgian ear is ElevenLabs Scribe (`scribe_v2`, auto-detect + keyterms); English can stay fully local. Pick `english` / `ქართული` / `ორივე` (both) in the drawer or with Ctrl+L.
+- **Settings drawer** — ≡ or Ctrl+, : talking/working/hard brain, **thinking depth (low…max)**, **language (english / ქართული / ორივე)**, four themes (ember/paper/phosphor/graphite), interface + text size, voice on/off + level, **language (English / ქართული)**, wake word, mic mute, always-on-top, new chat/restart. Rows wrap, so every switch stays reachable at any interface scale. Preferences persist in `ui-config.json`.
 - **Georgian mode** — GOAT answers in Georgian, spoken with Microsoft's ka-GE neural voice, and **hears Georgian speech** through Gladia's cloud STT (~4s per utterance, free tier 10h/month) — put your key in `.goat-secrets.json` as `{"gladia_api_key": "..."}` (gitignored). Without a key, voice input stays English and typed Georgian works. Note: in Georgian mode utterance audio goes to Gladia's servers; English mode is 100% local. (Local Whisper Georgian was measured unusable — romanization/hallucinations; `GOAT_STT_KA=on` re-enables that experiment.)
 - **Continuity** — recent exchanges persist to `workspace/transcript.jsonl` and repaint (dimmed) after a restart; the Claude session itself resumes too.
 - **STT that learns** — mishearings you correct are saved to `stt-fixes.json` and fed back into Whisper's vocabulary prompt, so recognition improves over time.
@@ -40,9 +41,10 @@ Built by [KingKaglu](https://github.com/KingKaglu) as a personal assistant. It's
 ```
 
 1. **Hearing**: the mic runs through WebRTC AEC3 echo cancellation and voice-activity detection, then audio goes to a local `whisper-server.exe` (whisper.cpp) that stays resident so transcription takes ~1 second.
-2. **Thinking**: casual chat is answered by **Google's Gemini Flash** (`local_llm.py` — `gemini-3.8-flash`, free tier, keeps its own memory of the conversation, and can even do quick machine actions like opening an app). It replies `ESCALATE` for anything needing real tools or heavy work, which re-runs the message on Claude via the **Claude Agent SDK**; obvious work (fix/build/search/run…) skips straight there. The Claude side runs **Opus 5** for tool work, with **Fable 5.1** selectable in the drawer, and thinks adaptively at the effort you pick (low…max, default **max**) — the reasoning summary streams into the left panel as it works. Past 60k tokens it compacts itself and carries on. There is **no Claude API key in this repo** — the SDK uses your own local Claude Code sign-in. The Gemini key goes in `.goat-secrets.json` as `{"gemini_api_key": "..."}` (or the `GEMINI_API_KEY` env var); without it, chat simply falls back to Claude. Swap the fast model with `GOAT_GEMINI_MODEL`.
-3. **Speaking**: replies stream to Microsoft Edge TTS (the "Ava" voice) when online, or fall back to Piper, a fully local TTS, when offline.
-4. **UI**: a minimal native window (PySide6/Qt) with live captions, Ctrl+K to type instead of talk, and drag-and-drop files for analysis.
+2. **Hearing Georgian**: local whisper cannot do Georgian — it romanizes it into English-looking nonsense — so in Georgian or bilingual mode each utterance goes to **ElevenLabs Scribe** (`scribe_v2`) instead, with auto-detect and keyterm hints; Gladia is the fallback route. Measured 2026-09-14: ~1.5s, 7.3% WER on Georgian, and identical to local whisper on English. The language of each utterance is decided by its **alphabet**, not by a confidence score, and it drives the reply language and the voice (`ka-GE-EkaNeural` / `en-US-AvaMultilingualNeural`). Plain English mode never sends audio anywhere.
+3. **Thinking**: casual chat is answered by **Google's Gemini Flash** (`local_llm.py` — `gemini-3.8-flash`, free tier, keeps its own memory of the conversation, and can even do quick machine actions like opening an app). It replies `ESCALATE` for anything needing real tools or heavy work, which re-runs the message on Claude via the **Claude Agent SDK**; obvious work (fix/build/search/run…) skips straight there. The Claude side runs **Opus 5** for tool work, with **Fable 5.1** selectable in the drawer, and thinks adaptively at the effort you pick (low…max, default **max**) — the reasoning summary streams into the left panel as it works. Past 60k tokens it compacts itself and carries on. There is **no Claude API key in this repo** — the SDK uses your own local Claude Code sign-in. The Gemini key goes in `.goat-secrets.json` as `{"gemini_api_key": "..."}` (or the `GEMINI_API_KEY` env var); without it, chat simply falls back to Claude. Swap the fast model with `GOAT_GEMINI_MODEL`.
+4. **Speaking**: replies stream to Microsoft Edge TTS (the "Ava" voice) when online, or fall back to Piper, a fully local TTS, when offline.
+5. **UI**: a minimal native window (PySide6/Qt) with live captions, Ctrl+K to type instead of talk, and drag-and-drop files for analysis.
 
 ### Repo layout
 
@@ -138,6 +140,7 @@ Headless mode (no window, console only): `python goat_app.py`.
 - **≡ or Ctrl+,** — settings drawer: brains, thinking depth, themes, text size, voice/level, wake word, mic mute, always-on-top, copy reply, new chat, restart.
 - **Ctrl+T** — cycle themes without opening the drawer.
 - **Ctrl+E** — step the working brain's thinking depth (low → medium → high → xhigh → max). The engine reopens its session at the new depth and keeps the conversation.
+- **Ctrl+L** — cycle the language: english → ქართული → ორივე (bilingual).
 - **"stop" / "cancel" / "hold on"** — kills the current task.
 - **"restart GOAT"** — fresh session (context is otherwise kept for the whole session).
 - **"run diagnostics" / "are you okay"** — GOAT runs `goat_doctor.py` and reports.
@@ -185,7 +188,8 @@ JARVIS-ის სტილის AI დესკტოპ-ასისტენ�
 - **თვითმზარდი უნარების ბიბლიოთეკა** — საკუთარ განმეორებად უნარებს თვითონვე წერს `workspace/.claude/skills/`-ში (გრძელვადიანი მეხსიერება, ლეპტოპის ჯანმრთელობა, ფაილების რუკა, თვითგანახლების პროცედურა…).
 - **თვითრედაქტირების დამცავი ბადე** — როცა საკუთარ კოდს ასწორებს, წინასწარი შემოწმება ცვლილებას ამოწმებს და გაფუჭების შემთხვევაში ავტომატურად აბრუნებს.
 - **მეთვალყურეები** — ფონური კვების მეთვალყურე ხმამაღლა გაფრთხილებს, როცა დენი წყდება ან ბატარეა იწურება (`GOAT_WATCH=off` თიშავს).
-- **პარამეტრების პანელი** — ≡ ან Ctrl+, : მოსაუბრე/მუშა/მძიმე ტვინი, **აზროვნების სიღრმე (low…max)**, ოთხი თემა (ember/paper/phosphor/graphite), ინტერფეისისა და ტექსტის ზომა, ხმა ჩართვა/გამორთვა + სიმაღლე, **ენა (English / ქართული)**, გამოღვიძების სიტყვა, მიკროფონის დადუმება, ყოველთვის-ზემოთ, ახალი საუბარი/გადატვირთვა. პარამეტრები ინახება `ui-config.json`-ში.
+- **ორენოვანი სმენა** — ილაპარაკე ქართულად ან ინგლისურად და GOAT იმავე ენაზე გიპასუხებს, წინადადება-წინადადებაზე. ქართულ ყურს ElevenLabs Scribe (`scribe_v2`) აკეთებს; პანელში ან Ctrl+L-ით აირჩიე `english` / `ქართული` / `ორივე`.
+- **პარამეტრების პანელი** — ≡ ან Ctrl+, : მოსაუბრე/მუშა/მძიმე ტვინი, **ენა (english / ქართული / ორივე)**, **აზროვნების სიღრმე (low…max)**, ოთხი თემა (ember/paper/phosphor/graphite), ინტერფეისისა და ტექსტის ზომა, ხმა ჩართვა/გამორთვა + სიმაღლე, **ენა (English / ქართული)**, გამოღვიძების სიტყვა, მიკროფონის დადუმება, ყოველთვის-ზემოთ, ახალი საუბარი/გადატვირთვა. პარამეტრები ინახება `ui-config.json`-ში.
 - **ქართული რეჟიმი** — GOAT ქართულად გპასუხობს Microsoft-ის ka-GE ნეირონული ხმით და **ქართულ მეტყველებასაც ისმენს** Gladia-ს ღრუბლოვანი STT-ით (~4წმ ფრაზაზე, უფასო 10სთ/თვეში) — გასაღები ჩაწერე `.goat-secrets.json`-ში: `{"gladia_api_key": "..."}` (git-ში არ ხვდება). გასაღების გარეშე ხმოვანი შეყვანა ინგლისურად რჩება, ქართულად წერა კი მუშაობს. გაითვალისწინე: ქართულ რეჟიმში ხმის ჩანაწერები Gladia-ს სერვერებზე მიდის; ინგლისური რეჟიმი 100% ლოკალურია.
 - **უწყვეტობა** — ბოლო საუბრები ინახება `workspace/transcript.jsonl`-ში და გადატვირთვის შემდეგ ეკრანზე ბრუნდება (მიმქრალებული); Claude-სესიაც გრძელდება.
 - **მეტყველების ამოცნობა, რომელიც სწავლობს** — შესწორებული შეცდომები ინახება `stt-fixes.json`-ში და Whisper-ის ლექსიკონს უბრუნდება, ასე რომ ამოცნობა დროთა განმავლობაში უმჯობესდება.
@@ -266,6 +270,7 @@ Headless რეჟიმი (ფანჯრის გარეშე, კონ
 - **≡ ან Ctrl+,** — პარამეტრები: თემები, ტექსტის ზომა, ხმა/სიმაღლე, გამოღვიძების სიტყვა, მიკროფონი, ყოველთვის-ზემოთ, პასუხის კოპირება, ახალი საუბარი, გადატვირთვა.
 - **Ctrl+T** — თემების ცვლა პანელის გახსნის გარეშე.
 - **Ctrl+E** — მუშა ტვინის აზროვნების სიღრმის ცვლა (low → medium → high → xhigh → max).
+- **Ctrl+L** — ენის გადართვა: english → ქართული → ორივე.
 - **"stop" / "cancel" / "hold on"** — მიმდინარე დავალებას აჩერებს.
 - **"restart GOAT"** — ახალი სესია (სხვა შემთხვევაში კონტექსტი მთელი სესიის განმავლობაში ინახება).
 - **"run diagnostics" / "are you okay"** — GOAT უშვებს `goat_doctor.py`-ს და გატყობინებს.

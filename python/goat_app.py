@@ -132,6 +132,13 @@ HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
 COMPACT_CLI = os.environ.get("GOAT_COMPACT", "on").lower() not in (
     "off", "0", "false")
 
+# Language modes he can pick (drawer / voice): English only, Georgian only,
+# or "auto" — the bilingual ear, where every utterance is answered in the
+# language he just spoke. auto is what makes a mixed conversation work:
+# scribe_v2 auto-detect measured identical to a pinned language (2026-09-14),
+# so nothing is lost by leaving the choice to him sentence by sentence.
+LANG_MODES = ("en", "ka", "auto")
+
 # Appended to the persona when Georgian mode is on at boot; the live toggle
 # sends the same directive as a steering turn instead.
 LANG_NOTE_KA = """
@@ -143,6 +150,32 @@ through cloud transcription that garbles word boundaries sometimes (e.g.
 "კამარ ჯობა კი ორგი" = "გამარჯობა გიორგი") — read through the noise, never
 comment on it. He may also speak English or type; reply in Georgian either
 way."""
+
+KA_WORK_NOTE = """[language: he is speaking Georgian — write your reply to him in
+Georgian (ქართული), plain Mkhedruli, never MTAVRULI/capitalized. His words
+arrive through cloud transcription and may be garbled — act on what he
+MEANT. Code, paths, commands and tool output stay as they are.]
+"""
+
+KA_TALK_NOTE = """[language: reply in Georgian (ქართული) — he is speaking Georgian.
+Write plain Mkhedruli: never MTAVRULI/capitalized letters (Georgian has
+no capitals in running text — "კარგად", never "Კარგად"). His words reach
+you through cloud transcription that garbles casual speech; read through
+it, answer what he MEANT, and never comment on the garble or repeat it
+back. Keep code, paths and identifiers as they are.]
+"""
+
+LANG_NOTE_AUTO = """
+
+LANGUAGE: Giorgi is in bilingual mode — he speaks Georgian (ქართული) and
+English, and switches whenever he likes. MIRROR HIM: answer every turn in
+the language of THAT turn, fully and natively (Georgian for Georgian, English
+for English), never a mix, never a translation of yourself. Georgian is
+written in plain Mkhedruli — never MTAVRULI or capitalized letters. His
+Georgian
+arrives through cloud transcription that garbles the odd word — read through
+it and never comment on it. Keep code, paths, and technical identifiers as
+they are in both languages."""
 
 # Local Georgian hearing measured 2026-07-10: whisper base multi romanizes,
 # small multi hallucinates/loops at 13-25s per phrase — unusable. Voice
@@ -458,8 +491,11 @@ APPROVE_RE = re.compile(
 
 # Short spoken stop-orders while the working brain is mid-task — the brake.
 # Word-count cap keeps "don't stop, also add X" from tripping it.
-STOP_RE = re.compile(r"\b(stop|cancel|abort|hold on|never ?mind|forget it)\b",
-                     re.IGNORECASE)
+STOP_RE = re.compile(
+    r"\b(stop|cancel|abort|hold on|never ?mind|forget it)\b"
+    # …and the Georgian he actually says: stop / cease / wait / cancel.
+    r"|(გაჩერდი|შეჩერდი|გააჩერე|შეწყვიტე|მოიცა|დაელოდე|გააუქმე)",
+    re.IGNORECASE)
 
 # Manual voice/typed dispatch to the WORK lane: he ADDRESSES the working brain
 # by name at the start of the message ("Fable, build…", "working brain: …",
@@ -469,9 +505,14 @@ STOP_RE = re.compile(r"\b(stop|cancel|abort|hold on|never ?mind|forget it)\b",
 WORK_DISPATCH_RE = re.compile(
     r"^\s*(hey\s+|ok\s+|okay\s+)?"
     r"(fable|opus|the\s+working\s+brain|working\s+brain|work\s+brain|"
-    r"hard\s+brain|full\s+model)\b", re.IGNORECASE)
+    r"hard\s+brain|full\s+model|"
+    # Georgian address forms — the same order, spoken his way. Stems
+    # with \w* because Georgian declines: ოპუსი / ოპუსს / ოპუსმა.
+    r"ფეიბლ\w*|ოპუს\w*|მუშა\s+ტვინ\w*|"
+    r"სამუშაო\s+ტვინ\w*|მძიმე\s+ტვინ\w*)\b", re.IGNORECASE)
 # Which of those addresses means the HARD brain specifically.
-WORK_HARD_RE = re.compile(r"\b(hard|opus)\b", re.IGNORECASE)
+WORK_HARD_RE = re.compile(r"\b(hard|opus|მძიმე|ოპუს\w*)\b",
+                          re.IGNORECASE)
 # Mid-sentence dispatch (2026-07-18: "please, ask the opus 4.8 to update
 # goat's readme" got a stuck line — the address regex above only looks at
 # the message START). "ask/tell/have/get/let [the] <brain>" anywhere in the
@@ -498,7 +539,15 @@ WORK_STATUS_ASK_RE = re.compile(
     r"|(?:\b(?:is|are|did|has)\s+(?:the\s+)?"
     r"(?:work(?:ing)?\s+brain|fable|opus|claude|it)\b.{0,30}"
     r"\b(?:done|finish(?:ed)?|busy|still\s+(?:working|going|running)|"
-    r"working\s+on|progress)\b)",
+    r"working\s+on|progress)\b)"
+    # Georgian: "რას აკეთებს მუშა ტვინი?", "დაასრულა?", "როგორ მიდის საქმე?"
+    # — a question ABOUT the work, never an order to start work.
+    r"|(?:(?:რას\s+აკეთებს|როგორ\s+მიდის|რა\s+ეტაპზეა|"
+    r"დაასრულა|დაამთავრა|მზადაა|მზად\s+არის|მორჩა)"
+    r".{0,40}(?:ტვინ\w*|ოპუს\w*|ფეიბლ\w*|საქმე\w*|სამუშაო\w*)|"
+    r"(?:ტვინ\w*|ოპუს\w*|ფეიბლ\w*|საქმე\w*|სამუშაო\w*)"
+    r".{0,40}(?:რას\s+აკეთებს|როგორ\s+მიდის|დაასრულა|დაამთავრა|"
+    r"მზადაა|მზად\s+არის|მორჩა))",
     re.IGNORECASE)
 
 # Claude out-of-usage detection (widened 2026-07-17). The CLI's REAL wording
@@ -793,6 +842,10 @@ class GoatApp:
         # "en" or "ka" — set by the UI before run() (boot) or live via
         # set_language(). Boot path appends LANG_NOTE_KA to the persona.
         self.language = "en"
+        # Language of the turn being handled right now ("en"/"ka"). In fixed
+        # modes it equals self.language; in "auto" it is whatever he just
+        # spoke or typed, and it drives the voice AND the reply language.
+        self.turn_lang = "en"
         self._last_exchange = time.monotonic()
         # talk-lane exchanges the work (Claude) session hasn't seen yet —
         # bridged into its next work turn so the working brain isn't blind to
@@ -837,17 +890,30 @@ class GoatApp:
         """Live language switch from the UI (Qt thread — everything here is
         thread-safe): voice now, hearing in a worker thread (model reload
         ~5s), and one steering turn so the brain switches too."""
-        if lang == self.language:
+        if lang not in LANG_MODES or lang == self.language:
             return
         self.language = lang
-        tts_edge.set_language(lang)
+        # "auto" has no fixed voice — the first thing he says picks one.
+        # en/ka pin both the voice and the reply language immediately.
+        if lang == "auto":
+            self.turn_lang = self.turn_lang or "en"
+        else:
+            self.turn_lang = lang
+            tts_edge.set_language(lang)
+        self.emit("turnlang", self.turn_lang)
         if STT_KA_EXPERIMENT:
             def _stt():
                 ok = stt_whisper.set_language(lang)
                 self.emit("status", ("hearing ready — " + lang) if ok
                           else "hearing did not come back — restart me")
             threading.Thread(target=_stt, daemon=True).start()
-        if lang == "ka":
+        if lang == "auto":
+            note = ("[language switch] Bilingual mode from now on: Giorgi "
+                    "speaks and types BOTH Georgian (ქართული) and English and "
+                    "switches freely. Answer every turn in the language of "
+                    "that turn — never mix, never translate yourself. "
+                    "Confirm in one short Georgian sentence.")
+        elif lang == "ka":
             hearing = (" His speech now reaches you through cloud "
                        "transcription — slightly garbled sometimes, read "
                        "through it." if stt_gladia.available() else
@@ -938,12 +1004,22 @@ class GoatApp:
         self.hard_model = name
         self.emit("status", f"hard brain: {name}")
 
+    def _typed_lang(self, text: str) -> None:
+        """Bilingual mode also applies to TYPING: Georgian letters in, Georgian
+        out. Alphabet, not guesswork — see stt_gladia.script_lang."""
+        if self.language != "auto":
+            return
+        lang = stt_gladia.script_lang(text)
+        if lang:
+            self._set_turn_lang(lang)
+
     def submit_text(self, text: str):
         """Plain typed/spoken input — goes to the TALKING brain (middle lane).
         Thread-safe."""
         if self.loop is None or self.loop.is_closed():
             self.emit("status", "engine is down — check python\\goat-app.log")
             return
+        self._typed_lang(text)
         asyncio.run_coroutine_threadsafe(self._talk(text), self.loop)
 
     def submit_work(self, text: str, hard: bool = False):
@@ -954,6 +1030,7 @@ class GoatApp:
         if self.loop is None or self.loop.is_closed():
             self.emit("status", "engine is down — check python\\goat-app.log")
             return
+        self._typed_lang(text)
         asyncio.run_coroutine_threadsafe(self._work(text, hard=hard), self.loop)
 
     def submit_files(self, paths: list, note: str = ""):
@@ -968,17 +1045,36 @@ class GoatApp:
         asyncio.run_coroutine_threadsafe(self._work(text), self.loop)
 
     # ---- async side ----
+    def _set_turn_lang(self, lang: str):
+        """Point the voice at the language of THIS turn. Cheap and idempotent;
+        in fixed en/ka modes it never moves off the chosen language."""
+        if lang not in ("en", "ka") or lang == self.turn_lang:
+            return
+        self.turn_lang = lang
+        tts_edge.set_language(lang)
+        self.emit("turnlang", lang)
+
     async def _handle_utterance(self, audio_np: np.ndarray):
         if self.language != "en" and stt_gladia.available():
-            # Georgian mode: cloud hearing (local whisper can't do ka).
-            text = await asyncio.to_thread(
-                stt_gladia.transcribe, audio_np, 16000, self.language)
+            # Georgian or bilingual mode: cloud ear (local whisper can't do
+            # ka at all — it romanizes it into English-looking nonsense,
+            # which is exactly what "it hears English when I speak Georgian"
+            # was). In "auto" nothing is pinned, so the same ear takes both
+            # languages and tells us which one it heard.
+            force = "ka" if self.language == "ka" else None
+            text, heard = await asyncio.to_thread(
+                stt_gladia.transcribe_lang, audio_np, 16000, force)
             if text is None:
                 # Cloud route broke — English local hearing still works.
                 self.emit("status", "georgian hearing offline — english ear on")
                 text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
+                self._set_turn_lang("en")
+            else:
+                self._set_turn_lang("ka" if self.language == "ka"
+                                    else (heard or self.turn_lang))
         else:
             text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
+            self._set_turn_lang("en")
         if text is None:
             # Hard STT failure — he spoke and his words went nowhere. Say it
             # (once per outage), never just log it: a deaf GOAT looks alive.
@@ -1069,7 +1165,7 @@ class GoatApp:
 
         try:
             reply = await asyncio.to_thread(
-                local_llm.chat, text, on_delta, self.language,
+                local_llm.chat, text, on_delta, self.turn_lang,
                 status=self._work_status_line())
         except Exception as e:  # noqa: BLE001 — talk brain down ≠ mute GOAT
             self.emit("status", f"talking brain failed: {e}")
@@ -1135,6 +1231,8 @@ class GoatApp:
         # voice can also answer "what is the working brain doing?".
         send = (f"[live working-brain status: {self._work_status_line()}]\n\n"
                 + text)
+        if self.turn_lang == "ka":
+            send = KA_TALK_NOTE + send
         try:
             await self.talk_client.query(send)
             async for msg in self.talk_client.receive_response():
@@ -1288,6 +1386,12 @@ class GoatApp:
         if self._pending_handoff:
             send = self._pending_handoff + "\n\n" + send
             self._pending_handoff = ""
+        if self.turn_lang == "ka":
+            # The work client's persona is pinned at connect and a live
+            # language switch only steers the TALK lane — so the left lane
+            # is told per dispatch. Without this he gets Georgian in the
+            # middle and English on the left in the same breath.
+            send = KA_WORK_NOTE + send
         await self.client.query(send)
 
     async def _offline_cover(self, text: str):
@@ -1315,7 +1419,7 @@ class GoatApp:
 
                 try:
                     reply = await asyncio.to_thread(
-                        local_llm.chat, prompt, on_delta, self.language, True,
+                        local_llm.chat, prompt, on_delta, self.turn_lang, True,
                         status=self._work_status_line())
                 except Exception as e:  # noqa: BLE001 — cover must not crash
                     self.emit("status", f"offline cover failed: {e}")
@@ -1643,10 +1747,16 @@ class GoatApp:
         except OSError:
             pass  # no session file — fresh brain, greeting alone covers it
         self.emit("status", "starting speech recognition...")
-        if self.language != "en":
-            tts_edge.set_language(self.language)
+        if self.language in ("ka", "auto"):
+            # ka pins the Georgian voice now. auto RESUMES the language the
+            # last conversation ended in (the UI hands it over on bind) —
+            # restarting mid-Georgian-conversation and being greeted in
+            # English is exactly the seam this mode is meant to remove.
+            if self.language == "ka":
+                self.turn_lang = "ka"
+            tts_edge.set_language(self.turn_lang)
             if STT_KA_EXPERIMENT:
-                stt_whisper.LANGUAGE = self.language
+                stt_whisper.LANGUAGE = self.turn_lang
         # Boot latency (2026-07-15): whisper model load, Claude SDK connect,
         # and mic calibration are independent — run them CONCURRENTLY and
         # speak the greeting as soon as the mic is calibrated; the ears and
@@ -1655,7 +1765,9 @@ class GoatApp:
         stt_task = asyncio.create_task(
             asyncio.to_thread(stt_whisper.ensure_server))
 
-        persona = PERSONA + (LANG_NOTE_KA if self.language == "ka" else "")
+        persona = PERSONA + (LANG_NOTE_KA if self.language == "ka"
+                             else LANG_NOTE_AUTO if self.language == "auto"
+                             else "")
         options = ClaudeAgentOptions(
             cwd=WORKSPACE,
             permission_mode="bypassPermissions",

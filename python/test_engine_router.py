@@ -13,6 +13,8 @@ import tempfile
 import time
 from collections import deque
 
+import numpy as np
+
 import goat_app as g
 from claude_agent_sdk import ResultMessage, StreamEvent
 
@@ -105,6 +107,7 @@ def make_app(client):
     app._pending_handoff = ""
     app._compacting = False
     app.language = "en"
+    app.turn_lang = "en"
     app._local_unseen = []
     return app
 
@@ -636,6 +639,104 @@ async def main():
               "work_think" not in [e[0] for e in app.events],
               f"events={[e[0] for e in app.events]}")
 
+        # ---- bilingual hearing (2026-09-14, his goal: "listen to my
+        #      georgian and not hear english when I speak georgian") ----
+        class FakeEar:
+            """Stands in for the cloud ear; records how it was called."""
+            def __init__(self, text, lang):
+                self.text, self.lang, self.calls = text, lang, []
+            def available(self):
+                return True
+            def transcribe_lang(self, audio, sr=16000, force=None):
+                self.calls.append(force)
+                return self.text, self.lang
+            def script_lang(self, text):
+                return g.stt_gladia.__class__ and ("ka" if any(
+                    "Ⴀ" <= c <= "ჿ" for c in text) else "en")
+
+        class FakeWhisper:
+            def __init__(self):
+                self.calls = 0
+            def transcribe(self, audio):
+                self.calls += 1
+                return "english words"
+
+        real_ear, real_whisper, real_tts = g.stt_gladia, g.stt_whisper, g.tts_edge
+
+        class FakeTTSEdge:
+            def __init__(self):
+                self.lang = "en"
+            def set_language(self, lang):
+                self.lang = lang
+
+        async def hear(mode, ear_text, ear_lang):
+            """One utterance through the real routing with fake ears."""
+            app = make_app(MockClient())
+            app.language = mode
+            app.wake_enabled = False
+            app.audio = type("A", (), {"is_tts_playing": False})()
+            spoken = []
+            async def fake_talk(text, echo=True):
+                spoken.append(text)
+            app._talk = fake_talk
+            g.stt_gladia = FakeEar(ear_text, ear_lang)
+            g.stt_whisper = FakeWhisper()
+            g.tts_edge = FakeTTSEdge()
+            await app._handle_utterance(np.zeros(16000, dtype=np.float32))
+            return app, spoken, g.stt_gladia, g.stt_whisper, g.tts_edge
+
+        try:
+            # 17f. auto mode + Georgian speech -> Georgian turn and voice,
+            #      and the ear is NOT pinned to a language
+            app, spoken, ear, whis, tts = await hear(
+                "auto", "გამარჯობა, როგორ ხარ?", "ka")
+            check("bilingual: georgian speech -> georgian turn + voice",
+                  app.turn_lang == "ka" and tts.lang == "ka"
+                  and ear.calls == [None] and whis.calls == 0
+                  and spoken == ["გამარჯობა, როგორ ხარ?"],
+                  f"lang={app.turn_lang} voice={tts.lang} ear={ear.calls}")
+
+            # 17g. same session, English speech -> back to English
+            app, spoken, ear, whis, tts = await hear(
+                "auto", "what time is it", "en")
+            check("bilingual: english speech -> english turn",
+                  app.turn_lang == "en" and tts.lang == "en"
+                  and ear.calls == [None],
+                  f"lang={app.turn_lang} voice={tts.lang}")
+
+            # 17h. Georgian MODE pins the ear and the reply language even if
+            #      the transcript came back English
+            app, spoken, ear, whis, tts = await hear("ka", "hello there", "en")
+            check("georgian mode stays georgian and pins the ear",
+                  app.turn_lang == "ka" and ear.calls == ["ka"],
+                  f"lang={app.turn_lang} ear={ear.calls}")
+
+            # 17i. English mode never sends audio to the cloud
+            app, spoken, ear, whis, tts = await hear("en", "unused", "ka")
+            check("english mode keeps hearing local (no cloud audio)",
+                  ear.calls == [] and whis.calls == 1 and app.turn_lang == "en",
+                  f"ear={ear.calls} whisper={whis.calls}")
+        finally:
+            g.stt_gladia, g.stt_whisper, g.tts_edge = real_ear, real_whisper, real_tts
+
+        # 17j. a Georgian turn tells the WORK lane to answer in Georgian
+        c = MockClient()
+        app = make_app(c)
+        app.turn_lang = "ka"
+        await app._work("ფასმეტრი შეამოწმე")
+        check("georgian turn carries the language into the work lane",
+              c.queries and c.queries[0].startswith("[language:")
+              and "ქართული" in c.queries[0]
+              and c.queries[0].endswith("ფასმეტრი შეამოწმე"),
+              f"queries={c.queries}")
+
+        # 17k. english turn adds nothing
+        c = MockClient()
+        app = make_app(c)
+        await app._work("check fasmetri")
+        check("english turn leaves the work order untouched",
+              c.queries == ["check fasmetri"], f"queries={c.queries}")
+
         # 18. work bridges recent talk-lane chat as context
         g.local_llm = fake = FakeLocal(up=True, reply="Sounds fun.")
         c = MockClient()
@@ -676,6 +777,32 @@ async def main():
           not any(g.WORK_DISPATCH_RE.match(t) for t in
                   ("how does the working brain work?", "tell me about opus",
                    "what's the hard part here", "good morning")))
+    # 20b. the same dispatch vocabulary, spoken in Georgian (2026-09-14)
+    ka_dispatch = ("ოპუს, გაასწორე ბილდი", "მუშა ტვინი, ფასმეტრი შეამოწმე",
+                   "ფეიბლ, დაწერე სკრიპტი", "მძიმე ტვინი, დაიწყე რეფაქტორინგი")
+    ka_status = ("რას აკეთებს მუშა ტვინი?", "მუშა ტვინმა დაასრულა?",
+                 "როგორ მიდის საქმე?")
+    ka_talk = ("გამარჯობა, როგორ ხარ?", "მომწონს მუშა ტვინის იდეა")
+    check("georgian addresses dispatch to the work lane",
+          all(g.WORK_DISPATCH_RE.match(t) and not g.WORK_STATUS_ASK_RE.search(t)
+              for t in ka_dispatch),
+          f"missed={[t for t in ka_dispatch if not g.WORK_DISPATCH_RE.match(t)]}")
+    check("georgian status questions stay talk",
+          all(g.WORK_STATUS_ASK_RE.search(t) for t in ka_status),
+          f"missed={[t for t in ka_status if not g.WORK_STATUS_ASK_RE.search(t)]}")
+    check("plain georgian talk never dispatches",
+          not any(g.WORK_DISPATCH_RE.match(t) or g.WORK_ASK_RE.search(t)
+                  for t in ka_talk), "a talk line dispatched")
+    check("georgian 'მძიმე'/'ოპუს' pick the hard brain",
+          g.WORK_HARD_RE.search("მძიმე ტვინი დაიწყე")
+          and g.WORK_HARD_RE.search("ოპუს, გააკეთე")
+          and not g.WORK_HARD_RE.search("მუშა ტვინი, გააკეთე"),
+          "hard-brain detection off in georgian")
+    check("georgian stop-orders brake the work lane",
+          all(g.STOP_RE.search(t) for t in ("გაჩერდი", "შეწყვიტე", "მოიცა"))
+          and not g.STOP_RE.search("გამარჯობა"),
+          "georgian brake words not recognized")
+
     check("WORK_HARD_RE distinguishes hard/opus",
           g.WORK_HARD_RE.search("hard brain go") and g.WORK_HARD_RE.search("opus now")
           and not g.WORK_HARD_RE.search("working brain go"))
@@ -801,6 +928,7 @@ async def main():
     check("UI default roles present",
           ui_qt.DEFAULT_CFG["talk_brain"] == "gemini flash"
           and ui_qt.DEFAULT_CFG["work_model"] == "opus 5"
+          and ui_qt.LANGS.get("ორივე") == "auto"
           and ui_qt.EFFORT_OPTS[-1] == "max"
           and ui_qt.DEFAULT_CFG["effort"] == "max"
           and ui_qt.DEFAULT_CFG["hard_model"] == "opus 5")
