@@ -23,18 +23,18 @@ If running.Count > 0 Then
   WScript.Sleep 500
 End If
 
-' Rotate the log before launch so the append redirect below can't grow it
-' unbounded — one .old generation kept. Safe here: the app is not running
-' (checked above), so nothing holds the file open.
-Const LOG_MAX = 5242880  ' 5 MB
+' Rotate the log on EVERY launch — one .old generation kept. It used to
+' rotate only past 5 MB, so goat-app.log held months of runs and
+' goat_doctor.py's "last 80 lines" check kept reporting errors from a dead
+' session (2026-09-14: a July Gemini 400 failed the doctor on a healthy
+' boot). One file per run means the doctor reads THIS run or nothing.
+' Safe here: the app is not running (checked above), nothing holds the file.
 Set fso = CreateObject("Scripting.FileSystemObject")
 logPath = APP_DIR & "\goat-app.log"
 If fso.FileExists(logPath) Then
-  If fso.GetFile(logPath).Size > LOG_MAX Then
-    oldPath = logPath & ".old"
-    If fso.FileExists(oldPath) Then fso.DeleteFile oldPath, True
-    fso.MoveFile logPath, oldPath
-  End If
+  oldPath = logPath & ".old"
+  If fso.FileExists(oldPath) Then fso.DeleteFile oldPath, True
+  fso.MoveFile logPath, oldPath
 End If
 
 ' python.exe (hidden console), NOT pythonw: under pythonw the Claude SDK
@@ -44,4 +44,4 @@ End If
 sh.CurrentDirectory = APP_DIR
 ' py -3.13 pinned: Ada-SI's install (2026-07-14) put Python 3.12 first on
 ' PATH; bare "python" then lost PySide6/numpy and GOAT died at import.
-sh.Run "cmd /c py -3.13 ui_qt.py >> goat-app.log 2>&1", 0, False
+sh.Run "cmd /c py -3.13 -u ui_qt.py >> goat-app.log 2>&1", 0, False

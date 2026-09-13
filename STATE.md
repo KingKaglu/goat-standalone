@@ -48,6 +48,11 @@ Updated: 2026-09-14 (latest models + max thinking + panel instruments)
   -4200,-4200 box. Point ui_qt.UI_CONFIG at a temp file before rendering.
 - 67/67 router tests pass; booted live and verified on screen (header reads
   "opus 5 · max · idle", boot briefing spoken).
+- LAUNCHER: start-goat-app.vbs now rotates goat-app.log on EVERY launch (one
+  .old kept) and runs `py -3.13 -u` — the log used to rotate only past 5 MB,
+  so goat_doctor.py's "last 80 lines" check was reading a JULY session and
+  failed a perfectly healthy boot on a dead Gemini 400. Doctor now reads this
+  run or nothing: "all systems nominal".
 
 
 ## Sonnet 5 deleted from work lane (2026-07-17, Giorgi: "delete my thing
