@@ -26,7 +26,10 @@ QUIET_NEEDED = 3
 PREROLL_MS = 300
 DUCK_GAIN = 0.5
 VAD_THRESHOLD = 0.5
-UTT_SILENCE_STOP_MS = 900    # utterance ends after this much continuous quiet
+UTT_SILENCE_STOP_MS = 700    # utterance ends after this much continuous quiet
+                             # (900 -> 700 on 2026-09-14: 200ms off EVERY
+                             # turn, still above the ~500ms gap that normal
+                             # mid-sentence breathing leaves)
 UTT_MIN_VOICED_MS = 250      # discard blips shorter than this (coughs, clicks) —
                              # the STT junk filter catches what slips through
 UTT_MAX_MS = 30000           # hard cap so a stuck-open capture can't grow forever

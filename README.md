@@ -17,6 +17,7 @@ Built by [KingKaglu](https://github.com/KingKaglu) as a personal assistant. It's
 - **Self-growing skill library** — it writes its own reusable skills into `workspace/.claude/skills/` (long-term memory, machine health, file map, self-upgrade procedure…).
 - **Self-edit safety net** — when it edits its own code, a preflight check validates the change and auto-rolls back if it would break the app.
 - **Watchers** — a background power watcher speaks up when AC drops or the battery runs low (`GOAT_WATCH=off` to disable).
+- **Orders are obeyed, not discussed** — say "fix the build", "deploy fasmetri", "გაასწორე ბილდი" and it goes straight to the working brain; GOAT acknowledges out loud instantly (pre-synthesized, ~0ms) and says one line when the job lands. Questions, opinions and trivia ("what time is it", "how do I fix this?") stay on the fast talking lane.
 - **Bilingual hearing** — speak Georgian or English and GOAT answers in the language you used, sentence by sentence. The Georgian ear is ElevenLabs Scribe (`scribe_v2`, auto-detect + keyterms); English can stay fully local. Pick `english` / `ქართული` / `ორივე` (both) in the drawer or with Ctrl+L.
 - **Settings drawer** — ≡ or Ctrl+, : talking/working/hard brain, **thinking depth (low…max)**, **language (english / ქართული / ორივე)**, four themes (ember/paper/phosphor/graphite), interface + text size, voice on/off + level, **language (English / ქართული)**, wake word, mic mute, always-on-top, new chat/restart. Rows wrap, so every switch stays reachable at any interface scale. Preferences persist in `ui-config.json`.
 - **Georgian mode** — GOAT answers in Georgian, spoken with Microsoft's ka-GE neural voice, and **hears Georgian speech** through Gladia's cloud STT (~4s per utterance, free tier 10h/month) — put your key in `.goat-secrets.json` as `{"gladia_api_key": "..."}` (gitignored). Without a key, voice input stays English and typed Georgian works. Note: in Georgian mode utterance audio goes to Gladia's servers; English mode is 100% local. (Local Whisper Georgian was measured unusable — romanization/hallucinations; `GOAT_STT_KA=on` re-enables that experiment.)
@@ -31,7 +32,7 @@ Built by [KingKaglu](https://github.com/KingKaglu) as a personal assistant. It's
                                                             │ text
                                                             ▼
                                           model router
-                                          ├─ talking brain: Gemini Flash (casual chat, free) — replies ESCALATE for real work
+                                          ├─ talking brain: Gemini Flash (casual chat, free) or Sonnet 5 — replies ESCALATE for real work
                                           └─ working brain: claude-opus-5 (tools)  ·  claude-fable-5-1 (optional)
                                              thinking: adaptive, effort low…max (default max)
                                           (Claude via the Agent SDK — your Claude Code login)
@@ -188,6 +189,7 @@ JARVIS-ის სტილის AI დესკტოპ-ასისტენ�
 - **თვითმზარდი უნარების ბიბლიოთეკა** — საკუთარ განმეორებად უნარებს თვითონვე წერს `workspace/.claude/skills/`-ში (გრძელვადიანი მეხსიერება, ლეპტოპის ჯანმრთელობა, ფაილების რუკა, თვითგანახლების პროცედურა…).
 - **თვითრედაქტირების დამცავი ბადე** — როცა საკუთარ კოდს ასწორებს, წინასწარი შემოწმება ცვლილებას ამოწმებს და გაფუჭების შემთხვევაში ავტომატურად აბრუნებს.
 - **მეთვალყურეები** — ფონური კვების მეთვალყურე ხმამაღლა გაფრთხილებს, როცა დენი წყდება ან ბატარეა იწურება (`GOAT_WATCH=off` თიშავს).
+- **ბრძანებას ასრულებს, არ განიხილავს** — თქვი "გაასწორე ბილდი" ან "deploy fasmetri" და პირდაპირ მუშა ტვინთან მიდის; GOAT მაშინვე ხმამაღლა დაგიდასტურებს და დასრულებისას ერთ წინადადებას გეტყვის. კითხვები და წვრილმანი ("რა დროა") სწრაფ ლეინზე რჩება.
 - **ორენოვანი სმენა** — ილაპარაკე ქართულად ან ინგლისურად და GOAT იმავე ენაზე გიპასუხებს, წინადადება-წინადადებაზე. ქართულ ყურს ElevenLabs Scribe (`scribe_v2`) აკეთებს; პანელში ან Ctrl+L-ით აირჩიე `english` / `ქართული` / `ორივე`.
 - **პარამეტრების პანელი** — ≡ ან Ctrl+, : მოსაუბრე/მუშა/მძიმე ტვინი, **ენა (english / ქართული / ორივე)**, **აზროვნების სიღრმე (low…max)**, ოთხი თემა (ember/paper/phosphor/graphite), ინტერფეისისა და ტექსტის ზომა, ხმა ჩართვა/გამორთვა + სიმაღლე, **ენა (English / ქართული)**, გამოღვიძების სიტყვა, მიკროფონის დადუმება, ყოველთვის-ზემოთ, ახალი საუბარი/გადატვირთვა. პარამეტრები ინახება `ui-config.json`-ში.
 - **ქართული რეჟიმი** — GOAT ქართულად გპასუხობს Microsoft-ის ka-GE ნეირონული ხმით და **ქართულ მეტყველებასაც ისმენს** Gladia-ს ღრუბლოვანი STT-ით (~4წმ ფრაზაზე, უფასო 10სთ/თვეში) — გასაღები ჩაწერე `.goat-secrets.json`-ში: `{"gladia_api_key": "..."}` (git-ში არ ხვდება). გასაღების გარეშე ხმოვანი შეყვანა ინგლისურად რჩება, ქართულად წერა კი მუშაობს. გაითვალისწინე: ქართულ რეჟიმში ხმის ჩანაწერები Gladia-ს სერვერებზე მიდის; ინგლისური რეჟიმი 100% ლოკალურია.

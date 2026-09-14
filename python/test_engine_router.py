@@ -35,6 +35,9 @@ class MockTTS:
     def say(self, text):
         self.spoken.append(text)
 
+    def prewarm(self, lines):
+        self.warmed = list(lines)
+
 
 class MockClient:
     def __init__(self, script=None, ctx_after=1000):
@@ -264,16 +267,58 @@ async def main():
               and c.queries == ["do the heavy refactor"],
               f"models={c.models} queries={c.queries}")
 
-        # 5. NO auto-routing: a work verb typed as plain talk stays on Gemini
-        #    (his rule 3 — nothing escalates itself; he dispatches by hand)
-        g.local_llm = fake = FakeLocal(up=True, reply="Here's how I'd approach it.")
+        # 5. ORDERS ARE OBEYED (2026-09-14 goal — supersedes the 2026-07-17
+        #    "manual dispatch only" rule): a plain imperative goes STRAIGHT to
+        #    the work lane, no name needed, and GOAT says so out loud at once.
+        g.local_llm = fake = FakeLocal(up=True, reply="should not be used")
         c = MockClient()
         app = make_app(c)
         await app._talk("fix the scroll bug in the app")
-        check("work verb in plain talk does NOT auto-route to Claude",
-              fake.chats == ["fix the scroll bug in the app"]
-              and c.queries == [] and not app.busy,
+        check("a plain order goes straight to the work lane",
+              c.queries == ["fix the scroll bug in the app"]
+              and fake.chats == [] and app.busy,
               f"chats={fake.chats} queries={c.queries}")
+        check("an order is acknowledged out loud immediately",
+              app.tts.spoken and app.tts.spoken[0] in g.ACK_ORDER["en"],
+              f"said={app.tts.spoken}")
+
+        # 5b. talking ABOUT work is still talk — a question, a statement, or
+        #     an opinion must never be mistaken for an order.
+        for line in ("how do I fix the scroll bug?", "i fixed the scroll bug",
+                     "should i deploy this?", "that build check was useful"):
+            g.local_llm = fake = FakeLocal(up=True, reply="talking.")
+            c = MockClient()
+            app = make_app(c)
+            await app._talk(line)
+            if c.queries:
+                break
+        check("questions and statements about work stay talk",
+              not c.queries and fake.chats, f"queries={c.queries}")
+
+        # 5c. quick actions AND trivial topics stay with the talking brain
+        #     (it has hands and answers in ~1s; the work brain at max effort
+        #     would spend twenty seconds telling him the time)
+        for line in ("open chrome", "turn the volume up", "what time is it",
+                     "check the time", "check the weather", "შეამოწმე ამინდი"):
+            g.local_llm = fake = FakeLocal(up=True, reply="done.")
+            c = MockClient()
+            app = make_app(c)
+            await app._talk(line)
+            if c.queries:
+                break
+        check("quick actions stay on the fast lane",
+              not c.queries, f"queries={c.queries}")
+
+        # 5d. Georgian imperatives dispatch exactly the same way
+        g.local_llm = fake = FakeLocal(up=True, reply="should not be used")
+        c = MockClient()
+        app = make_app(c)
+        app.turn_lang = "ka"
+        await app._talk("გაასწორე ბილდი")
+        check("georgian order dispatches and is acknowledged in georgian",
+              c.queries and c.queries[0].endswith("გაასწორე ბილდი")
+              and app.tts.spoken and app.tts.spoken[0] in g.ACK_ORDER["ka"],
+              f"queries={c.queries} said={app.tts.spoken}")
 
         # 6. manual voice dispatch: addressing the working brain by name goes
         #    straight to the work lane, Gemini skipped
@@ -935,6 +980,46 @@ async def main():
     check("UI brain option lists",
           ui_qt.TALK_OPTS == ["gemini flash", "sonnet 5"]
           and ui_qt.WORK_OPTS == ["opus 5", "fable 5.1"])
+    # Every name the drawer offers must resolve in the engine, or picking it
+    # silently lands on a default and the footer starts lying again.
+    check("UI rosters resolve in the engine",
+          all(n in g.TALK_BRAINS for n in ui_qt.TALK_OPTS)
+          and all(n in g.WORK_BRAINS for n in ui_qt.WORK_OPTS)
+          and all(n in ui_qt.EFFORT_OPTS for n in g.EFFORT_LEVELS))
+    check("every talk/work model id has a speakable footer name",
+          all(m == "gemini" or m in g.MODEL_NAMES
+              for m in g.TALK_BRAINS.values())
+          and all(m in g.MODEL_NAMES for m in g.WORK_BRAINS.values()))
+
+    # ---- ESCALATE recognition (the talking brain punting to the work lane) ----
+    # Exact-match used to be the rule, so a garnished signal was SPOKEN to him
+    # as though it were an answer. These are the shapes seen in the wild.
+    for raw in ("ESCALATE", "escalate", "  ESCALATE  ", "ESCALATE.",
+                "ESCALATE!", "Escalate — handing that to the working brain."):
+        check(f"escalate recognised: {raw.strip()!r}", g.is_escalation(raw))
+    for raw in ("", None, "I'd escalate this to the working brain if you want "
+                "me to actually run it, but here is what I think is happening: "
+                "the confidence gate is set too high.",
+                "That escalated quickly.", "Escalators are stairs that move."):
+        check(f"not an escalation: {str(raw)[:34]!r}", not g.is_escalation(raw))
+
+    # ---- spoken outcome shape ----
+    # "Done." is only added when the work brain didn't already report one, and
+    # never in front of a question — "Done. Which branch?" is a lie + a question.
+    check("outcome: plain sentence gets the lead",
+          g.outcome_line("x", "Done.", "The gate is aligned at 85.")
+          == "Done. The gate is aligned at 85.")
+    check("outcome: brain's own report is not doubled",
+          g.outcome_line("x", "Done.", "Fixed — the gate compared 90 to 85.")
+          == "Fixed — the gate compared 90 to 85.")
+    check("outcome: a question is spoken alone",
+          g.outcome_line("x", "Done.", "Which branch should I push to?")
+          == "Which branch should I push to?")
+    check("outcome: georgian report is not doubled",
+          g.outcome_line("x", "მზადაა.", "გასწორდა — ბილდი მწვანეა.")
+          == "გასწორდა — ბილდი მწვანეა.")
+    check("outcome: empty reply falls back to the lead alone",
+          g.outcome_line("", "Done.", "") == "Done.")
 
     def _clamped(v):
         return min(ui_qt.UI_SCALE_MAX, max(ui_qt.UI_SCALE_MIN, float(v)))

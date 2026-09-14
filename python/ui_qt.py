@@ -2,7 +2,7 @@
 
 Run:  cd C:/Users/user/goat-standalone/python && python ui_qt.py
 
-Design (v5 — "the instrument, not the spaceship"):
+Design (v6 — "the instrument, not the spaceship", now with margins):
 Every AI-generated assistant UI is the same cyan-on-black cockpit: orbs,
 hex grids, fake telemetry. This is deliberately the opposite — the design
 language of a beautiful instrument sitting in a dark room:
@@ -27,7 +27,12 @@ language of a beautiful instrument sitting in a dark room:
 - Settings drawer (⚙ or Ctrl+,): theme, text size, voice on/off + level,
   wake word, mic mute, new chat / restart — every switch typographic, saved
   instantly to ui-config.json, engine flags applied live via bind_engine().
-- Footer is one small line of plain words: state · model · uptime.
+- Footer is one small line of plain words: state · model · uptime. The
+  shortcut hints give up their space to it rather than overprint (v6).
+- v6, after reading the rendered window at 100% and 175%: the transcript is a
+  real reading column (reading margins, measure capped near 78 characters),
+  the page's BONES scale with the global zoom instead of only its type, and
+  the scroll rails stopped reading as hard rules down the edges.
 
 Threading: Qt owns the main thread; GoatApp's asyncio loop runs on a
 daemon thread. Events cross via a Signal; typed input crosses back via
@@ -230,6 +235,29 @@ BODY_FONT = "'Segoe UI Variable Text', 'Segoe UI'"
 MONO_FONT = "'Cascadia Mono', 'Consolas'"
 
 
+# ---- the page's bones (v6, 2026-09-14) ----
+# These were loose magic numbers sprinkled through __init__, in raw pixels, so
+# the global zoom (set_ui_scale) doubled every FONT and left every GUTTER,
+# margin and the string's band exactly where they were: at 200% the type ran
+# into furniture sized for 100%. They are named here and re-applied through
+# _apply_metrics() on every theme/scale change.
+BAR_MARGIN = (34, 22, 22, 0)      # titlebar: l, t, r, b
+PAGE_MARGIN = (0, 10, 0, 0)       # the two-lane page
+FOOT_MARGIN = (34, 4, 34, 18)
+RULE_MARGIN = (34, 8, 34, 0)
+WORK_MARGIN = (20, 10, 16, 12)    # inside the working-brain lane
+STRING_BAND = 140                 # the string's breathing room
+TITLEBAR_H = 60
+# The transcript is the one true reading column, so it gets reading margins,
+# not layout defaults. Qt's default 9px right margin let 32px type run flush
+# into the scrollbar — the single loudest flaw in the v5 page.
+READ_MARGIN = (30, 0, 52, 0)
+# …and a measure. Past roughly 78 characters a line stops being readable and
+# starts being a spreadsheet row; on a wide monitor the reply was heading
+# there. Cap the column and let the extra width stay as quiet margin.
+READ_MEASURE_CH = 78
+
+
 def hairline(t: dict, alpha: int = 100) -> str:
     """rgba() of the theme's faint tone — rules that whisper, not shout."""
     h = t["faint"].lstrip("#")
@@ -300,8 +328,18 @@ QLabel#prompt {{ color: {t['accent']}; font-family: {MONO_FONT}; font-size: {s(1
 QWidget#hrule {{ background: {hair_soft}; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
-QScrollBar:vertical {{ background: transparent; width: {s(3)}px; margin: 0; }}
-QScrollBar::handle:vertical {{ background: {hair}; border-radius: {s(1)}px; min-height: {s(30)}px; }}
+/* The handle is nearly always full-height here (the page is barely taller
+   than the viewport), so at 3px of the faint tone it stopped reading as a
+   scrollbar and started reading as a hard rule down the edge of the page —
+   loudest in `paper`. Thinner, softer, and inset off the text. */
+QScrollBar:vertical {{
+  background: transparent; width: {s(6)}px; margin: 0;
+}}
+QScrollBar::handle:vertical {{
+  background: {hairline(t, 55)}; border-radius: {s(1)}px;
+  min-height: {s(40)}px; margin: 0 {s(2)}px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {hairline(t, 120)}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QLineEdit#cmd {{
   background: transparent; border: none; border-bottom: 1px solid {hair_soft};
@@ -405,7 +443,7 @@ class StringLine(QWidget):
         self._base = QColor("#6f6a60")
         self._accent = QColor("#ffa94d")
         self._ignite_t0 = 0.0  # boot ritual: light travels down the string
-        self.setMinimumHeight(140)
+        self.setMinimumHeight(STRING_BAND)
 
     def ignite(self, duration: float = 1.6):
         self._ignite_dur = duration
@@ -868,7 +906,7 @@ class WorkPanel(QWidget):
         self._tick.timeout.connect(self._on_tick)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 10, 16, 12)
+        outer.setContentsMargins(*WORK_MARGIN)
         outer.setSpacing(6)
         self.header = QLabel("W O R K I N G   B R A I N")
         self.header.setObjectName("paneltitle")
@@ -888,15 +926,24 @@ class WorkPanel(QWidget):
         host = QWidget()
         host.setAutoFillBackground(False)
         self.col = QVBoxLayout(host)
-        self.col.setContentsMargins(0, 8, 0, 0)
+        # Right gutter so the log clears its own scroll rail — at 175% the
+        # rail sat straight on top of the last word of every wrapped line.
+        self.col.setContentsMargins(0, 8, 14, 0)
         self.col.setSpacing(5)
         self.col.addStretch(1)
         self.scroll.setWidget(host)
         outer.addWidget(self.scroll, stretch=1)
 
-        self._idle = QLabel("no work running.\nsend an order to the\nworking brain —\nctrl+enter, or the\nwork button below.")
+        # Hard newlines used to break this at ~20 characters, which was right
+        # when the lane was a narrow strip and wrong ever since it became half
+        # the window: five ragged stubs down the left of a mostly empty column.
+        # Let it wrap to the lane it is actually in.
+        self._idle = QLabel(
+            "no work running — say an order, press ctrl+enter, "
+            "or use the work button below.")
         self._idle.setObjectName("workidle")
         self._idle.setWordWrap(True)
+        self._idle.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.col.insertWidget(0, self._idle)
 
         # Session-fill instrument, pinned to the bottom of the lane. Hidden
@@ -1102,8 +1149,8 @@ class GoatWindow(QWidget):
         lay.setSpacing(0)
 
         # ---- top line: wordmark · state | window controls ----
-        bar = QHBoxLayout()
-        bar.setContentsMargins(34, 22, 22, 0)
+        bar = self._bar_row = QHBoxLayout()
+        bar.setContentsMargins(*BAR_MARGIN)
         wordmark = QLabel("G O A T")
         wordmark.setObjectName("wordmark")
         # Live dot: the accent breathes next to the state word — instrument
@@ -1159,7 +1206,7 @@ class GoatWindow(QWidget):
         bar.addWidget(b_full)
         bar.addWidget(b_close)
         lay.addLayout(bar)
-        self._titlebar_h = 60
+        self._titlebar_h = TITLEBAR_H
 
         # ---- the string ----
         self.string = StringLine()
@@ -1168,6 +1215,7 @@ class GoatWindow(QWidget):
         # ---- the page: conversation as typography ----
         self.col = QVBoxLayout()
         self.col.setSpacing(12)  # paragraphs, not a wall (2026-07-20)
+        self.col.setContentsMargins(*READ_MARGIN)
         self.col.addStretch(1)
         host = QWidget()
         host.setLayout(self.col)
@@ -1202,8 +1250,8 @@ class GoatWindow(QWidget):
         # brain (Gemini) conversation. He watches Fable build on the left while
         # he keeps talking to Gemini in the middle (his order 2026-07-17).
         self.work_panel = WorkPanel(self)
-        page = QHBoxLayout()
-        page.setContentsMargins(0, 10, 0, 0)
+        page = self._page_row = QHBoxLayout()
+        page.setContentsMargins(*PAGE_MARGIN)
         page.addWidget(self.work_panel, stretch=5)
         page.addSpacing(10)
         page.addWidget(self.scroll, stretch=8)
@@ -1219,8 +1267,8 @@ class GoatWindow(QWidget):
         rule = QWidget()
         rule.setObjectName("hrule")
         rule.setFixedHeight(1)
-        rule_row = QHBoxLayout()
-        rule_row.setContentsMargins(34, 8, 34, 0)
+        rule_row = self._rule_row = QHBoxLayout()
+        rule_row.setContentsMargins(*RULE_MARGIN)
         rule_row.addWidget(rule)
         lay.addLayout(rule_row)
 
@@ -1260,13 +1308,22 @@ class GoatWindow(QWidget):
         lay.addLayout(cmd_row)
 
         # ---- footer: ONE quiet mono line — shortcuts left, live meter right ----
-        hint = QLabel("esc voice · ⌃m mic · ⌃t theme · ⌃e think · ⌃l language · "
-                     "⌃k type · ⌃n new · ⌃, settings")
+        # Two tiers of hints. At a normal width both the shortcuts and the
+        # live meter fit on the one line; zoomed to 175% they did not, and the
+        # two labels simply overprinted each other ("⌃l languagsonnet 5 · mic
+        # live"). _fit_footer drops to the short list, then to nothing, so the
+        # meter — the half that carries live state — always wins the space.
+        self._hint_full = ("esc voice · ⌃m mic · ⌃t theme · ⌃e think · "
+                           "⌃l language · ⌃k type · ⌃n new · ⌃, settings")
+        self._hint_short = "⌃k type · ⌃n new · ⌃, settings"
+        hint = QLabel(self._hint_full)
         hint.setObjectName("footer")
+        self.hint = hint
         self.footer = QLabel("")
         self.footer.setObjectName("footer")
         foot_row = QHBoxLayout()
-        foot_row.setContentsMargins(34, 4, 34, 18)
+        self._foot_row = foot_row
+        foot_row.setContentsMargins(*FOOT_MARGIN)
         foot_row.addWidget(hint)
         foot_row.addStretch(1)
         foot_row.addWidget(self.footer)
@@ -1349,6 +1406,63 @@ class GoatWindow(QWidget):
         self.theme_btn.setText(name)
         self.panel.set_theme(t)
         self.panel.refresh()
+        self._apply_metrics()
+
+    def _apply_metrics(self):
+        """Scale the page's BONES, not just its type.
+
+        set_ui_scale used to rebuild only the stylesheet, so at 200% every
+        font doubled while every gutter, margin and the string's band stayed
+        at their 100% pixel sizes — big type crowded into small furniture.
+        Called from apply_theme, which every scale change already goes
+        through, and on resize for the reading measure."""
+        if not hasattr(self, "_foot_row"):
+            return  # apply_theme also runs mid-construction; nothing to move
+        k = float(self.cfg.get("scale", 1.0))
+
+        def m(box):
+            return tuple(max(0, round(v * k)) for v in box)
+
+        self._bar_row.setContentsMargins(*m(BAR_MARGIN))
+        self._page_row.setContentsMargins(*m(PAGE_MARGIN))
+        self._rule_row.setContentsMargins(*m(RULE_MARGIN))
+        self._foot_row.setContentsMargins(*m(FOOT_MARGIN))
+        self.work_panel.layout().setContentsMargins(*m(WORK_MARGIN))
+        self.string.setMinimumHeight(round(STRING_BAND * k))
+        self._titlebar_h = round(TITLEBAR_H * k)
+        self._apply_measure()
+
+    def _apply_measure(self):
+        """Hold the transcript to a readable measure.
+
+        The reply is set large on purpose; on a wide window that turned into
+        100+ character lines, which the eye cannot track back from. Width past
+        the cap becomes right-hand margin instead of more characters — the
+        column stays put on the left where his eye already is, rather than
+        drifting as the window resizes."""
+        k = float(self.cfg.get("scale", 1.0))
+        left, top, right, bottom = (round(v * k) for v in READ_MARGIN)
+        avail = self.scroll.viewport().width() - left - right
+        if avail > 0:
+            # ~0.52em per character is a fair average for this face at these
+            # sizes; the exact constant matters less than having a ceiling.
+            cap = round(TEXT_SIZES[self.cfg["text"]] * k * 0.52 * READ_MEASURE_CH)
+            if avail > cap:
+                right += avail - cap
+        self.col.setContentsMargins(left, top, right, bottom)
+        self._fit_footer()
+
+    def _fit_footer(self):
+        """Keep the footer to ONE line: shortcuts shrink, the meter stays."""
+        if not hasattr(self, "hint"):
+            return
+        pad = self._foot_row.contentsMargins()
+        room = (self.width() - pad.left() - pad.right()
+                - self.footer.sizeHint().width() - 24)
+        for text in (self._hint_full, self._hint_short, ""):
+            self.hint.setText(text)
+            if not text or self.hint.sizeHint().width() <= room:
+                break
 
     def cycle_effort(self):
         """Ctrl+E — step the work lane's thinking depth up the ladder and
@@ -1411,6 +1525,7 @@ class GoatWindow(QWidget):
         super().resizeEvent(ev)
         if self.panel.isVisible():
             self._place_panel()
+        self._apply_measure()   # the reading column re-finds its measure
         self._debounce_geom_save()
 
     def _save(self):
@@ -1782,9 +1897,14 @@ class GoatWindow(QWidget):
         # immediately instead of only in the reply.
         heard = (f" · hearing {self._turnlang}"
                  if self._turnlang and self.cfg.get("lang") == "auto" else "")
-        self.footer.setText(
-            f"{self._model} · {mic} · {up // 60:02d}:{up % 60:02d}"
-            f"{heard}{claude}")
+        line = (f"{self._model} · {mic} · {up // 60:02d}:{up % 60:02d}"
+                f"{heard}{claude}")
+        if line != self.footer.text():
+            # The meter grows and shrinks as usage and state change, so the
+            # shortcut hints have to be re-fitted against its NEW width, not
+            # only on resize.
+            self.footer.setText(line)
+            self._fit_footer()
         self.clock.setText(time.strftime("%H:%M"))
         # Keep the fade lip glued across resizes (33ms — geometry set is cheap).
         if self.fade.width() != self.scroll.width():

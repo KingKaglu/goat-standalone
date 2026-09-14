@@ -1,6 +1,123 @@
 # GOAT State — handoff brief
 
-Updated: 2026-09-14 (bilingual hearing — he speaks Georgian, GOAT answers Georgian)
+Updated: 2026-09-14 (thinking/answering + design pass v6)
+
+## Thinking & answering pass (2026-09-14 midday, his goal: "run full update on
+## my GOAT's thinking and answering system, update the design too")
+- ROSTER RE-VERIFIED, not assumed. `claude --model <id> -p` on his account:
+  opus 5 OK, sonnet 5 OK, haiku 4.5 OK, fable 5.1 "You're out of usage
+  credits". So the existing defaults (Opus 5 work brain, effort max, adaptive
+  thinking, Fable selectable behind fallback_model) were already right and
+  were left alone.
+- HAIKU 4.5 TRIED AS A TALK BRAIN AND REJECTED ON EVIDENCE. Theory: the talk
+  lane is latency-bound so the cheapest tier should win it. Measured warm on
+  one client, four turns, first spoken word:
+    sonnet 5 : 1.44 / 2.81 / 1.64 / 1.36 s
+    haiku 4.5: 2.37 / 6.90 / 3.35 / 1.55 s
+  Sonnet won every turn, and haiku does NOT honour the ESCALATE contract — on
+  a work-shaped order it asked a clarifying question (empty reply when cold)
+  where sonnet said ESCALATE and the order got done. Roster reverted; the
+  numbers are in the comment above MODEL_FAST so nobody re-adds it blind.
+- ESCALATE was exact-match (`reply.upper().strip(" .!") == "ESCALATE"`), so a
+  garnished signal ("ESCALATE.", "ESCALATE — handing that over") was SPOKEN to
+  him as if it were an answer and the order died. Now `is_escalation()`: the
+  word at the head of a reply <= 80 chars. A paragraph that merely starts with
+  "Escalate the issue…" is still prose. Unit-tested both ways.
+- ESCALATE PARITY. The status-ask guard and the Claude-out guard existed only
+  on the Gemini path, so the same order behaved differently depending on which
+  voice he had selected. Both paths now go through `_escalate_from_talk()`.
+- "Done." STOPPED LYING. The spoken outcome was always DONE_LEAD + the work
+  brain's first sentence, which produced "Done. Fixed — …" (doubled) and, far
+  worse, "Done. Which branch should I push to?" — a completion claim in front
+  of a question. `outcome_line()` drops the lead when the sentence already
+  reports an outcome (en + ka) or is a question.
+- FOOTER MODEL TRUTH. Boot hardcoded `emit("talkmodel", local_llm.LOCAL_NAME)`,
+  so booting with "sonnet 5" selected showed Gemini in the footer — a model
+  name that was not answering him. Now `_talk_model_label()`; same fix on the
+  reconnect path. MODEL TRUTH applies to the chrome, not just to replies.
+- PERSONA TRUTH. It still claimed "Sonnet 5 is your talking brain — every
+  fresh turn starts there" and described the third brain as "a local model on
+  his own GPU" (that has been cloud Gemini since 2026-07-15). Both corrected,
+  and MODEL TRUTH now tells GOAT to name the LANE when it isn't certain of the
+  model rather than guess a name confidently.
+
+## Design pass v6 — "give the page a margin" (2026-09-14)
+Reviewed by rendering the real window offscreen and reading the PNGs, all four
+themes, at 100% and 175%.
+- THE PAGE HAD NO RIGHT MARGIN: the transcript used Qt's default 9px, so 32px
+  reply type ran flush into the scrollbar. It now has reading margins AND a
+  measure cap (~78 characters) — extra width becomes quiet margin instead of
+  100-character lines. `_apply_measure()`, re-run on resize.
+- THE ZOOM ONLY SCALED TYPE. set_ui_scale rebuilt the stylesheet, so at 175%
+  every font grew and every gutter, margin and the string's band stayed at
+  their 100% pixel sizes. The bones are now named constants (BAR_MARGIN,
+  PAGE_MARGIN, WORK_MARGIN, STRING_BAND, …) re-applied by `_apply_metrics()`.
+- FOOTER COLLIDED AT 175%: the shortcut hints and the live meter overprinted
+  ("⌃l languagsonnet 5 · mic live"). `_fit_footer()` drops to a short hint
+  list, then to none — the meter carries live state, so it wins the space.
+- The working lane's idle copy had HARD newlines breaking it at ~20 chars,
+  left over from when that lane was a narrow strip: five ragged stubs down a
+  half-empty column. One sentence, wraps to the lane.
+- The scroll handle is nearly always full-height here, so at 3px of the faint
+  tone it read as a hard rule down the page (loudest in `paper`). Softer,
+  inset, wider hit area. The work lane got a right gutter so its log clears
+  its own rail.
+
+## Gotchas hit this session
+- The UI review harness constructed the real GoatWindow, which SAVED its
+  offscreen position and 1.75 scale into his live `ui-config.json`
+  (geom [-4000, 0, …]). Restored, and the harness now points UI_CONFIG at a
+  temp copy. `_restore_geometry` does clamp to a live screen, so the window
+  would not actually have opened invisible — but never let a review harness
+  write to real preferences.
+- Git Bash stdout is cp1252 here: printing the Georgian test names raises
+  UnicodeEncodeError. Run the suite from PowerShell with PYTHONIOENCODING=utf-8.
+- `rg` is not on PATH, so rtk's Grep shim falls back and silently returns
+  "0 matches" for valid patterns. Use the Grep tool, not `grep` via Bash.
+
+Verified: 100/100 `test_engine_router.py`, `self_check.py preflight` PASS,
+all four themes rendered and read at 100% and 175%.
+NOT verified: a live voice conversation — that needs him at the mic.
+
+
+## JARVIS pass (2026-09-14, his goal: "once I tell GOAT to do the task he
+## should do the things I say as I say… no jigger jabber… as fast as
+## possible… like JARVIS is to Tony")
+- ROOT CAUSE of "he doesn't do what I say": since the 2026-07-17 redesign the
+  work lane was reachable ONLY by addressing it ("Fable, …", Ctrl+Enter). A
+  plain order — "fix the build", "გაასწორე ბილდი" — went to the TALK lane,
+  which talked about it. ORDER_RE now catches a plain imperative (a real-work
+  verb, optionally behind "can you"/"please"/"I need you to") in English AND
+  Georgian and dispatches it. This SUPERSEDES the old "no auto-routing" rule
+  (its test was rewritten, not deleted).
+- Guards so it never over-fires: QUESTION_LEAD_RE (a question is never an
+  order — "how do I fix this?", "რატომ გატყდა?"), WORK_STATUS_ASK_RE (status
+  questions), and QUICK_TOPIC_RE (a work verb on a trivial topic — "check the
+  time", "შეამოწმე ამინდი" — stays on the fast lane; the work brain at max
+  effort would spend 20s telling him the time). 21/21 routing cases correct.
+- SPEED, measured then fixed (this is where the seconds were):
+  * talking brain first word: Claude/Sonnet 5.35s COLD, 2.17s warm — the talk
+    client had no include_partial_messages, so it waited for the whole answer.
+    Now it streams, and the client is pre-warmed at boot.
+  * acknowledgement: 1275ms of edge-tts per "On it." → TtsPipeline now caches
+    short fixed lines per voice and pre-warms them at boot and on every
+    language flip. Cache hit measured 0.001ms.
+  * end-of-speech: UTT_SILENCE_STOP_MS 900 → 700 (still above the ~500ms gap
+    normal breathing leaves).
+  => he now hears GOAT ~1.9s after he stops talking (VAD 0.7 + hearing 1.2 +
+  instant ack), instead of 4-8s of silence.
+- CLOSING THE LOOP OUT LOUD: an order gets "On it." immediately, and when the
+  work turn lands GOAT SAYS one sentence of the result ("Done. …") or the
+  failure. The left panel still holds the detail. Acks rotate through a pool
+  so the same words don't repeat, and they follow the turn's language.
+- OBEDIENCE NET: the Claude talk lane now honours a bare "ESCALATE" reply the
+  way Gemini does — before this it just SAID the word and the order died.
+- PERSONA: a "HOW YOU SERVE HIM" block in both personas — an order is not a
+  topic; at most one question, and only if the order can't start without it;
+  say a thing ONCE (no repeated refusals); no preamble, no restating, no
+  "anything else?"; two spoken sentences by default.
+- 82/82 router tests.
+
 
 ## Bilingual hearing (2026-09-14, his goal: "set up now that GOAT will listen
 ## to my georgian and will not hear english when I speak georgian, make sure

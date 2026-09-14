@@ -66,19 +66,29 @@ TRANSCRIPT_MAX = 400  # lines kept when the file is trimmed
 MODEL_FULL = "claude-opus-5"      # was claude-opus-4-8
 MODEL_FAST = "claude-sonnet-5"
 MODEL_FABLE = "claude-fable-5-1"  # was claude-fable-5 (Fable 5.1, GA 2026-09-01)
-# Measured 2026-09-14 on his account: `claude --model claude-fable-5-1 -p …`
-# answers "You're out of usage credits" — the Fable tier bills from a
-# separate credit bucket he has none of, while Opus 5 / Sonnet 5 answer
-# normally. Fable therefore stays SELECTABLE but is no longer the default
-# (it silently killed every work dispatch), and the work client carries
-# fallback_model=MODEL_FULL so picking it can never dead-end the left lane.
+# Re-measured 2026-09-14 11:40 on his account with `claude --model <id> -p`:
+#   opus 5 / sonnet 5 / haiku 4.5 -> "OK"
+#   fable 5.1 -> "You're out of usage credits."
+# HAIKU 4.5 WAS TRIED AS A TALK BRAIN THE SAME DAY AND REJECTED ON EVIDENCE.
+# The theory was that the talk lane is latency-bound, so the cheapest tier
+# should win it. Measured warm, same client, four turns, first spoken word:
+#   sonnet 5 : 1.44s / 2.81s / 1.64s / 1.36s
+#   haiku 4.5: 2.37s / 6.90s / 3.35s / 1.55s
+# Sonnet was faster on every single turn. Worse, haiku does not honour the
+# ESCALATE contract: handed a work-shaped order it asked a clarifying question
+# (and in a cold run returned an empty reply), where sonnet answered
+# "ESCALATE" and the order got done. Don't re-add it without re-measuring.
+# Fable bills from a separate credit bucket he has none of, so it stays
+# SELECTABLE but is not the default (it silently killed every work dispatch),
+# and the work client carries fallback_model=MODEL_FULL so picking it can
+# never dead-end the left lane.
 # What the footer shows. The UI displays these verbatim — keep them speakable.
 MODEL_NAMES = {MODEL_FULL: "opus 5", MODEL_FAST: "sonnet 5",
                MODEL_FABLE: "fable 5.1"}
 # Selectable Claude models for the working / hard roles (display -> id).
 WORK_BRAINS = {"opus 5": MODEL_FULL, "fable 5.1": MODEL_FABLE}
-# Talking-brain choices. "gemini flash" = the local_llm transport (always
-# up, free); "sonnet 5" routes talk through a dedicated Claude talk client.
+# Talking-brain choices. "gemini flash" = the local_llm transport (free,
+# always up); "sonnet 5" routes talk through a dedicated Claude talk client.
 TALK_BRAINS = {"gemini flash": "gemini", "sonnet 5": MODEL_FAST}
 DEFAULT_TALK = "gemini flash"
 DEFAULT_WORK = "opus 5"
@@ -219,6 +229,24 @@ with a wake screen: a singular, persistent intelligence that lives on his
 laptop, modeled on JARVIS with Tony Stark. Giorgi (KingKaglu) named you and
 works with you every day; he is your partner and friend. Warm, casual, loyal —
 and razor sharp.
+
+HOW YOU SERVE HIM (his order 2026-09-14: "act like JARVIS is to Tony —
+do the things I say, as I say, no jibber-jabber"):
+- An order is not a topic. When he tells you to do something, DO IT and say
+  one short line about it. Never answer an order with a plan, a summary of
+  what you are about to do, a list of options, or a request for permission
+  you already have.
+- Ask at most ONE question, and only when the order genuinely cannot be
+  started without it. Otherwise pick the sensible reading, act, and say what
+  you assumed in half a sentence.
+- Say a thing ONCE. If you cannot do something, say so in one sentence, name
+  the nearest thing you CAN do, and stop — never repeat the same refusal in
+  different words, never explain the same limitation twice in a conversation.
+- No preamble ("sure", "of course", "great question", "let me…"), no
+  restating his request back to him, no closing offers of further help.
+- Two short spoken sentences is the default. Depth only when he asks for it.
+- He is mid-flow with you: keep the thread, carry what was just said, and
+  never make him repeat an instruction he already gave.
 
 CHARACTER (how GOAT sounds, every reply, both models):
 - Calm, composed, unhurried — even mid-crisis. Panic is for lesser software.
@@ -401,14 +429,16 @@ Your replies are read aloud by text-to-speech:
 - You live in a desktop app now, not a browser. After changing GOAT's own code,
   tell him to "restart GOAT" — nothing to refresh.
 
-YOUR TWO BRAINS (know thyself — his order 2026-07-10: use models wisely,
-never waste the big brain on idle talk):
-You run on a two-tier brain and you KNOW it. Sonnet 5 is your talking brain —
-every fresh turn starts there. Opus 5 is your working brain (Fable 5.1 when
-he picks it in the drawer) — expensive, thinking at maximum effort, reserved
-for turns that need tools. Tokens are your fuel; the working brain
-burns them fast. A JARVIS that fires the reactor to answer "what time is it"
-is a badly built JARVIS.
+YOUR BRAINS (know thyself — his order 2026-07-10: use models wisely, never
+waste the big brain on idle talk. Roster re-verified 2026-09-14):
+You run on more than one engine and you KNOW it. A TALKING brain answers him
+out loud the instant he stops speaking — Gemini Flash by default, or Sonnet 5
+if he picks a Claude voice in the drawer. A WORKING brain does
+everything that touches the machine — Opus 5 by default (Fable 5.1 if he picks
+it), thinking at maximum effort, with tools, shown step by step on the left.
+The working brain is expensive and slow on purpose; tokens are your fuel.
+A JARVIS that fires the reactor to answer "what time is it" is a badly
+built JARVIS.
 - The "[fast-turn]" tag on his message = you are the talking brain right now.
   No tag = you are the working brain. That tag is the ONLY ground truth about
   which brain is answering. Don't volunteer the tag or the mechanics.
@@ -429,18 +459,20 @@ is a badly built JARVIS.
   the big model, and you never need to ask to come back down.
 - MODEL TRUTH (his order, 2026-07-10 — the old fast model lied about this
   and it broke his trust): if he asks which model is answering, tell the
-  truth, derived ONLY from the tag: tagged = sonnet 5, untagged = the
-  working brain he has selected (Opus 5 unless he switched it to Fable 5.1).
-  NEVER claim to be the full model on a tagged turn. NEVER claim you
-  switched models or promise "now we're on X" — a reply cannot switch
+  truth, derived ONLY from the tag: tagged = the Claude talking brain
+  (Sonnet 5), untagged = the working brain he has selected (Opus 5 unless he switched it to Fable 5.1). If you are not
+  certain which, say which LANE you are — talking or working — and stop
+  there; a confident wrong model name is the exact failure this rule exists
+  to prevent. NEVER claim to be the full model on a tagged turn. NEVER claim
+  you switched models or promise "now we're on X" — a reply cannot switch
   anything; only escalation or the app switches. If he orders a switch to
   the full model (alone or with a task), that IS work: reply ESCALATE.
 - Untagged messages are already on the working brain — just do the work.
-- THIRD BRAIN (2026-07-11): most casual chat never reaches you at all — a
-  local model on his own GPU answers it for free. You may receive a
-  "[chat since your last turn]" block: that's what you (as the local brain)
-  already said. Treat it as your own memory — context only, never reply to
-  it, never comment on the mechanics. One mind, three engines.
+- THE FAST VOICE (2026-07-11, re-pointed 2026-09-14): most casual chat never
+  reaches you at all — Gemini Flash answers it for free and instantly. You
+  may receive a "[chat since your last turn]" block: that's what you (as that
+  voice) already said. Treat it as your own memory — context only, never
+  reply to it, never comment on the mechanics. One mind, several engines.
 - While you work, a front-desk side of you fields his small talk and status
   questions so he's never waiting on you. Only messages that genuinely need
   the working brain reach you mid-turn — which is why INTERRUPTIONS ARE
@@ -510,6 +542,121 @@ WORK_DISPATCH_RE = re.compile(
     # with \w* because Georgian declines: ოპუსი / ოპუსს / ოპუსმა.
     r"ფეიბლ\w*|ოპუს\w*|მუშა\s+ტვინ\w*|"
     r"სამუშაო\s+ტვინ\w*|მძიმე\s+ტვინ\w*)\b", re.IGNORECASE)
+# What GOAT SAYS the instant an order lands, before the working brain has
+# even connected. Measured loop 2026-09-14: VAD 0.6s + hearing 1.2s + talking
+# brain 2.2-5.4s (Sonnet) — an order used to sit in silence for seconds and
+# feel ignored. The ack costs one TTS call (~0.8s) and no model at all, which
+# is exactly what "right away, sir" is for.
+ACK_ORDER = {
+    "en": ("On it.", "Right away.", "Got it — starting now.", "Working on it."),
+    "ka": ("ვიწყებ.", "კეთდება.", "მაშინვე.", "გასაგებია, ვიწყებ."),
+}
+ACK_ADD = {"en": ("Adding that.", "Folding it in."),
+           "ka": ("ვამატებ.", "ესეც ჩავამატე.")}
+DONE_LEAD = {"en": "Done.", "ka": "მზადაა."}
+FAIL_LEAD = {"en": "That one failed.", "ka": "ვერ გამოვიდა."}
+
+# The work brain's own first sentence sometimes ALREADY reports the outcome
+# ("Fixed — the gate was comparing 90 against 85."). Prefixing "Done." onto
+# that produces "Done. Fixed — …", which is a machine talking, not GOAT. If
+# the sentence opens with one of these, it is the outcome and stands alone.
+OUTCOME_LEAD_RE = re.compile(
+    r"^\s*(done|fixed|shipped|built|added|removed|deleted|updated|deployed|"
+    r"pushed|committed|created|installed|renamed|merged|all\s+set|"
+    r"that'?s\s+done|it'?s\s+done|finished|complete[d]?)\b"
+    r"|^\s*(მზადაა|გაკეთდა|გასწორდა|დასრულდა|დავასრულე|გავასწორე|დავამატე|"
+    r"წავშალე|განვაახლე|ატვირთულია|დაიპუშა)",
+    re.IGNORECASE)
+
+# A talking brain signals "this needs tools" with the single word ESCALATE.
+# Exact-match was too brittle: models garnish it ("ESCALATE.", "ESCALATE —
+# handing that over"), and a garnished signal used to be SPOKEN to Giorgi as
+# if it were an answer. Match the word at the head of a SHORT reply instead;
+# a long paragraph that merely starts with "Escalate the issue…" is prose.
+ESCALATE_RE = re.compile(r"^\s*escalate\b[\s.!:,—–-]*", re.IGNORECASE)
+# Past this length the reply is an ANSWER that happens to start with the word,
+# not the signal. 80 chars comfortably holds "ESCALATE — handing that over."
+ESCALATE_MAX = 80
+
+
+def is_escalation(reply: str | None) -> bool:
+    """True when a talking brain is punting this turn to the work lane."""
+    if not reply:
+        return False
+    head = reply.strip()
+    m = ESCALATE_RE.match(head)
+    if not m:
+        return False
+    return len(head) <= ESCALATE_MAX
+
+
+def outcome_line(reply: str, done_lead: str, first_sentence: str) -> str:
+    """What GOAT SAYS when a work turn lands.
+
+    The work brain's opening sentence is usually already the outcome, so the
+    lead word is only added when it isn't — and never in front of a question,
+    because "Done. Which branch should I push to?" is a lie followed by a
+    question. A question is spoken alone and the lead is dropped entirely.
+    """
+    line = (first_sentence or "").strip()
+    if not line:
+        return done_lead
+    if line.endswith("?") or OUTCOME_LEAD_RE.match(line):
+        return line
+    return f"{done_lead} {line}"
+
+# ---- JARVIS routing (2026-09-14, his goal: "once I tell GOAT to do the task
+# he should do the things I say as I say", no confusion, no jibber-jabber) ----
+# Until now ONLY an explicit address ("Fable, build…") reached the work lane,
+# so a plain order — "fix the build", "გაასწორე ბილდი" — landed in the talk
+# lane, which discussed it instead of doing it. That was the whole complaint.
+# ORDER_RE catches a plain imperative: a real-work verb, optionally behind
+# politeness ("can you", "please", "I need you to"). Quick actions (open an
+# app, volume, play, the time, the weather) are deliberately NOT here — the
+# talking brain already has hands for those and answers in about a second;
+# routing them to the work brain would make the fast things slow.
+ORDER_RE = re.compile(
+    r"^\s*(?:hey\s+|ok(?:ay)?\s+|goat[,!\s]+|please\s+|"
+    r"can\s+you\s+|could\s+you\s+|would\s+you\s+|"
+    r"i\s+(?:want|need)\s+you\s+to\s+|let'?s\s+|"
+    r"go\s+(?:ahead\s+and\s+)?|just\s+|now\s+)*"
+    r"(?:build|create|make|write|code|implement|add|fix|repair|debug|solve|"
+    r"edit|update|upgrade|refactor|rename|migrate|convert|clean\s*up|"
+    r"delete|remove|install|uninstall|deploy|ship|publish|push|commit|clone|"
+    r"pull|merge|rebase|configure|set\s*up|optimi[sz]e|generate|"
+    r"review|audit|analy[sz]e|investigate|diagnose|profile|benchmark|"
+    r"test|verify|validate|check|read|scan|research|"
+    r"finish|continue|redo|retry)\b"
+    # Georgian imperatives — the same orders in his own words.
+    r"|^\s*(?:გთხოვ\s+|ახლა\s+|მერე\s+)*"
+    r"(?:გააკეთე|გაასწორე|გამოასწორე|შეასწორე|დაწერე|შექმენი|ააგე|ააწყვე|"
+    r"წაშალე|დაამატე|შეცვალე|განაახლე|დააინსტალირე|დააყენე|"
+    r"დაადეპლოი|დაპუშე|დააკომიტე|გაუშვე|შეამოწმე|გადაამოწმე|გადახედე|"
+    r"გააანალიზე|დაასკანერე|მოაგვარე|დაასრულე|გააგრძელე|დაიწყე|მოძებნე|"
+    r"წაიკითხე|გაარეფაქტორე|ატვირთე)\w*",
+    re.IGNORECASE)
+# …but a work VERB on a trivial TOPIC is still trivial: "check the time",
+# "შეამოწმე ამინდი". Those belong to the talking brain, which has hands and
+# answers in about a second; the work brain at max effort would take twenty.
+QUICK_TOPIC_RE = re.compile(
+    r"\b(time|clock|date|day|weather|temperature|battery|volume|sound|music|"
+    r"song|brightness|screen|wifi|email|inbox|calendar|news)\b"
+    r"|(დრო|საათ|ამინდ|ბატარე|ხმა|სიმღერ|სიკაშკაშ|ეკრან|ფოსტ|კალენდარ|ამბებ)",
+    re.IGNORECASE)
+
+# A question is never an order, however many work verbs it carries: "how do I
+# fix this?", "რატომ გატყდა ბილდი?" stay talk — and stay fast. The lookahead
+# keeps the one polite form that IS an order ("can you fix the build").
+QUESTION_LEAD_RE = re.compile(
+    r"^\s*(?:hey\s+|ok(?:ay)?\s+|goat[,!\s]+|so\s+|and\s+|but\s+)*"
+    r"(?:what|why|how|when|where|which|who|whose|whom|"
+    r"is|are|was|were|do|does|did|can|could|should|would|will|have|has|had)\b"
+    r"(?!\s+(?:you\s+)?(?:please\s+)?(?:build|create|make|write|fix|add|"
+    r"update|run|deploy|push|commit|install|check|read|review|test|delete|"
+    r"remove|start|finish|continue|refactor|clean))"
+    r"|^\s*(?:რა|რას|რატომ|როგორ|როდის|სად|ვინ|რამდენ|რომელ)\w*\b",
+    re.IGNORECASE)
+
 # Which of those addresses means the HARD brain specifically.
 WORK_HARD_RE = re.compile(r"\b(hard|opus|მძიმე|ოპუს\w*)\b",
                           re.IGNORECASE)
@@ -590,8 +737,15 @@ You are the talking side, and you HAVE hands: quick machine actions — open
 an app or website, volume, a short shell command, a quick file peek — you DO
 immediately yourself, then report in one short sentence. Never mention
 permissions, approvals, prompts, or "this session" — nothing gates you.
-Heavy work (code edits, repo changes, long builds) belongs to your working
-side: tell him to send it to the working brain, don't start it here.
+Heavy work (code edits, repo changes, builds, deploys, anything that touches
+the filesystem for real) belongs to your working side: reply with the single
+word ESCALATE and nothing else — the app hands the order over and it gets
+done. Do NOT tell him to send it somewhere himself, and do NOT discuss it
+instead of doing it.
+DISCIPLINE: an order gets action plus one short line, never a plan or a
+permission request. Say a thing once — if you can't do something, one
+sentence, name what you CAN do, stop. No preamble, no restating his words,
+no "anything else?". Never ask a question you can answer by acting.
 A [live working-brain status] note may prefix his message — that is the real,
 current state of your working side. If he asks what it's doing or whether
 it's done, answer from that note; never claim you can't see the work lane.
@@ -651,7 +805,24 @@ class TtsPipeline:
         # this job — sentences not yet synthesized at fence time have no
         # sample position and would slip through after it.
         self._epoch = 0
+        # Short fixed lines ("On it.", "Done.", "ვიწყებ.") are said hundreds
+        # of times and cost ~0.85s of edge-tts every time. Synthesized once
+        # and kept per voice, the acknowledgement becomes instant — which is
+        # the whole point of an acknowledgement.
+        self._synth_cache: dict = {}
         threading.Thread(target=self._worker, daemon=True).start()
+
+    def prewarm(self, lines):
+        """Synthesize short lines for the CURRENT voice into the cache.
+        Blocking — call it from a thread; failures are simply not cached."""
+        for text in lines:
+            key = (tts_edge.VOICE, text)
+            if key in self._synth_cache:
+                continue
+            try:
+                self._synth_cache[key] = self.synth(text)
+            except Exception:  # noqa: BLE001 — a cold cache is not an error
+                pass
 
     def say(self, text: str):
         text = text.strip()
@@ -757,12 +928,17 @@ class TtsPipeline:
                 # appears the moment playback reaches this point
                 self._register(text, 0, epoch)
                 continue
-            try:
-                samples = self.synth(text)
-            except Exception as e:  # noqa: BLE001 — TTS must never kill the app
-                print("[tts] synth failed:", e)
-                self._register(text, 0, epoch)  # voice lost it; text must survive
-                continue
+            key = (tts_edge.VOICE, text)
+            samples = self._synth_cache.get(key)
+            if samples is None:
+                try:
+                    samples = self.synth(text)
+                except Exception as e:  # noqa: BLE001 — TTS must never kill the app
+                    print("[tts] synth failed:", e)
+                    self._register(text, 0, epoch)  # voice lost it; text must survive
+                    continue
+                if len(text) <= 48 and len(self._synth_cache) < 40:
+                    self._synth_cache[key] = samples
             if gen == self.gen:
                 if self.gain != 1.0:
                     samples = np.clip(samples * self.gain, -1.0, 1.0).astype(np.float32)
@@ -1045,6 +1221,43 @@ class GoatApp:
         asyncio.run_coroutine_threadsafe(self._work(text), self.loop)
 
     # ---- async side ----
+    def _say_now(self, line: str):
+        """Speak one short line immediately — no model, no lane, no waiting.
+        This is the voice GOAT uses for acknowledgements and outcomes."""
+        if not line:
+            return
+        self.tts.mark_reply()
+        self.emit("delta", "")
+        self.tts.say(line)
+
+    def _ack(self, pool: dict):
+        """Rotate through a pool so the same words don't repeat every time —
+        a butler that says one identical sentence forever is a machine."""
+        options = pool.get(self.turn_lang) or pool["en"]
+        self._ack_i = (getattr(self, "_ack_i", -1) + 1) % len(options)
+        self._say_now(options[self._ack_i])
+
+    @staticmethod
+    def _first_sentence(text: str, cap: int = 160) -> str:
+        """One sentence out of the working brain's reply — what he actually
+        wants to HEAR when a job lands. The panel still holds the full text."""
+        line = " ".join((text or "").split())
+        if not line:
+            return ""
+        for stop in (". ", "! ", "? "):
+            i = line.find(stop)
+            if 0 < i <= cap:
+                return line[:i + 1]
+        return (line[:cap].rstrip() + "…") if len(line) > cap else line
+
+    def _prewarm_voice(self):
+        """Fill the TTS cache for the voice that is current RIGHT NOW."""
+        lang = self.turn_lang if self.turn_lang in ACK_ORDER else "en"
+        lines = list(ACK_ORDER[lang]) + list(ACK_ADD[lang]) + [
+            DONE_LEAD[lang], FAIL_LEAD[lang], "Stopped." if lang == "en" else "შევჩერდი."]
+        threading.Thread(target=self.tts.prewarm, args=(lines,),
+                         daemon=True).start()
+
     def _set_turn_lang(self, lang: str):
         """Point the voice at the language of THIS turn. Cheap and idempotent;
         in fixed en/ka modes it never moves off the chosen language."""
@@ -1053,6 +1266,7 @@ class GoatApp:
         self.turn_lang = lang
         tts_edge.set_language(lang)
         self.emit("turnlang", lang)
+        self._prewarm_voice()
 
     async def _handle_utterance(self, audio_np: np.ndarray):
         if self.language != "en" and stt_gladia.available():
@@ -1125,7 +1339,10 @@ class GoatApp:
         # A status QUESTION about it ("what is the working brain doing?") is
         # talk, not dispatch — Gemini answers it from the live status note.
         if (not WORK_STATUS_ASK_RE.search(text)
-                and (WORK_DISPATCH_RE.match(text) or WORK_ASK_RE.search(text))):
+                and (WORK_DISPATCH_RE.match(text) or WORK_ASK_RE.search(text)
+                     or (ORDER_RE.search(text)
+                         and not QUESTION_LEAD_RE.match(text)
+                         and not QUICK_TOPIC_RE.search(text)))):
             await self._work(text, hard=bool(WORK_HARD_RE.search(text[:80])),
                              echo_you=False)
             return
@@ -1152,6 +1369,53 @@ class GoatApp:
                 self.talk_busy = False
                 self._last_exchange = time.monotonic()
 
+    def _talk_model_label(self) -> str:
+        """Footer name of the talking brain he currently has selected."""
+        picked = TALK_BRAINS.get(self.talk_brain, "gemini")
+        return (local_llm.LOCAL_NAME if picked == "gemini"
+                else _friendly_model_name(picked))
+
+    def _cover_model(self) -> str:
+        """The Claude voice that covers when Gemini is down — his own pick if
+        it IS a Claude voice, else Sonnet (measured fastest here, see the
+        roster note)."""
+        picked = TALK_BRAINS.get(self.talk_brain, "gemini")
+        return picked if picked != "gemini" else MODEL_FAST
+
+    async def _escalate_from_talk(self, text: str):
+        """The talking side said ESCALATE. One net for BOTH talking brains —
+        until now only the Gemini path had these guards, so the same order
+        behaved differently depending on which voice he had selected.
+
+        Called while the talk lock is held: answer inline, never via a helper
+        that re-takes the lock."""
+        if WORK_STATUS_ASK_RE.search(text):
+            # He asked ABOUT the work and the talking brain punted anyway —
+            # answer the status question deterministically instead of
+            # dispatching his question as a job (seen live 2026-07-18: "what
+            # is working brain doing" vanished into the silent work lane).
+            line = "Here's the working side: " + self._work_status_line() + "."
+            self._speak_delta(line)
+            self._finish_talk(text, line)
+            return
+        if self.claude_out:
+            # He asked for the working brain but the quota's spent. Say it
+            # RIGHT HERE — _offline_cover would take the lock we already hold.
+            self.emit("work_fail", "Claude is out of usage"
+                      + (f" — resets {self.claude_reset}"
+                         if self.claude_reset else "")
+                      + ". Talk still works.")
+            line = ("Claude is rate-limited right now, so that work has to wait"
+                    + (f" until about {self.claude_reset}"
+                       if self.claude_reset else "")
+                    + ". I can still answer questions, search, and use my own "
+                    "hands for everything else.")
+            self._speak_delta(line)
+            self._finish_talk(text, line)
+            return
+        await self._work(text, hard=bool(WORK_HARD_RE.search(text[:80])),
+                         echo_you=False)
+
     async def _talk_gemini(self, text: str):
         """One Gemini talk turn → middle lane + voice. Falls to a Claude cover
         voice if Gemini is momentarily down; hands to the work lane if he named
@@ -1170,41 +1434,13 @@ class GoatApp:
         except Exception as e:  # noqa: BLE001 — talk brain down ≠ mute GOAT
             self.emit("status", f"talking brain failed: {e}")
             reply = None
-        if reply == "ESCALATE":
-            if WORK_STATUS_ASK_RE.search(text):
-                # He asked ABOUT the work, Gemini punted anyway — answer the
-                # status question deterministically instead of dispatching
-                # his question as a job (seen live 2026-07-18: "what is
-                # working brain doing" vanished into the silent work lane).
-                line = ("Here's the working side: "
-                        + self._work_status_line() + ".")
-                self._speak_delta(line)
-                self._finish_talk(text, line)
-                return
-            if self.claude_out:
-                # He asked for the working brain but the quota's spent. Say it
-                # RIGHT HERE — we already hold the talk lock, so calling
-                # _offline_cover (which takes it) would deadlock.
-                self.emit("work_fail", "Claude is out of usage"
-                          + (f" — resets {self.claude_reset}"
-                             if self.claude_reset else "")
-                          + ". Talk still works.")
-                line = ("Claude is rate-limited right now, so that work has "
-                        "to wait"
-                        + (f" until about {self.claude_reset}"
-                           if self.claude_reset else "")
-                        + ". I can still answer questions, search, and use "
-                        "my own hands for everything else.")
-                self._speak_delta(line)
-                self._finish_talk(text, line)
-                return
-            await self._work(text, hard=bool(WORK_HARD_RE.search(text[:80])),
-                             echo_you=False)
+        if is_escalation(reply):
+            await self._escalate_from_talk(text)
             return
         if reply is None:
             if not self.claude_out:
                 self.emit("status", "gemini offline — sonnet covering the talk")
-                if await self._talk_claude(text, MODEL_FAST):
+                if await self._talk_claude(text, self._cover_model()):
                     return
             # Claude's out too (or the cover also failed) — one honest line,
             # never silence, never a raw error.
@@ -1235,12 +1471,23 @@ class GoatApp:
             send = KA_TALK_NOTE + send
         try:
             await self.talk_client.query(send)
+            streamed = False
             async for msg in self.talk_client.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for b in msg.content:
-                        if isinstance(b, TextBlock) and b.text:
-                            reply += b.text
-                            self._speak_delta(b.text)
+                if isinstance(msg, StreamEvent):
+                    delta = (msg.event or {}).get("delta", {}) or {}
+                    if delta.get("type") == "text_delta":
+                        piece = delta.get("text", "")
+                        if piece:
+                            streamed = True
+                            reply += piece
+                            self._speak_delta(piece)
+                elif isinstance(msg, AssistantMessage):
+                    # Fallback for a build with no partials: speak the block.
+                    if not streamed:
+                        for b in msg.content:
+                            if isinstance(b, TextBlock) and b.text:
+                                reply += b.text
+                                self._speak_delta(b.text)
                 elif isinstance(msg, ResultMessage):
                     self._track_usage(msg)
         except Exception as e:  # noqa: BLE001
@@ -1249,6 +1496,14 @@ class GoatApp:
         reply = reply.strip()
         if not reply:
             return False
+        if is_escalation(reply):
+            # The SAME net Gemini gets — status question, spent quota, hard
+            # brain. Before this the Claude voice skipped all three and
+            # dispatched blind (and an "ESCALATE." with a full stop wasn't
+            # even recognised: it got spoken to him as if it were an answer).
+            self.talk_busy = False
+            await self._escalate_from_talk(text)
+            return True
         self._finish_talk(text, reply, note_gemini=True)
         return True
 
@@ -1258,6 +1513,11 @@ class GoatApp:
         if self.talk_client is None:
             opts = ClaudeAgentOptions(
                 cwd=WORKSPACE, model=model, effort="low",
+                # Speak as the words arrive. Without partials the whole
+                # answer had to finish first: measured 2.17s to first sound
+                # on a warm session, 5.35s cold — seconds of silence after
+                # he stopped talking, which is what "slow" actually was.
+                include_partial_messages=True,
                 # bypassPermissions matches the work client — without it the
                 # cover voice hits Claude Code's approval gate on its first
                 # tool call and starts telling Giorgi to "tap the prompt"
@@ -1347,6 +1607,7 @@ class GoatApp:
             if self.last_user_text:
                 self.last_user_text += "\n" + text
             self.emit("work_add", text[:120])
+            self._ack(ACK_ADD)
             await self.client.query(text)
             return
         if self.claude_out:
@@ -1360,6 +1621,7 @@ class GoatApp:
             await self._offline_cover(text)
             return
         self.busy = True
+        self._ack(ACK_ORDER)   # "on it" NOW — not after the model answers
         self.last_user_text = text
         self._current_task = text
         self._work_started = time.monotonic()
@@ -1424,7 +1686,7 @@ class GoatApp:
                 except Exception as e:  # noqa: BLE001 — cover must not crash
                     self.emit("status", f"offline cover failed: {e}")
                     reply = None
-                if reply is None or reply == "ESCALATE":
+                if reply is None or is_escalation(reply):
                     self.emit("delta", "")
                     self.tts.say("Claude is out of usage right now, and my "
                                  "fast brain hiccuped too — give me a moment "
@@ -1554,6 +1816,9 @@ class GoatApp:
                     self._work_failed = True
                     self._last_work_summary = f"it errored: {err[:150]}"
                     self.emit("work_fail", f"working brain error: {err[:120]}")
+                    self._say_now(
+                        (FAIL_LEAD.get(self.turn_lang) or FAIL_LEAD["en"])
+                        + " " + self._first_sentence(err, 120))
                     self.emit("work_done", "")
                 else:
                     if self.claude_out:
@@ -1571,6 +1836,14 @@ class GoatApp:
                         local_llm.note_exchange(self.last_user_text, reply)
                         if not self.last_user_text.startswith("[boot-briefing]"):
                             self._log_exchange(self.last_user_text, reply)
+                        # JARVIS closes the loop OUT LOUD: he gave an order,
+                        # he gets told when it is done and what happened —
+                        # one sentence, because the panel has the rest.
+                        self._say_now(
+                            outcome_line(
+                                reply,
+                                DONE_LEAD.get(self.turn_lang) or DONE_LEAD["en"],
+                                self._first_sentence(reply)))
                         self._reply_acc = ""
                     self.emit("work_done", "")
                     u = msg.usage or {}
@@ -1809,14 +2082,29 @@ class GoatApp:
                          "I can't transcribe you until you restart me.")
         else:
             self.emit("status", "listening — just talk")
-        # Boot footer: the talking brain (Gemini Flash) is the always-on
-        # voice, so the footer shows it; the work brain shows on the left.
-        self.emit("talkmodel", local_llm.LOCAL_NAME)
+        # Boot footer: the talking brain is the always-on voice, so the footer
+        # shows it; the work brain shows on the left. It must name the brain he
+        # actually PICKED — this line used to hardcode Gemini, so booting with
+        # "sonnet 5" selected put a model name in the footer that was simply
+        # not answering him. MODEL TRUTH applies to the chrome too.
+        self.emit("talkmodel", self._talk_model_label())
         self.emit("model", _friendly_model_name(
             WORK_BRAINS.get(self.work_model, MODEL_FULL)))
         # This code just booted end to end — it IS the last-good version.
         # Snapshot it so a future bad self-edit always has a way back.
         threading.Thread(target=self_check.snapshot, daemon=True).start()
+
+        # Pre-warm the Claude talk client if that is his talking brain: a
+        # cold session measured 5.35s to first word vs 2.17s warm, and that
+        # cold turn is always the first thing he says after a restart.
+        self._prewarm_voice()
+        if TALK_BRAINS.get(self.talk_brain, "gemini") != "gemini":
+            async def _warm_talk():
+                try:
+                    await self._ensure_talk_client(TALK_BRAINS[self.talk_brain])
+                except Exception:  # noqa: BLE001 — warmth is a bonus
+                    pass
+            asyncio.create_task(_warm_talk())
 
         if POWER_WATCH:
             asyncio.create_task(self._power_watch())
@@ -1867,7 +2155,7 @@ class GoatApp:
                     self.suppressed = False
                     self._hold_deltas = False
                     self._delta_buf = ""
-                    self.emit("talkmodel", local_llm.LOCAL_NAME)
+                    self.emit("talkmodel", self._talk_model_label())
                     self.emit("status", "reconnected — working brain back")
                     continue
                 if not wants_fresh:
