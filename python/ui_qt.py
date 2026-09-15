@@ -50,6 +50,7 @@ import time
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QEvent,
     QPoint,
     QSize,
     QPointF,
@@ -61,6 +62,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
+    QFont,
     QIcon,
     QKeySequence,
     QLinearGradient,
@@ -84,6 +86,7 @@ from PySide6.QtWidgets import (
 )
 import subprocess
 
+import tts_edge
 from goat_paths import GOAT_ROOT
 
 ICON = os.path.join(GOAT_ROOT, "goat.ico")
@@ -154,6 +157,8 @@ UI_SCALES = {"100%": 1.0, "125%": 1.25, "150%": 1.5, "175%": 1.75, "200%": 2.0}
 UI_SCALE_MIN, UI_SCALE_MAX = 0.7, 2.5
 # GOAT's speaker level (multiplier on the synthesized voice only).
 VOICE_LEVELS = {"quiet": 0.6, "normal": 1.0, "loud": 1.4}
+# Who GOAT sounds like — the voices themselves live in tts_edge.CHARACTERS.
+VOICE_CHARACTERS = ["goat", "ultron"]
 
 # "ორივე" (both) = the bilingual ear: scribe auto-detects each utterance
 # and GOAT answers in whatever language that utterance was in.
@@ -165,11 +170,13 @@ COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
 
 DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
-               "lang": "en", "talk_brain": "gemini flash",
+               "lang": "en", "character": "goat",
+               "talk_brain": "gemini flash",
                "work_model": "opus 5", "hard_model": "opus 5",
                "effort": "max", "last_lang": "en",
                "scale": 1.0, "colors": {},
-               "geom": None}  # [x, y, w, h] — remembered window box
+               "geom": None,    # [x, y, w, h] — remembered window box
+               "bubble": None}  # [x, y] — remembered collapsed-bubble corner
 
 
 def load_ui_config() -> dict:
@@ -193,6 +200,8 @@ def load_ui_config() -> dict:
         cfg["level"] = "normal"
     if cfg["lang"] not in LANGS.values():
         cfg["lang"] = "en"
+    if cfg["character"] not in VOICE_CHARACTERS:
+        cfg["character"] = "goat"
     if cfg["talk_brain"] not in TALK_OPTS:
         cfg["talk_brain"] = "gemini flash"
     for key in ("work_model", "hard_model"):
@@ -774,6 +783,8 @@ class SettingsPanel(QWidget):
         row("text size", "text", list(TEXT_SIZES), self.win.set_text_opt)
         row("voice", "voice", ["on", "off"], self.win.set_voice_opt)
         row("voice level", "level", list(VOICE_LEVELS), self.win.set_level_opt)
+        row("voice character", "character", VOICE_CHARACTERS,
+            self.win.set_character_opt)
         row("language", "lang", list(LANGS), self.win.set_lang_opt)
         row("wake word", "wake", ["on", "off"], self.win.set_wake_opt)
         row("microphone", "mic", ["live", "muted"], self.win.set_mic_opt)
@@ -1103,6 +1114,216 @@ class WorkPanel(QWidget):
         p.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
 
 
+class Bubble(QWidget):
+    """GOAT collapsed to a single dot — the messenger-bubble mode.
+
+    Minimizing a voice assistant to the taskbar hides the one thing that
+    matters about it: whether it is listening, thinking, or talking. This keeps
+    that visible in sixty-odd pixels — a round, always-on-top widget that sits
+    in a corner, breathes with the live state, marks a reply he has not seen,
+    and opens the full window again on a click (his order, 2026-09-14).
+
+    Frameless and translucent, because a circle inside a grey square frame is
+    not a bubble. Qt.Tool as well, so collapsing never leaves a second taskbar
+    button standing next to the window it replaced.
+    """
+
+    clicked = Signal()
+    moved = Signal()
+
+    # How loudly the ring burns per state. Idle is nearly dark on purpose: the
+    # bubble should read as "present, not demanding" until something happens.
+    GLOW = {"speaking": 1.0, "thinking": 0.8, "working": 0.8,
+            "listening": 0.55, "idle": 0.25, "booting": 0.25}
+    BUSY = ("speaking", "thinking", "working", "listening")
+
+    def __init__(self, theme: dict, scale: float = 1.0):
+        super().__init__(None, Qt.FramelessWindowHint
+                         | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("GOAT — click to open, drag to move")
+        self._t = dict(theme)
+        self._state = "idle"
+        self._unread = False
+        self._phase = 0.0
+        self._press: QPoint | None = None
+        self._origin: QPoint | None = None
+        self._dragged = False
+        self._beat_timer = QTimer(self)
+        self._beat_timer.timeout.connect(self._beat)
+        self.set_scale(scale)
+
+    # ---- appearance -------------------------------------------------------
+
+    def set_scale(self, scale: float):
+        # One dial scales the whole app; the bubble rides it like everything
+        # else, with a floor so it can never shrink to an unclickable speck.
+        self._d = max(46, int(round(64 * float(scale or 1.0))))
+        self.setFixedSize(self._d, self._d)
+        self.update()
+
+    def set_theme(self, t: dict):
+        self._t = dict(t)
+        self.update()
+
+    def set_state(self, state: str):
+        if state == self._state:
+            return
+        self._state = state or "idle"
+        self._sync_beat()
+        self.update()
+
+    def set_unread(self, on: bool):
+        if bool(on) == self._unread:
+            return
+        self._unread = bool(on)
+        self._sync_beat()
+        self.update()
+
+    def _sync_beat(self):
+        """Animate only when there is something to animate.
+
+        A timer ticking behind a dot nobody is looking at is pure battery
+        burn, and this machine already has a worn battery.
+        """
+        want = self.isVisible() and (self._state in self.BUSY or self._unread)
+        if want and not self._beat_timer.isActive():
+            self._beat_timer.start(50)
+        elif not want and self._beat_timer.isActive():
+            self._beat_timer.stop()
+            self._phase = 0.0
+            self.update()
+
+    def _beat(self):
+        self._phase = (self._phase + 0.055) % 1.0
+        self.update()
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        t = self._t
+        accent = QColor(t.get("accent", "#ffb35e"))
+        pad = max(4, self._d // 10)
+        disc = QRect(pad, pad, self._d - 2 * pad, self._d - 2 * pad)
+
+        glow = self.GLOW.get(self._state, 0.25)
+        if self._state in self.BUSY:
+            # A slow breath, not a blink — the same register as the string.
+            glow *= 0.75 + 0.25 * math.sin(self._phase * 2 * math.pi)
+
+        # Halo: a couple of soft strokes standing in for a shadow, so the
+        # bubble keeps an edge on a light desktop as well as a dark one.
+        for i, step in enumerate((pad, pad // 2 + 1)):
+            ring = QColor(accent)
+            ring.setAlpha(int(26 * glow) if i == 0 else int(46 * glow))
+            p.setPen(QPen(ring, max(1, self._d // 26)))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(disc.adjusted(-step, -step, step, step))
+
+        g = QLinearGradient(0, disc.top(), 0, disc.bottom())
+        g.setColorAt(0.0, QColor(t.get("bg_top", "#1a1713")))
+        g.setColorAt(1.0, QColor(t.get("bg_bot", "#14110e")))
+        p.setPen(Qt.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(disc)
+
+        rim = QColor(accent)
+        rim.setAlpha(int(90 + 165 * glow))
+        p.setPen(QPen(rim, max(2, self._d // 22)))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(disc)
+
+        f = self.font()
+        f.setFamilies(["Segoe UI Variable Display", "Segoe UI"])
+        f.setPixelSize(max(13, int(self._d * 0.36)))
+        f.setLetterSpacing(QFont.PercentageSpacing, 104)
+        p.setFont(f)
+        p.setPen(QColor(t.get("paper", "#f4ede0")))
+        p.drawText(disc, Qt.AlignCenter, "G")
+
+        if self._unread:
+            # One dot, the accent, ringed in the page colour so it reads
+            # against the rim it overlaps.
+            r = max(6, self._d // 6)
+            spot = QRect(disc.right() - r, disc.top(), r, r)
+            # A hairline keeper, not a border: on the light theme a 2px ring
+            # in the page colour swallowed the accent and the dot read white.
+            p.setPen(QPen(QColor(t.get("bg_bot", "#14110e")),
+                          max(1, self._d // 40)))
+            p.setBrush(accent)
+            p.drawEllipse(spot)
+
+    # ---- drag to move, click to open --------------------------------------
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._press = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._origin = ev.globalPosition().toPoint()
+            self._dragged = False
+            ev.accept()
+
+    def mouseMoveEvent(self, ev):
+        if self._press is None or not (ev.buttons() & Qt.LeftButton):
+            return
+        here = ev.globalPosition().toPoint()
+        # A click is never perfectly still. Anything under a few pixels is
+        # still a click, or the bubble would be impossible to press.
+        if (here - self._origin).manhattanLength() > 5:
+            self._dragged = True
+        self.move(here - self._press)
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() != Qt.LeftButton or self._press is None:
+            return
+        self._press = None
+        if self._dragged:
+            self.clamp_to_screen()
+            self.moved.emit()
+        else:
+            self.clicked.emit()
+        ev.accept()
+
+    # ---- placement --------------------------------------------------------
+
+    def clamp_to_screen(self):
+        """Keep the bubble reachable — never under the taskbar or off an edge."""
+        scr = self.screen() or QApplication.primaryScreen()
+        if not scr:
+            return
+        area = scr.availableGeometry()
+        x = min(max(self.x(), area.left()), area.right() - self.width() + 1)
+        y = min(max(self.y(), area.top()), area.bottom() - self.height() + 1)
+        if (x, y) != (self.x(), self.y()):
+            self.move(x, y)
+
+    def place(self, pos):
+        """Put the bubble at a remembered point, or in the default corner.
+
+        The remembered point is clamped, not trusted: a position saved on a
+        monitor that is no longer plugged in would otherwise strand it.
+        """
+        if (isinstance(pos, (list, tuple)) and len(pos) == 2
+                and all(isinstance(n, (int, float)) for n in pos)):
+            self.move(int(pos[0]), int(pos[1]))
+        else:
+            scr = self.screen() or QApplication.primaryScreen()
+            area = scr.availableGeometry()
+            inset = max(18, self._d // 3)
+            self.move(area.right() - self.width() - inset,
+                      area.bottom() - self.height() - inset)
+        self.clamp_to_screen()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._sync_beat()
+
+    def hideEvent(self, ev):
+        super().hideEvent(ev)
+        self._beat_timer.stop()
+
+
 class GoatWindow(QWidget):
     event_sig = Signal(str, str)
 
@@ -1123,6 +1344,7 @@ class GoatWindow(QWidget):
         self.on_work = None      # work lane (left)
         self.on_files = None
         self._drag: QPoint | None = None
+        self._collapsing = False   # guards collapse() <-> changeEvent recursion
         self._reply_label: QLabel | None = None
         self._you_label: QLabel | None = None
         self._t0 = time.time()
@@ -1178,7 +1400,9 @@ class GoatWindow(QWidget):
         self.gear_btn.clicked.connect(self.toggle_settings)
         b_min = QPushButton("–")
         b_min.setObjectName("winbtn")
-        b_min.clicked.connect(self.showMinimized)
+        # Collapse, not minimize: a voice assistant on the taskbar hides the
+        # one thing worth seeing — whether it is listening (2026-09-14).
+        b_min.clicked.connect(self.collapse)
         b_full = QPushButton("⛶")
         b_full.setObjectName("winbtn")
         b_full.clicked.connect(self.toggle_fullscreen)
@@ -1199,7 +1423,7 @@ class GoatWindow(QWidget):
         bar.addWidget(self.theme_btn)
         bar.addWidget(self.gear_btn)
         bar.addSpacing(10)
-        b_min.setToolTip("minimize")
+        b_min.setToolTip("collapse to a bubble — ctrl+b")
         b_full.setToolTip("fullscreen — f11")
         b_close.setToolTip("quit GOAT")
         bar.addWidget(b_min)
@@ -1314,7 +1538,8 @@ class GoatWindow(QWidget):
         # live"). _fit_footer drops to the short list, then to nothing, so the
         # meter — the half that carries live state — always wins the space.
         self._hint_full = ("esc voice · ⌃m mic · ⌃t theme · ⌃e think · "
-                           "⌃l language · ⌃k type · ⌃n new · ⌃, settings")
+                           "⌃l language · ⌃k type · ⌃b bubble · ⌃n new · "
+                           "⌃, settings")
         self._hint_short = "⌃k type · ⌃n new · ⌃, settings"
         hint = QLabel(self._hint_full)
         hint.setObjectName("footer")
@@ -1340,6 +1565,7 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+M"), self, self.toggle_mic)
         QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
         QShortcut(QKeySequence("Ctrl+E"), self, self.cycle_effort)
+        QShortcut(QKeySequence("Ctrl+B"), self, self.toggle_bubble)
         QShortcut(QKeySequence("Ctrl+L"), self, self.cycle_lang)
         # Manual work dispatch: Ctrl+Enter → working brain, +Shift → hard.
         QShortcut(QKeySequence("Ctrl+Return"), self, lambda: self._submit_work(False))
@@ -1348,9 +1574,69 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+Shift+Enter"), self, lambda: self._submit_work(True))
 
         self.panel = SettingsPanel(self)
+        # Collapsed form. Built last so apply_theme() below has something to
+        # style, and hidden until he asks for it.
+        self.bubble = Bubble({**THEMES.get(self._theme_name, THEMES["ember"]),
+                              **(self.cfg.get("colors") or {})},
+                             float(self.cfg.get("scale", 1.0)))
+        self.bubble.clicked.connect(self.expand)
+        self.bubble.moved.connect(self._save_bubble_pos)
         self.apply_theme(self._theme_name)
 
     # ---- window controls ----
+    # ---- collapsed bubble ----
+    def collapse(self):
+        """Put the window away and leave GOAT on screen as a dot."""
+        if self.bubble.isVisible():
+            return
+        self._save_geometry()          # remember the box before it goes
+        if self.panel.isVisible():
+            self.panel.hide()          # the drawer must not outlive the window
+        self.bubble.place(self.cfg.get("bubble"))
+        self.bubble.set_state(self._statew)
+        self.bubble.set_unread(False)
+        self.bubble.show()
+        self.bubble.raise_()
+        self._collapsing = True        # hide() fires changeEvent; don't recurse
+        try:
+            self.hide()
+        finally:
+            self._collapsing = False
+
+    def expand(self):
+        """Back to the full window, exactly where it was."""
+        self.bubble.set_unread(False)
+        self.bubble.hide()
+        self._collapsing = True
+        try:
+            if self.isMinimized():
+                self.showNormal()
+            else:
+                self.show()
+        finally:
+            self._collapsing = False
+        self.raise_()
+        self.activateWindow()
+        self.input.setFocus()
+
+    def toggle_bubble(self):
+        self.expand() if self.bubble.isVisible() else self.collapse()
+
+    def _save_bubble_pos(self):
+        self.cfg["bubble"] = [self.bubble.x(), self.bubble.y()]
+        save_ui_config(self.cfg)
+
+    def changeEvent(self, ev):
+        """Minimizing by any route — taskbar, Win+D, shake — collapses too.
+
+        Qt reports the state change after the fact, so the collapse is queued
+        to the next event-loop turn rather than run inside the handler.
+        """
+        super().changeEvent(ev)
+        if (ev.type() == QEvent.WindowStateChange and self.isMinimized()
+                and not self._collapsing and not self.bubble.isVisible()):
+            QTimer.singleShot(0, self.collapse)
+
     def toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
@@ -1404,6 +1690,9 @@ class GoatWindow(QWidget):
         if hasattr(self, "work_panel"):
             self.work_panel.set_theme(t)
         self.theme_btn.setText(name)
+        if hasattr(self, "bubble"):
+            self.bubble.set_theme(t)
+            self.bubble.set_scale(float(self.cfg.get("scale", 1.0)))
         self.panel.set_theme(t)
         self.panel.refresh()
         self._apply_metrics()
@@ -1597,6 +1886,17 @@ class GoatWindow(QWidget):
             self.goat.tts.gain = VOICE_LEVELS[level]
         self._save()
 
+    def set_character_opt(self, name: str):
+        """Who GOAT sounds like. The sentence already in the air belongs to
+        the old voice, so it gets cut rather than finished in two voices."""
+        if not tts_edge.set_character(name):
+            return
+        self.cfg["character"] = name
+        if self.goat:
+            self.goat.tts.cancel()
+        self._on_event("status", f"voice character: {name}")
+        self._save()
+
     def set_wake_opt(self, opt: str):
         self.cfg["wake"] = opt == "on"
         if self.goat:
@@ -1676,6 +1976,7 @@ class GoatWindow(QWidget):
         self.goat = goat
         goat.tts.enabled = self.cfg["voice"]
         goat.tts.gain = VOICE_LEVELS[self.cfg["level"]]
+        tts_edge.set_character(self.cfg.get("character", "goat"))
         goat.wake_enabled = self.cfg["wake"]
         # Before the engine thread starts: run() applies voice + hearing
         # model + persona note itself from this attribute.
@@ -1882,6 +2183,8 @@ class GoatWindow(QWidget):
                 and time.time() >= self._status_hold):
             self._statew = state
             self.stateword.setText(state)
+        if self.bubble.isVisible():
+            self.bubble.set_state(state)
         up = int(time.time() - self._t0)
         mic = "mic muted" if (self.goat and self.goat.mic_muted) else "mic live"
         # Claude usage meter: OUT (+reset) when spent, else session tokens.
@@ -1969,12 +2272,43 @@ class GoatWindow(QWidget):
             restored = True
         return restored
 
+    # The page kept every line of every exchange forever. Two costs, both
+    # real in a long session: _dim_previous() re-polishes the whole column on
+    # each new line (hundreds of style recalcs per turn, which is felt), and
+    # the widget count only ever grows. Cap it — his scrollback is the
+    # on-disk transcript, not the live layout.
+    PAGE_MAX = 240
+
+    def _trim_page(self):
+        extra = self.col.count() - 1 - self.PAGE_MAX
+        if extra <= 0:
+            return
+        stale = []
+        for _ in range(extra):
+            item = self.col.itemAt(0)
+            if item is None:
+                break
+            w = item.widget()
+            self.col.removeItem(item)
+            if w is not None:
+                stale.append(w)
+                w.setParent(None)
+                w.deleteLater()
+        # Any Python name still pointing at a widget Qt just deleted is a
+        # loaded gun: touching it later is an access violation inside
+        # shiboken, not a Python exception — exactly the class of crash
+        # logged at 01:56:55 on 2026-09-15. Drop the references here.
+        for attr in ("_you_label", "_reply_label", "epigraph"):
+            if getattr(self, attr, None) in stale:
+                setattr(self, attr, None)
+
     def _add_line(self, text: str, name: str) -> QLabel:
         lbl = PageLabel(text)
         lbl.setObjectName(name)
         lbl.setWordWrap(True)
         lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.col.insertWidget(self.col.count() - 1, lbl)
+        self._trim_page()
         QTimer.singleShot(30, self._scroll_down)
         return lbl
 
@@ -2037,6 +2371,8 @@ class GoatWindow(QWidget):
                     self.set_ui_scale(float(data))
             except (ValueError, TypeError):
                 pass
+        elif kind == "ui_character":
+            self.set_character_opt(data.strip())
         elif kind == "ui_color":
             # "part|color" — GOAT recoloring its own interface.
             part, _, color = data.partition("|")
@@ -2069,6 +2405,8 @@ class GoatWindow(QWidget):
             for path in data.split("\n"):
                 self._add_thumbnail(path.strip())
         elif kind == "delta":
+            if self.bubble.isVisible():
+                self.bubble.set_unread(True)  # he is collapsed; mark the dot
             # Text is NOT shown from the model's stream — it would race far
             # ahead of the voice. The label is created here; its words are
             # revealed by update_spoken(), synced to actual playback.
@@ -2127,6 +2465,25 @@ class GoatWindow(QWidget):
 
 
 def main():
+    # Hard-crash capture (2026-09-15). GOAT died at 01:56:55 that morning with
+    # no trace of why: Windows logged "python.exe faulting module
+    # shiboken6.abi3.dll, exception 0xc0000005" (an access violation inside
+    # PySide6's binding layer), goat-app.log was EMPTY, and no Python
+    # traceback existed anywhere — a native crash never raises, so nothing in
+    # the app can log it. faulthandler installs an OS-level handler that dumps
+    # the Python stack of every thread at the moment of the fault, which turns
+    # the next occurrence from "it crashed" into a file and a line number.
+    # Kept permanently: it costs nothing until something goes very wrong.
+    try:
+        import faulthandler
+        crash_log = open(os.path.join(GOAT_ROOT, "python", "goat-crash.log"),
+                         "a", buffering=1, encoding="utf-8", errors="replace")
+        crash_log.write(f"\n==== session {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                        f"pid {os.getpid()} ====\n")
+        faulthandler.enable(file=crash_log, all_threads=True)
+    except Exception:  # noqa: BLE001 — never let instrumentation stop the app
+        pass
+
     # Own taskbar identity (otherwise Windows groups us under "Python").
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KingKaglu.GOAT")

@@ -30,6 +30,21 @@ UTT_SILENCE_STOP_MS = 700    # utterance ends after this much continuous quiet
                              # (900 -> 700 on 2026-09-14: 200ms off EVERY
                              # turn, still above the ~500ms gap that normal
                              # mid-sentence breathing leaves)
+# Adaptive endpointing (2026-09-15, his sub-500ms goal). The 700ms hangover
+# exists to protect a THOUGHT — he pauses mid-sentence while working out what
+# he wants, and cutting him off there is worse than any latency. A short
+# utterance is not a thought, it is a command: "open google", "volume up",
+# "ხმა აუწიე". Those are already complete when the quiet starts, so they pay
+# a shorter hangover and every command in the reflex lane lands ~220ms sooner.
+# Anything longer keeps the full 700ms.
+UTT_SILENCE_STOP_SHORT_MS = 480
+UTT_SHORT_VOICED_MS = 2000   # voiced audio under this counts as a command
+# When to tell the streaming ear "he may be finished, start wrapping up".
+# The hangover is a wait GOAT needs for turn-taking; the ear used to sit
+# through all of it and only then begin finalising, so one pause cost two
+# waits end to end. Committing part-way in overlaps them. If he was only
+# drawing breath, the rest of the sentence still arrives and is joined on.
+UTT_SOFT_COMMIT_MS = 200
 UTT_MIN_VOICED_MS = 250      # discard blips shorter than this (coughs, clicks) —
                              # the STT junk filter catches what slips through
 UTT_MAX_MS = 30000           # hard cap so a stuck-open capture can't grow forever
@@ -106,6 +121,17 @@ class DuplexAudio:
 
         self.on_interrupt = on_interrupt
         self.on_status = on_status
+        # Streaming-ear hooks (2026-09-15). on_utt_start fires the moment
+        # speech is confirmed, on_utt_audio for every block while it lasts,
+        # and on_utt_abort when the capture turns out to be a cough. All three
+        # run ON THE AUDIO CALLBACK THREAD with a 10ms deadline: queue the
+        # work, never do it here.
+        self.on_utt_start = None
+        self.on_utt_audio = None
+        self.on_utt_soft_end = None
+        self.on_utt_abort = None
+        self._utt_soft_sent = False
+        self.last_hangover_ms = 0.0
         self.on_utterance = on_utterance  # gets one float32 utterance (preroll
                                           # included) once the speaker goes quiet
 
@@ -332,6 +358,14 @@ class DuplexAudio:
                 self._status("echo, not you — back to full volume")
 
         if self._utt_chunks is not None:
+            # Streaming ear: hand every block on as it is captured, so the
+            # transcript can be finished by the time he stops talking instead
+            # of started then. Must never block — the listener only queues.
+            if self.on_utt_audio:
+                try:
+                    self.on_utt_audio(chunk)
+                except Exception:  # noqa: BLE001 — audio callback deadline
+                    pass
             self._append_utt(chunk, voiced, chunk_ms)
         elif vote >= needed:
             self._vote_hist.clear()
@@ -347,6 +381,12 @@ class DuplexAudio:
             self._utt_chunks = [self.preroll_audio()]
             self._utt_voiced_ms = 0.0
             self._utt_silence_ms = 0.0
+            self._utt_soft_sent = False
+            if self.on_utt_start:
+                try:
+                    self.on_utt_start(self._utt_chunks[0])
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _append_utt(self, chunk: np.ndarray, voiced: bool, chunk_ms: float):
         self._utt_chunks.append(chunk)
@@ -357,8 +397,26 @@ class DuplexAudio:
             self._utt_silence_ms += chunk_ms
 
         total_ms = sum(len(c) for c in self._utt_chunks) / SAMPLE_RATE * 1000
-        if self._utt_silence_ms < UTT_SILENCE_STOP_MS and total_ms < UTT_MAX_MS:
+        hangover = (UTT_SILENCE_STOP_SHORT_MS
+                    if self._utt_voiced_ms < UTT_SHORT_VOICED_MS
+                    else UTT_SILENCE_STOP_MS)
+        if voiced:
+            self._utt_soft_sent = False
+        elif (not self._utt_soft_sent
+                and self._utt_silence_ms >= UTT_SOFT_COMMIT_MS
+                and self._utt_voiced_ms >= UTT_MIN_VOICED_MS):
+            self._utt_soft_sent = True
+            if self.on_utt_soft_end:
+                try:
+                    self.on_utt_soft_end()
+                except Exception:  # noqa: BLE001 — audio callback deadline
+                    pass
+        if self._utt_silence_ms < hangover and total_ms < UTT_MAX_MS:
             return
+        # What the ledger needs: he actually stopped making sound `hangover`
+        # milliseconds ago, not now. Reporting from here would flatter every
+        # measurement by exactly the wait he sat through.
+        self.last_hangover_ms = self._utt_silence_ms
 
         audio = np.concatenate(self._utt_chunks)
         voiced_ms = self._utt_voiced_ms
@@ -370,6 +428,11 @@ class DuplexAudio:
                 self.on_utterance(audio)
         else:
             self._status(f"utterance discarded — only {voiced_ms:.0f}ms voiced")
+            if self.on_utt_abort:
+                try:
+                    self.on_utt_abort()   # tear the streaming session down
+                except Exception:  # noqa: BLE001
+                    pass
 
     def preroll_audio(self) -> np.ndarray:
         if not self._preroll:

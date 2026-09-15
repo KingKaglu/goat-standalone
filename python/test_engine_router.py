@@ -15,19 +15,34 @@ from collections import deque
 
 import numpy as np
 
+# The reflex lane runs REAL actions (launches apps, moves the volume, opens
+# folders). Several cases below feed it genuine phrases — "open chrome",
+# "turn the volume up" — to prove they stay off the work lane, and those must
+# not actually fire on his machine mid-test. Off by default here; the reflex
+# routing case switches it on with a stubbed matcher whose actions only
+# record. Must be set BEFORE goat_app imports reflex.
+os.environ.setdefault("GOAT_REFLEX", "off")
+
 import goat_app as g
+import reflex as _reflex_mod  # the real Reflex class, kept reachable while
+                              # g.reflex is swapped for a stub
 from claude_agent_sdk import ResultMessage, StreamEvent
 
 
 class MockTTS:
     def __init__(self):
         self.spoken = []
+        # Mirrors the real pipeline's turn bookkeeping — the backchannel and
+        # the latency ledger both read these.
+        self.gen = 0
+        self.enabled = True
+        self._sounded = False
 
     def mark_reply(self):
         pass
 
     def new_turn(self):
-        pass
+        self._sounded = False
 
     def cancel(self):
         pass
@@ -308,6 +323,83 @@ async def main():
                 break
         check("quick actions stay on the fast lane",
               not c.queries, f"queries={c.queries}")
+
+        # 5c-bis. REFLEX LANE (2026-09-15): a recognised device command must
+        #     be executed directly and reach NEITHER brain. Before this lane,
+        #     "open google" cost two Gemini round trips on a model measured
+        #     that day at 8-19s to first token, and "open the file gg" fell
+        #     through to the work lane, which hunted the icon with
+        #     screenshots. The matcher is stubbed so the test never actually
+        #     opens anything; what's under test is the ROUTING.
+        class StubReflex:
+            def __init__(self):
+                self.ran = []
+                self.asked = []
+
+            def match(self, text, lang="en"):
+                self.asked.append(text)
+                if not text.lower().startswith("open "):
+                    return None
+                rx = _reflex_mod.Reflex(
+                    "open_url", "example.com",
+                    lambda t=text: self.ran.append(t) or "opened")
+                return rx
+
+        real_reflex = g.reflex
+        try:
+            g.reflex = stub = StubReflex()
+            g.local_llm = fake = FakeLocal(up=True, reply="should not be used")
+            c = MockClient()
+            app = make_app(c)
+            app._log_exchange = lambda *a: None   # keep his transcript clean
+            await app._talk("open google")
+            check("a reflex runs the action and skips both brains",
+                  stub.ran == ["open google"] and not fake.chats
+                  and not c.queries,
+                  f"ran={stub.ran} chats={fake.chats} queries={c.queries}")
+            check("a reflex speaks a cached acknowledgement immediately",
+                  app.tts.spoken and app.tts.spoken[0] in g.ACK_REFLEX["en"],
+                  f"said={app.tts.spoken}")
+            check("a reflex is remembered, so 'did you open it?' has an answer",
+                  fake.noted and fake.noted[0][0] == "open google",
+                  f"noted={fake.noted}")
+
+            # Anything the matcher declines must land on the brains unchanged.
+            g.local_llm = fake = FakeLocal(up=True, reply="talking.")
+            c = MockClient()
+            app = make_app(c)
+            await app._talk("what is the capital of Georgia")
+            check("a non-reflex still reaches the talking brain",
+                  fake.chats == ["what is the capital of Georgia"]
+                  and not c.queries, f"chats={fake.chats}")
+
+            # A reflex that FAILS must not claim success.
+            g.reflex = stub = StubReflex()
+            stub.match = lambda text, lang="en": (
+                _reflex_mod.Reflex("open_path", "nope",
+                                lambda: "ERROR: no such file")
+                if text.startswith("open ") else None)
+            g.local_llm = FakeLocal(up=True, reply="unused")
+            app = make_app(MockClient())
+            app._log_exchange = lambda *a: None
+            await app._talk("open nothing")
+            check("a failed reflex says so instead of saying done",
+                  g.REFLEX_FAIL["en"] in app.tts.spoken,
+                  f"said={app.tts.spoken}")
+
+            # A spoken "stop" still brakes a work turn — the reflex check
+            # must sit BEHIND the brake, never in front of it.
+            g.reflex = StubReflex()
+            g.local_llm = FakeLocal(up=True, reply="unused")
+            app = make_app(MockClient())
+            app.busy = True
+            app.client = MockClient()
+            await app._talk("stop")
+            check("the stop brake still wins over the reflex lane",
+                  not app.busy and "Stopped." in app.tts.spoken,
+                  f"busy={app.busy} said={app.tts.spoken}")
+        finally:
+            g.reflex = real_reflex
 
         # 5d. Georgian imperatives dispatch exactly the same way
         g.local_llm = fake = FakeLocal(up=True, reply="should not be used")

@@ -27,6 +27,7 @@ import urllib.request
 from collections import deque
 
 import local_hands
+import reflex_index
 from goat_paths import GOAT_ROOT
 
 SECRETS_FILE = os.path.join(GOAT_ROOT, ".goat-secrets.json")
@@ -52,6 +53,7 @@ GEMINI_FALLBACK = os.environ.get("GOAT_GEMINI_FALLBACK",
 # paying a doomed roundtrip on every turn. Monotonic deadline, mutable holder.
 PRIMARY_RETRY_S = 900.0
 _primary_down = [0.0]
+_slow_streak = [0]      # consecutive over-budget first-token times
 # Speakable name for the UI footer / MODEL TRUTH answers.
 LOCAL_NAME = os.environ.get("GOAT_LOCAL_NAME", "gemini flash")
 # Gemini Flash speaks Georgian natively — ka turns may use the fast brain.
@@ -62,6 +64,20 @@ HANDS = os.environ.get("GOAT_LOCAL_HANDS", "on").lower() not in (
 
 HISTORY_MAX = 30        # messages (user+assistant), rolling
 TIMEOUT_FIRST = 30      # s to first byte
+# Latency guard (2026-09-15). Measured that day on his key, "say ok":
+#   gemini-3.8-flash  19.0s   gemini-3.5-flash  1.3s   3.5-flash-lite  0.7s
+# Gemini 3 models always think — Google's docs are explicit that reasoning
+# CANNOT be disabled on them, so the reasoning_effort:"none" below is accepted
+# and ignored. A talking brain that needs 19s is not a talking brain, so a
+# model that blows this budget demotes itself to the fallback for a while.
+# This is a runtime fallback, not a change to his configured pick: the drawer
+# still says what he chose, and the demotion lapses after PRIMARY_RETRY_S.
+SLOW_TTFT_S = float(os.environ.get("GOAT_GEMINI_SLOW_TTFT", "6"))
+SLOW_STRIKES = 2        # slow turns in a row before demoting
+# How long to wait for the FIRST token before calling it a stall and taking
+# the fallback. Was TIMEOUT_FIRST (30s) — half a minute of silence after he
+# finished speaking, which is indistinguishable from GOAT being broken.
+TIMEOUT_TTFT = float(os.environ.get("GOAT_GEMINI_TTFT_ABORT", "9"))
 TIMEOUT_STREAM = 180    # s for a whole reply (room for tool chains)
 MAX_HOPS = 6            # tool-call rounds before the final answer
 
@@ -238,6 +254,34 @@ def _post_stream(messages: list, tools, on_delta):
         raise
 
 
+def _note_ttft(model: str, ttft: float):
+    """Watch how long the PRIMARY talking model makes him wait, and demote it
+    to the fallback when it keeps blowing the budget. Only the primary can be
+    demoted — demoting the fallback would leave nothing to fall back to."""
+    if not GEMINI_FALLBACK or model != GEMINI_MODEL or model == GEMINI_FALLBACK:
+        return
+    if ttft <= SLOW_TTFT_S:
+        _slow_streak[0] = 0
+        return
+    _slow_streak[0] += 1
+    if _slow_streak[0] >= SLOW_STRIKES:
+        _slow_streak[0] = 0
+        _primary_down[0] = time.monotonic() + PRIMARY_RETRY_S
+        print(f"[fast-brain] {model} too slow ({ttft:.1f}s to first token, "
+              f"budget {SLOW_TTFT_S:.0f}s) — talking on {GEMINI_FALLBACK} "
+              f"for the next {PRIMARY_RETRY_S / 60:.0f} min")
+
+
+def _relax(resp, seconds: float = TIMEOUT_STREAM):
+    """Lift the first-byte deadline off a response that has started arriving.
+    Best-effort: if urllib's internals ever move, the tight timeout simply
+    stays, which costs a fallback on a long pause and never a wrong answer."""
+    try:
+        resp.fp.raw._sock.settimeout(seconds)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _do_stream(payload: dict, key: str, on_delta):
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -250,8 +294,15 @@ def _do_stream(payload: dict, key: str, on_delta):
     saw_content = False
     got_data = False  # any SSE line at all — a stall before this is retryable
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_FIRST) as r:
+        # Tight deadline for the FIRST byte, generous once it is streaming.
+        # A model that says nothing for TIMEOUT_TTFT is thinking, not
+        # answering, and the fallback will beat it; but a reply already in
+        # flight must never be cut off mid-sentence, so the socket is relaxed
+        # to TIMEOUT_STREAM the moment anything arrives.
+        with urllib.request.urlopen(req, timeout=TIMEOUT_TTFT) as r:
             for raw in r:
+                if not got_data:
+                    _relax(r)
                 got_data = True
                 if time.monotonic() - started > TIMEOUT_STREAM:
                     raise TimeoutError(
@@ -276,8 +327,9 @@ def _do_stream(payload: dict, key: str, on_delta):
                         saw_content = True
                         # One line per request in goat-app.log — the number
                         # to look at next time "gemini feels slow".
-                        print(f"[fast-brain] first token "
-                              f"{time.monotonic() - started:.1f}s")
+                        ttft = time.monotonic() - started
+                        print(f"[fast-brain] first token {ttft:.1f}s")
+                        _note_ttft(payload.get("model", ""), ttft)
                     reply.append(piece)
                     if on_delta:
                         on_delta(piece)
@@ -410,10 +462,22 @@ def chat(text: str, on_delta=None, lang: str = "en",
     utc = datetime.datetime.now(datetime.timezone.utc)
     home = os.path.expanduser("~")
     user = os.environ.get("USERNAME") or os.path.basename(home)
+    # His Desktop and Documents are ONEDRIVE-REDIRECTED. Until 2026-09-15 this
+    # prompt asserted "{home}\Desktop", which exists but is nearly empty — so
+    # "open the file gg on my desktop" looked in the wrong real folder, found
+    # nothing, and escalated into a screenshot hunt in the work lane. Ask
+    # Windows for the true locations instead of assembling them from home.
+    dirs = reflex_index.user_dirs()
+    desktop = dirs.get("desktop", os.path.join(home, "Desktop"))
+    downloads = dirs.get("downloads", os.path.join(home, "Downloads"))
+    documents = dirs.get("documents", os.path.join(home, "Documents"))
     base_system = PERSONA + (
         f"\n\nTHIS MACHINE (facts — never guess these):\n"
         f"- Windows user: {user}  |  home folder: {home}\n"
-        f"- Desktop: {home}\\Desktop  |  Downloads: {home}\\Downloads\n"
+        f"- Desktop: {desktop}  |  Downloads: {downloads}\n"
+        f"- Documents: {documents}  (Desktop/Documents are OneDrive-"
+        f"redirected — {home}\\Desktop also exists and is NOT the one he "
+        f"means)\n"
         f"- Shell for run_command: PowerShell. Use real cmdlets "
         f"(Get-PSDrive C for disk, Get-ChildItem for files, Get-Date). "
         f"Never invent cmdlet names.\n"

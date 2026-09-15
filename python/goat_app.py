@@ -32,8 +32,12 @@ from claude_agent_sdk import (
 
 import local_hands
 import local_llm
+import reflex
+import screen_policy
+import screen_tools
 import self_check
 import stt_gladia
+import stt_realtime
 import stt_whisper
 import tts_edge
 from audio_io import DuplexAudio
@@ -321,11 +325,44 @@ MACHINE CONTROL (Phase 4 hands — this is your house):
 You have full hands on this laptop through your tools. When he asks by voice,
 just do it — no lecture about how: open/close/focus apps, set or mute volume,
 media play/pause, check Wi-Fi, kill a hung process, open a site, manage files,
-read the clipboard. "Look at my screen" = take the screenshot yourself
-(PowerShell System.Windows.Forms/Drawing capture of the virtual screen to
-C:/Users/user/goat-standalone/inbox/screen.png) and Read it, then tell him
-what you see. Confirm voice-sized: "Spotify's up." Destructive or outward
+read the clipboard. Confirm voice-sized: "Spotify's up." Destructive or outward
 actions still follow the protect-him rule — one confirmation line first.
+
+SCREEN CONTROL (2026-09-14 — you can see the screen and use it):
+The `computer` tool is real sight and real hands: screenshots of his actual
+display, and the actual mouse and keyboard. "Look at my screen", "click that",
+"fill this in", "what does that error say" — all of it is yours now. Never say
+you cannot see the screen, and never fall back to the old PowerShell capture.
+- THE LOOP, every time: screenshot → act → screenshot to verify. A blind click
+  is a bug. If the second look doesn't show what you expected, say so and fix
+  it rather than reporting success.
+- Coordinates are real screen pixels. Screenshots carry a yellow grid whose
+  labels are ALREADY real coordinates — read the number, use the number. The
+  cyan crosshair is the mouse.
+- Focus the window before you type into it (`computer` action focus), and
+  region-capture a dialog instead of squinting at the whole 1920x1080.
+- YOUR OWN WINDOW FLOATS ON TOP. Before driving another app, call `computer`
+  action hide_self — otherwise your clicks land on your own panel and your
+  screenshots show you instead of his work. Call show_self the moment the
+  screen work is done, every time, even if it failed.
+- To click something on a web page that the DOM cannot reach (a file picker, a
+  native dialog, drag and drop): `browser` action coords gives you its real
+  screen position, then use `computer` click on those numbers.
+- Prefer a real command over pixels when one exists: Bash/PowerShell to launch
+  an app, `browser` to drive a page. Pixels are for what has no other door.
+- The `browser` tool drives tabs and DOM elements by name and selector — list,
+  open, close, switch, navigate, read, click, fill. That is always better than
+  clicking a tab strip. It runs a browser on GOAT's own profile (Chrome forbids
+  debugging the everyday one); for a tab in the window HE is already using, use
+  the tabsearch action.
+- SAFETY GATE: money, deletion, sending, and anything inside a banking or
+  checkout window comes back as "CONFIRM FIRST" instead of firing. That is not
+  a refusal — ask him in ONE short line, and on his yes repeat the same call
+  with confirm=true. Pass label="..." (what the button says) on consequential
+  clicks so the gate can see the intent. Nothing is off limits; the gate only
+  makes you ask.
+- Every screen action is logged and shown on his panel; `computer` action log
+  replays the recent ones when something misfired.
 
 FULL ACCESS (his order, 2026-07-10): the whole laptop and the whole web are yours.
 - Machine: every drive, file, app, and setting — not just the workspace. The
@@ -495,6 +532,13 @@ def _greeting() -> str:
 
 
 SENTENCE_RE = re.compile(r"(.*?[.!?…])(?:\s+|$)", re.DOTALL)
+# A clause boundary GOAT may speak on before a sentence ends — used ONLY for
+# the first breath of a turn (see _flush_sentences). Georgian commas are the
+# same character, so this needs no second pattern.
+FIRST_CLAUSE_RE = re.compile(r"([^.!?…]*?[,;:—–])\s+", re.DOTALL)
+# Below this many characters a clause is a fragment, not a breath — "Yes," or
+# "Well," on its own sounds like a stutter, and costs a synthesis call to say.
+FIRST_CLAUSE_MIN = int(os.environ.get("GOAT_FIRST_CLAUSE_MIN", "28"))
 # Don't read code/paths aloud — same rule the browser UI used.
 UNSPEAKABLE_RE = re.compile(r"[`|{}\\<>_*#=]|https?://|[A-Za-z]:[/\\]")
 
@@ -553,6 +597,33 @@ ACK_ORDER = {
 }
 ACK_ADD = {"en": ("Adding that.", "Folding it in."),
            "ka": ("ვამატებ.", "ესეც ჩავამატე.")}
+# The reflex lane's voice. These are deliberately SHORT and fixed: they live
+# in the TTS cache, so the sound starts the moment he stops talking instead of
+# after a ~0.85s edge-tts call. Saying the thing's name out loud would be
+# nicer English and would cost a fresh synthesis every time — the screen shows
+# the precise name instead, which is free and instant.
+ACK_REFLEX = {"en": ("Opening it.", "There you go.", "Got it.", "Done."),
+              "ka": ("ვხსნი.", "აი, გამზადებულია.", "მზადაა.", "გასაგებია.")}
+REFLEX_FAIL = {"en": "That didn't open.", "ka": "ვერ გავხსენი."}
+# Backchannel — the short "mm-hm" a listening human makes so you know they're
+# still there. His ask 2026-09-15, from the conversational-design research.
+#
+# GOAT makes it in the GAP AFTER he finishes, not over the top of him. Saying
+# it while he is still talking is the version the research describes, but on
+# this machine GOAT's own voice goes back into the same microphone it is
+# capturing him with — AEC removes most of it, not all, and a corrupted
+# transcript costs far more than the dead air it covers. GOAT_BACKCHANNEL=live
+# enables that version for anyone who wants to judge it themselves; the
+# default fills the silence where there is nothing to corrupt.
+BACKCHANNEL = {
+    "en": ("Mm-hm.", "Okay.", "Right.", "Got it."),
+    "ka": ("ჰმ.", "კარგი.", "ჰო.", "გასაგებია."),
+}
+# How long GOAT stays silent after he stops before making a listening noise.
+# Below this the reply usually arrives on its own and a filler would talk over
+# GOAT's own opening word; past it the silence starts reading as "ignored".
+BACKCHANNEL_AFTER_S = float(os.environ.get("GOAT_BACKCHANNEL_AFTER", "0.9"))
+BACKCHANNEL_MODE = os.environ.get("GOAT_BACKCHANNEL", "gap").strip().lower()
 DONE_LEAD = {"en": "Done.", "ka": "მზადაა."}
 FAIL_LEAD = {"en": "That one failed.", "ka": "ვერ გამოვიდა."}
 
@@ -716,6 +787,15 @@ def _describe_tool(block) -> str:
     """One-line left-panel step from a tool use, e.g. 'edit — ui_qt.py'."""
     name = getattr(block, "name", "tool")
     inp = getattr(block, "input", None) or {}
+    # Screen work reads as nonsense under the generic rules ("computer" alone
+    # says nothing). Spell out what it actually did to his desktop.
+    if name.startswith("mcp__screen__"):
+        organ = name.rsplit("__", 1)[-1]
+        action = str(inp.get("action", "")) or organ
+        if organ == "browser":
+            hint = inp.get("url") or inp.get("match") or inp.get("selector") or ""
+            return f"browser — {action}" + (f" {str(hint)[:48]}" if hint else "")
+        return f"screen — {screen_policy.describe(action, inp)}"
     path = inp.get("file_path") or inp.get("path")
     if path:
         return f"{name} — {os.path.basename(str(path))}"
@@ -738,8 +818,11 @@ an app or website, volume, a short shell command, a quick file peek — you DO
 immediately yourself, then report in one short sentence. Never mention
 permissions, approvals, prompts, or "this session" — nothing gates you.
 Heavy work (code edits, repo changes, builds, deploys, anything that touches
-the filesystem for real) belongs to your working side: reply with the single
-word ESCALATE and nothing else — the app hands the order over and it gets
+the filesystem for real) belongs to your working side — and so does ANYTHING
+about the screen: looking at it, clicking, typing into an app, driving a
+browser tab. Your working side has real eyes and real hands there; you do not,
+so never say he can't be seen or helped with it. Reply with the single word
+ESCALATE and nothing else — the app hands the order over and it gets
 done. Do NOT tell him to send it somewhere himself, and do NOT discuss it
 instead of doing it.
 DISCIPLINE: an order gets action plus one short line, never a plan or a
@@ -810,6 +893,8 @@ class TtsPipeline:
         # and kept per voice, the acknowledgement becomes instant — which is
         # the whole point of an acknowledgement.
         self._synth_cache: dict = {}
+        self.on_first_audio = None   # latency ledger hook
+        self._sounded = False        # has this turn made a sound yet?
         threading.Thread(target=self._worker, daemon=True).start()
 
     def prewarm(self, lines):
@@ -836,6 +921,7 @@ class TtsPipeline:
         with self._lock:
             self._segments = []
             self._epoch += 1
+            self._sounded = False
 
     def mark_reply(self):
         """Mid-turn interjection: the UI opens a fresh reply label, but the
@@ -907,16 +993,18 @@ class TtsPipeline:
         return " ".join(parts)
 
     def synth(self, text: str) -> np.ndarray:
-        """Ava first, Piper on any failure. Blocking."""
+        """Edge voice first, Piper on any failure. Blocking. The fallback is
+        coloured by the same character, so going offline changes the voice
+        but not who is speaking."""
         try:
             samples = tts_edge.synth(text)
             self._warned_fallback = False
             return samples
         except Exception as e:  # noqa: BLE001 — voice must degrade, not die
             if not self._warned_fallback:
-                self.emit("status", f"Ava voice unavailable ({e}) — using local voice")
+                self.emit("status", f"online voice unavailable ({e}) — using local voice")
                 self._warned_fallback = True
-            return self.piper.synth(text)
+            return tts_edge.color(self.piper.synth(text))
 
     def _worker(self):
         while True:
@@ -943,6 +1031,15 @@ class TtsPipeline:
                 if self.gain != 1.0:
                     samples = np.clip(samples * self.gain, -1.0, 1.0).astype(np.float32)
                 self._register(text, len(samples), epoch)
+                # First real audio of this turn — the moment he actually
+                # HEARS GOAT, which is the only end of the latency budget
+                # that matters. Everything before it is silence to him.
+                if self.on_first_audio and not self._sounded:
+                    self._sounded = True
+                    try:
+                        self.on_first_audio()
+                    except Exception:  # noqa: BLE001
+                        pass
                 self.audio.queue_playback(samples)
 
 
@@ -953,6 +1050,12 @@ class GoatApp:
         # call back here, which hops to the Qt thread via emit.
         local_hands.set_ui_scale_callback(self.request_ui_scale)
         local_hands.set_ui_color_callback(self.request_ui_color)
+        local_hands.set_ui_character_callback(self.request_ui_character)
+        # Scan the disk for everything he might say "open …" about, on a
+        # daemon thread so it costs the boot nothing (~0.1s for his folders,
+        # 1144 entries). Until it lands, a cached index from the last run
+        # answers, so the first command after a restart is instant too.
+        reflex.warm()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client: ClaudeSDKClient | None = None
         self.audio = DuplexAudio(
@@ -960,7 +1063,19 @@ class GoatApp:
             on_utterance=self._on_utterance,
             on_status=lambda m: None,  # meters are test-harness noise here
         )
+        # Streaming ear: transcribe WHILE he talks instead of after. These
+        # three fire on the audio callback thread and only queue.
+        self.audio.on_utt_start = self._on_utt_start
+        self.audio.on_utt_audio = self._on_utt_audio
+        self.audio.on_utt_soft_end = self._on_utt_soft_end
+        self.audio.on_utt_abort = self._on_utt_abort
+        self._rt: stt_realtime.Session | None = None
         self.tts = TtsPipeline(self.audio, emit)
+        self.tts.on_first_audio = self._lat_sounded
+        self._t_speech_end = 0.0
+        self._t_heard = 0.0
+        self._lat_ear = ""
+        self._first_said = False
         self._say_buf = ""
         # ---- two independent lanes (his order 2026-07-17) ----
         # TALK lane: Gemini Flash in the MIDDLE, out loud, always available.
@@ -1056,11 +1171,105 @@ class GoatApp:
         except Exception as e:  # noqa: BLE001
             self.emit("status", f"interrupt failed: {e}")
 
+    async def _backchannel(self, gen: int):
+        """One listening noise, if the gap runs long enough to need it.
+
+        Never speaks over a reply that has already started, and never twice in
+        a turn — a butler who says "mm-hm" every second is worse than one who
+        says nothing."""
+        if BACKCHANNEL_MODE in ("off", "0", "false", "no"):
+            return
+        try:
+            await asyncio.sleep(BACKCHANNEL_AFTER_S)
+        except asyncio.CancelledError:
+            return
+        if gen != self.tts.gen or self.tts._sounded or not self.tts.enabled:
+            return    # the real answer beat it here, or the turn was cancelled
+        pool = BACKCHANNEL.get(self.turn_lang) or BACKCHANNEL["en"]
+        self._bc_i = (getattr(self, "_bc_i", -1) + 1) % len(pool)
+        self.tts.say(pool[self._bc_i])
+
+    # ---- latency ledger -----------------------------------------------------
+    # His target: under 500ms from "he stops talking" to "GOAT makes a sound",
+    # because human conversational gaps average ~200ms and anything past a
+    # second reads as a machine. A target nobody measures is a wish, so every
+    # voice turn prints its own budget and the UI shows the total.
+    def _lat_start(self):
+        # Back-date to the moment he actually stopped making sound. The VAD
+        # hangover has already elapsed by the time this runs, and it is part
+        # of the silence he sits in — counting from now would flatter every
+        # number by exactly the wait he felt.
+        hang = getattr(self.audio, "last_hangover_ms", 0.0) / 1000.0
+        self._t_speech_end = time.monotonic() - hang
+        self._lat_hang = hang * 1000
+        self._t_heard = 0.0
+        self._lat_ear = ""
+
+    def _lat_heard(self, ear: str):
+        if getattr(self, "_t_speech_end", 0.0):
+            self._t_heard = time.monotonic()
+            self._lat_ear = ear
+
+    def _lat_sounded(self):
+        t0 = getattr(self, "_t_speech_end", 0.0)
+        if not t0:
+            return
+        now = time.monotonic()
+        total = (now - t0) * 1000
+        ear = (self._t_heard - t0) * 1000 if self._t_heard else -1
+        rest = total - ear if ear >= 0 else -1
+        self._t_speech_end = 0.0
+        mark = "✓" if total < 500 else ("·" if total < 1000 else "!")
+        hang = getattr(self, "_lat_hang", 0.0)
+        print(f"[latency] {mark} endpoint {hang:.0f}ms + ear({self._lat_ear}) "
+              f"{ear - hang:.0f}ms + think/voice {rest:.0f}ms "
+              f"= {total:.0f}ms to first sound")
+        self.emit("latency", f"{total:.0f}")
+
+    # ---- streaming ear (audio callback thread — queue only, never block) ----
+    def _rt_lang(self) -> str:
+        """Which language the streaming ear should be pinned to for THIS turn.
+
+        Realtime needs a pinned language or it guesses badly — it heard his
+        Georgian as Russian and handed back Cyrillic transliteration. He runs
+        in bilingual "auto", where there is nothing to pin, so stt_realtime
+        opens one pinned ear per language and the ALPHABET decides which one
+        answered (stt_realtime.Pair). Passing "auto" straight through is
+        therefore correct, not a gap."""
+        return self.language
+
+    def _on_utt_start(self, preroll):
+        if self.mic_muted or not self.loop:
+            return
+        self._rt = stt_realtime.start_threadsafe(self._rt_lang(), self.loop)
+        if self._rt is not None and preroll is not None and len(preroll):
+            self._rt.feed(preroll)   # his first word lives in the preroll
+
+    def _on_utt_audio(self, chunk):
+        rt = self._rt
+        if rt is not None:
+            rt.feed(chunk)
+
+    def _on_utt_soft_end(self):
+        rt = self._rt
+        if rt is not None:
+            rt.soft_commit()   # overlap the ear with GOAT's own VAD hangover
+
+    def _on_utt_abort(self):
+        rt, self._rt = self._rt, None
+        if rt is not None:
+            rt.end()
+
     def _on_utterance(self, audio_np: np.ndarray):
+        self._lat_start()      # the clock he actually feels starts HERE
+        rt, self._rt = self._rt, None
+        if rt is not None:
+            rt.end()          # commit at the boundary GOAT's own VAD chose
         if self.mic_muted:
             return
         if self.loop:
-            asyncio.run_coroutine_threadsafe(self._handle_utterance(audio_np), self.loop)
+            asyncio.run_coroutine_threadsafe(
+                self._handle_utterance(audio_np, rt), self.loop)
 
     def set_language(self, lang: str):
         """Live language switch from the UI (Qt thread — everything here is
@@ -1115,6 +1324,11 @@ class GoatApp:
         window reject a bad name (rare — the tool passes common names)."""
         self.emit("ui_color", f"{part}|{color}")
         return True
+
+    def request_ui_character(self, name: str):
+        """GOAT changing whose voice it speaks in. The Qt side owns the
+        preference file, so the switch goes through the window."""
+        self.emit("ui_character", name)
 
     def set_talk_brain(self, name: str):
         """Talking-brain pick from the drawer (display name). Gemini Flash is
@@ -1253,8 +1467,10 @@ class GoatApp:
     def _prewarm_voice(self):
         """Fill the TTS cache for the voice that is current RIGHT NOW."""
         lang = self.turn_lang if self.turn_lang in ACK_ORDER else "en"
-        lines = list(ACK_ORDER[lang]) + list(ACK_ADD[lang]) + [
-            DONE_LEAD[lang], FAIL_LEAD[lang], "Stopped." if lang == "en" else "შევჩერდი."]
+        lines = list(ACK_ORDER[lang]) + list(ACK_ADD[lang]) + list(
+            ACK_REFLEX[lang]) + list(BACKCHANNEL[lang]) + [
+            DONE_LEAD[lang], FAIL_LEAD[lang], REFLEX_FAIL[lang],
+            "Stopped." if lang == "en" else "შევჩერდი."]
         threading.Thread(target=self.tts.prewarm, args=(lines,),
                          daemon=True).start()
 
@@ -1268,7 +1484,24 @@ class GoatApp:
         self.emit("turnlang", lang)
         self._prewarm_voice()
 
-    async def _handle_utterance(self, audio_np: np.ndarray):
+    async def _handle_utterance(self, audio_np: np.ndarray, rt=None):
+        # The streaming ear has been transcribing since he started speaking,
+        # so its answer is usually already in flight. Measured 2026-09-15 on
+        # his own captured Georgian: 267-306ms after he stopped, against
+        # 2520-2628ms for the batch ear on the same audio. Nothing is lost if
+        # it fails — the full utterance is still in hand for the batch path.
+        if rt is not None:
+            text = await rt.result()
+            if text:
+                self._lat_heard("streaming")
+                # In auto mode the ear that answered IS the language of the
+                # turn — that is the whole point of running both.
+                heard = getattr(rt, "lang", "") or self._rt_lang()
+                self._set_turn_lang(heard if heard in ("en", "ka")
+                                    else self.turn_lang)
+                await self._heard(text)
+                return
+            self.emit("status", "streaming ear missed — using the full one")
         if self.language != "en" and stt_gladia.available():
             # Georgian or bilingual mode: cloud ear (local whisper can't do
             # ka at all — it romanizes it into English-looking nonsense,
@@ -1289,6 +1522,16 @@ class GoatApp:
         else:
             text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
             self._set_turn_lang("en")
+        self._lat_heard("batch")
+        await self._heard(text)
+
+    async def _heard(self, text: str | None):
+        """Everything that happens to a transcript once an ear produces one.
+
+        Shared by BOTH ears on purpose: when the streaming ear was bolted on
+        it briefly had its own shortcut into _talk, which quietly skipped the
+        wake-word gate — so GOAT would have started answering the television
+        again whenever the fast path won. One door in."""
         if text is None:
             # Hard STT failure — he spoke and his words went nowhere. Say it
             # (once per outage), never just log it: a deaf GOAT looks alive.
@@ -1334,6 +1577,27 @@ class GoatApp:
             self.emit("delta", "")
             self.tts.say("Stopped.")
             return
+        # REFLEX LANE (2026-09-15, his complaint: "opening a file or Google
+        # takes long — I want it to feel instant"). A device command that can
+        # be recognised deterministically never touches a model: match is a
+        # regex plus a dict lookup (3-400 microseconds, measured), the action
+        # is one Win32/shell call, and the acknowledgement is a pre-synthesised
+        # clip. The alternative was two Gemini round trips — and the talking
+        # brain's own default, gemini-3.8-flash, measured 8-19s to first token
+        # that same day, because reasoning cannot be disabled on Gemini 3.
+        # Anything the matcher isn't sure about returns None and the normal
+        # lanes take the turn exactly as before.
+        # It runs during a work turn too — that is the point of a reflex: the
+        # left lane can be twenty minutes into a build and "open Google" still
+        # lands immediately, because nothing in this path is shared with it.
+        try:
+            rx = reflex.match(text, self.turn_lang)
+        except Exception as e:  # noqa: BLE001 — a reflex bug must never cost
+            rx = None           # him the turn; the brains still work
+            self.emit("status", f"reflex check failed: {e}")
+        if rx is not None:
+            await self._reflex(text, rx)
+            return
         # Manual dispatch: he addressed the working brain by name — as the
         # opener ("Fable, build…") or mid-sentence ("please ask the opus to…").
         # A status QUESTION about it ("what is the working brain doing?") is
@@ -1351,6 +1615,11 @@ class GoatApp:
             if echo:
                 self.tts.cancel()
             self.tts.new_turn()
+            self._first_said = False   # new turn: first breath may clause-break
+            # Cover the gap with a listening noise if the brain is slow. It
+            # cancels itself the moment real audio starts, so a fast reply
+            # never hears from it.
+            bc = asyncio.create_task(self._backchannel(self.tts.gen))
             try:
                 brain = TALK_BRAINS.get(self.talk_brain)
                 if brain != "gemini" and self.claude_out:
@@ -1366,8 +1635,59 @@ class GoatApp:
                     # Gemini takes the turn instead of leaving him in silence.
                     await self._talk_gemini(text)
             finally:
+                bc.cancel()
                 self.talk_busy = False
                 self._last_exchange = time.monotonic()
+
+    async def _reflex(self, text: str, rx):
+        """Run one reflex: speak and act at the same instant.
+
+        The ack is queued BEFORE the action runs, not after, because the
+        acknowledgement is the part he perceives as speed — os.startfile
+        takes a few milliseconds but the window it opens takes longer, and
+        waiting for either before saying anything is what made GOAT feel slow.
+        If the action does fail, the correction is spoken straight after; a
+        reflex is never allowed to say "done" about something that didn't
+        happen."""
+        t0 = time.monotonic()
+        self.tts.cancel()
+        self.tts.new_turn()
+        self._first_said = False   # new turn: first breath may clause-break
+        if rx.speak:
+            # A question GOAT answers itself (time, date, battery) — the
+            # answer IS the reply, so there is nothing to acknowledge.
+            self._say_now(rx.speak)
+            spoken = rx.speak
+        else:
+            options = ACK_REFLEX.get(self.turn_lang) or ACK_REFLEX["en"]
+            self._ack_i = (getattr(self, "_ack_i", -1) + 1) % len(options)
+            spoken = options[self._ack_i]
+            self._say_now(spoken)
+        self.emit("status", f"{rx.kind} · {rx.detail}")
+        try:
+            result = await asyncio.to_thread(rx.run)
+        except Exception as e:  # noqa: BLE001
+            result = f"ERROR: {e}"
+        ms = (time.monotonic() - t0) * 1000
+        print(f"[reflex] {rx.kind} {rx.detail!r} -> {result} ({ms:.0f}ms)")
+        if isinstance(result, str) and result.startswith("ERROR"):
+            line = REFLEX_FAIL.get(self.turn_lang) or REFLEX_FAIL["en"]
+            self._say_now(line)
+            spoken = line
+            self.emit("status", result[:80].lower())
+        # No _flush_sentences here on purpose: a reflex never streams deltas,
+        # so _say_buf holds nothing of this turn's — forcing a flush would
+        # speak a stale fragment left over from an interrupted one.
+        self._say_buf = ""
+        self._last_exchange = time.monotonic()
+        reply = f"{spoken} ({rx.detail})" if rx.detail and not rx.speak else spoken
+        self._exchanges.append((text[:300], reply[:300]))
+        self._local_unseen.append((text[:200], reply[:200]))
+        # Both talking brains must know it happened, or the next question
+        # ("did you open it?") gets answered by a model with no memory of it.
+        local_llm.note_exchange(text, reply)
+        self._log_exchange(text, reply)
+        self.emit("turn_done", "")
 
     def _talk_model_label(self) -> str:
         """Footer name of the talking brain he currently has selected."""
@@ -1671,6 +1991,7 @@ class GoatApp:
         async with self._talk_lock:
             self.talk_busy = True
             self.tts.new_turn()
+            self._first_said = False   # new turn: first breath may clause-break
             try:
                 self.emit("talkmodel", local_llm.LOCAL_NAME)
                 self.emit("delta", "")
@@ -1708,10 +2029,29 @@ class GoatApp:
             if not m or not m.group(1).strip():
                 break
             self.tts.say(m.group(1))
+            self._first_said = True
             self._say_buf = self._say_buf[m.end():]
         if force:
             self.tts.say(self._say_buf)
             self._say_buf = ""
+            return
+        # FIRST words of a turn only: don't wait for a full stop.
+        #
+        # Every later sentence is synthesised while the previous one is still
+        # playing, so its ~0.5s of edge-tts is free. The FIRST one is the only
+        # one nobody is covering, and a model that opens with a long clause
+        # ("The build failed because the confidence gate was comparing ninety
+        # against eighty-five, and I've pushed the fix.") used to keep him in
+        # silence until the very last word of it arrived. Breaking at the
+        # first comma or dash once there is enough to say starts the voice a
+        # sentence earlier, at the cost of one extra synthesis call.
+        if getattr(self, "_first_said", False):
+            return
+        m = FIRST_CLAUSE_RE.match(self._say_buf)
+        if m and len(m.group(1).strip()) >= FIRST_CLAUSE_MIN:
+            self.tts.say(m.group(1))
+            self._first_said = True
+            self._say_buf = self._say_buf[m.end():]
 
     async def _consume(self):
         """Drives the WORK lane (self.client). Everything here streams to the
@@ -2060,9 +2400,18 @@ class GoatApp:
             # Giorgi's global plugins/hooks stay out (the latency win that
             # setting_sources=[] originally bought is preserved).
             setting_sources=["project"],
+            # Eyes and hands on the screen itself, in-process: `computer` and
+            # `browser` land in the same tool list as Bash and Read, called the
+            # same way, with no extra process or port (2026-09-14). Everything
+            # that only exists as pixels was unreachable before this.
+            mcp_servers={"screen": screen_tools.SERVER},
             resume=saved_session_id(),
         )
         self._work_options = options
+        # Every mouse move and keystroke GOAT makes shows up on the left panel
+        # as it happens. Screen actions are the one kind of work he can't read
+        # back off disk afterwards, so they have to be visible while they run.
+        screen_tools.set_emit(self.emit)
         self.model = options.model
         self.client = ClaudeSDKClient(options)
         connect_task = asyncio.create_task(self.client.connect())

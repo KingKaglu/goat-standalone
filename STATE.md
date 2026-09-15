@@ -1,6 +1,283 @@
 # GOAT State — handoff brief
 
-Updated: 2026-09-14 (thinking/answering + design pass v6)
+Updated: 2026-09-15 evening (sub-500ms voice: streaming ear, adaptive
+endpointing, latency ledger — shipped and committed)
+
+## Sub-500ms voice — the streaming ear (2026-09-15 night, his goal: "use
+## streaming architectures ... target sub-500ms latency")
+
+Written 02:27-02:44, left uncommitted and undocumented when the session ended.
+Verified and shipped the evening of 2026-09-15; this section is the record.
+
+The budget he actually feels is *last sound he makes -> first sound GOAT
+makes*. Before this wave the ear owned most of it, and the ear was a batch
+upload: wait for the whole utterance, upload the whole WAV, wait for the whole
+answer. Measured on his own captured audio:
+
+    batch ElevenLabs scribe    1089-2594 ms   after he stopped speaking
+    local whisper server       1745-3122 ms   (and cannot do Georgian)
+    realtime, language pinned   134- 554 ms   same audio, same key
+
+All of that batch time is pure overlap waste — the first five seconds of a
+six-second sentence could have been transcribed while he was still saying the
+sixth.
+
+### What was built
+- **`stt_realtime.py`** — Scribe v2 Realtime over a WebSocket, fed every
+  captured block as it arrives (preroll first, so his first word is in).
+  `Pair` runs one pinned ear per language for bilingual "auto" and lets the
+  ALPHABET say which one answered — the same rule the rest of the app already
+  uses for turn language. Any failure returns None and the caller falls back to
+  the batch ear with the audio it already holds: worst case is today's
+  latency, never a lost sentence. `GOAT_STT_REALTIME=off` is the kill switch.
+- **Adaptive endpointing** (`audio_io`) — the 700ms hangover exists to protect
+  a THOUGHT (he pauses mid-sentence working out what he wants, and cutting him
+  off there is worse than any latency). A short utterance is not a thought, it
+  is a command, so under `UTT_SHORT_VOICED_MS` (2000ms voiced) the hangover is
+  `UTT_SILENCE_STOP_SHORT_MS` = 480ms. ~220ms off every command.
+- **Soft commit** (`UTT_SOFT_COMMIT_MS` = 200ms) — 200ms into the silence the
+  ear is told "he may be finished, start wrapping up", so finalising overlaps
+  the hangover instead of starting after it. Re-armed if he resumes speaking,
+  so a breath does not truncate the sentence.
+- **Latency ledger** (`GoatApp._lat_*`) — every voice turn prints
+  `endpoint + ear + think/voice = total`, back-dated by the hangover that had
+  already elapsed (counting from the callback would flatter every number by
+  exactly the wait he sat through), marked / . / ! at 500ms / 1s. The total
+  also goes to the UI. A target nobody measures is a wish.
+- **First breath on a clause** — `FIRST_CLAUSE_RE` + `GOAT_FIRST_CLAUSE_MIN`
+  (28 chars): the FIRST fragment of a reply goes to TTS at a comma, not a full
+  stop; later sentences are never split that way. A fragment under the minimum
+  waits, because "Yes," alone sounds like a glitch.
+- **Backchannel** — one short listening noise after `GOAT_BACKCHANNEL_AFTER`
+  (0.9s) when the answer itself is slow. Once per turn, never over a reply that
+  already started, dropped if the turn was cancelled, pre-synthesised in the
+  prewarm list so it costs no network. `GOAT_BACKCHANNEL=off`.
+
+### Measured live (his own voice, session 2026-09-15 20:52)
+    [stt-rt] committed in 194ms / 198ms / 199ms / 240ms
+    endpoint 480ms + ear(streaming) 198ms + think/voice 2318ms = 2997ms  (first turn, cold)
+    endpoint 480ms + ear(streaming) 199ms + think/voice  905ms = 1584ms  (warm)
+
+So the ear is done: it is no longer the expensive stage. **What is left is the
+talking brain's first token plus the first TTS clip** — ~900ms warm, ~2.3s on
+the first turn of a session. Reflex commands, which skip both, are inside the
+budget already. Next candidates, in order of expected win, none of them done:
+1. Connection reuse in `local_llm` — it opens a fresh TLS connection per turn
+   through urllib; a kept-alive connection is worth roughly a handshake.
+2. Warm the talking brain and the TTS socket at boot so turn one is not the
+   slow one.
+3. Speculative dispatch: send the soft-committed partial to the talking brain
+   during the hangover and discard it if he resumes. Costs tokens on a
+   false ending, so measure the win before trusting it.
+
+### Traps hit
+- **Realtime must be language-PINNED.** On auto-detect it heard his Georgian as
+  Russian and returned Cyrillic transliteration ("Ааа, мотхидэн..."). Pinned to
+  `kat` the same audio came back in proper Mkhedruli. This is the OPPOSITE of
+  the batch endpoint, where auto-detect is the accurate mode (see stt_gladia) —
+  the two ears are configured differently on purpose, do not "unify" them.
+- **GOAT's VAD owns the turn boundary**, not the server's: with
+  `commit_strategy=vad` the server split one sentence into several committed
+  fragments on its own schedule. `manual` puts the boundary where the rest of
+  the app already believes the utterance ended.
+- Piper's API is `synth_to_16k`, not `synth` — the first benchmark harness
+  called the wrong name and measured nothing.
+- Wrapping stdout in a UTF-8 writer inside a bench script closed the underlying
+  file and every later print raised.
+
+### Tests (all green, 2026-09-15 evening, `py -3.13`)
+    test_voice_latency.py     25 passed   endpointing, soft commit, ledger, backchannel, barge-in
+    test_reflex.py            71 passed   incl. match cost 380us/input
+    test_engine_router.py    106 passed
+    test_audio_resilience.py / test_statusword.py  all passed
+
+### Crash watch
+`goat-crash.log` holds the 02:20:59 access violation (Qt event loop, main
+thread, `<no Python frame>` in the faulting thread) that the faulthandler pass
+was added to catch. The two sessions run this evening (20:50:31, 20:52:46)
+recorded no fault — the page cap and the stale-wrapper nulling stand as the
+best available lead, unconfirmed until it either recurs or does not.
+
+## Reflex lane — instant device commands (2026-09-15, his complaint: "it
+## takes long to do my commands, for example to open a file on my PC or open
+## Google — I want it to feel instant. Also it crashed a few minutes ago")
+
+He was right and the numbers were brutal. Measured that morning on his key:
+
+    gemini-3.8-flash  "say ok"          19.0s      <- the talking brain default
+    gemini-3.5-flash  "say ok"           1.3s
+    gemini-3.5-flash-lite "say ok"       0.7s
+
+Root cause: **Gemini 3 models always think.** Google's docs say reasoning
+cannot be disabled on them, so the `reasoning_effort: "none"` that
+`_post_stream` has always sent is accepted and silently ignored. Every "open
+Google" paid 8-19s of hidden thinking, then a SECOND round trip to narrate the
+tool result, then TTS.
+
+"Open the file GG on my desktop" was worse, and had its own separate bug: his
+Desktop is **OneDrive-redirected** (`C:\Users\user\OneDrive\Desktop`), but
+`local_llm.chat` asserted `{home}\Desktop` as machine fact. That path also
+exists and is nearly empty, so the model looked in a real folder, found
+nothing, and ESCALATEd — and the work lane went hunting the icon with
+screenshots. Twenty seconds for a double-click.
+
+### What was built
+- **`reflex.py`** — a deterministic intent router in front of both brains: the
+  two-tier pattern every shipped voice assistant uses, where rigid device
+  commands are matched on-device and the LLM only ever sees the weird phrasing.
+  Covers open site/app/file/folder, volume, media, brightness, lock, window
+  state (by title too), screenshot, time, date, battery — EN + KA, stem-matched
+  because cloud STT garbles his casual speech.
+- **`reflex_index.py`** — name-to-path gazetteer of Desktop / Downloads /
+  Documents / Pictures / Videos / Music / Start Menu. 1144 entries, built in
+  ~0.1s on a daemon thread at boot, cached to `workspace/file-index.json` so
+  the first command after a restart is instant too. Folders come from
+  `SHGetKnownFolderPath`, so redirection can never lie to us again.
+  A miss falls through to `lookup_live`, which re-scans Desktop +
+  Downloads at depth 1 (~4ms) and then kicks a full rebuild behind it
+  — otherwise a file saved since boot was invisible, and "I just
+  downloaded it, open it" is one of the most natural things he says.
+- **`GoatApp._reflex`** — speaks the ack BEFORE running the action, because the
+  ack is the part he perceives as speed. The ack lines live in the TTS prewarm
+  cache (`ACK_REFLEX`), so the sound starts immediately instead of after a
+  ~0.85s edge-tts call; the precise name goes to the screen, which is free. A
+  failed action speaks `REFLEX_FAIL` — a reflex never says "done" about
+  something that did not happen.
+- **Latency guard** in `local_llm`: `_note_ttft` demotes the primary talking
+  model to the fallback for 15 min after two turns over `SLOW_TTFT_S` (6s), and
+  the first-byte socket deadline dropped 30s to `TIMEOUT_TTFT` (9s), with
+  `_relax()` lifting it the moment anything streams so a long reply is never
+  cut mid-sentence. Runtime fallback only — his configured pick is never
+  rewritten, and the demotion lapses on its own.
+
+### Measured after
+    open google                                   match 0.31ms + act 102ms
+    "გახსენი ... ფაილი, სახელად GG, დესკტოპზე არის"  match 0.40ms + act  62ms
+    volume up                                     match 0.01ms + act   5ms
+
+Router average 213-247us per input across 200 iterations. 70 reflex tests +
+6 new routing tests in `test_engine_router.py` (106 there now, all green).
+
+### Traps hit
+- `run` and `load` had to come OUT of the opener verbs, and `_WORKISH_RE` was
+  added: "run the tests" would otherwise double-click a folder named `tests`.
+- The test suite feeds REAL phrases ("open chrome", "turn the volume up")
+  through `_talk` to prove they stay off the work lane — with the reflex lane
+  live, that actually launched Chrome and moved his volume. `GOAT_REFLEX=off`
+  is now set at the top of `test_engine_router.py`, and the routing case stubs
+  the matcher instead. `GOAT_REFLEX=off` doubles as the production kill switch.
+- Georgian word order puts the verb last as often as first, and he corrects
+  himself mid-sentence ("აპლიკაცია, უფრო სწორად ფაილი, სახელად GG"), so
+  `_clean_target` peels tail then place then lead then noun in a loop rather
+  than in one anchored match.
+
+## The 01:56:55 crash (same session)
+Windows logged it, GOAT did not: `python.exe` faulting in
+`shiboken6.abi3.dll`, exception `0xc0000005` — an access violation inside
+PySide6's binding layer. `goat-app.log` was empty and no Python traceback
+existed anywhere, because a native crash never raises. No dump survived (WER
+kept only `Report.wer`) and no debugger is installed, so that stack is gone for
+good. Two changes so the next one is not:
+- **`faulthandler`** is enabled at the top of `main()` against
+  `python/goat-crash.log`, all threads. The next fault writes the Python stack
+  of every thread at the moment it happens.
+- **The page is now capped** (`GoatWindow.PAGE_MAX = 240`, `_trim_page`). It
+  grew without bound before, and `_dim_previous()` re-polished the WHOLE column
+  on every new line — hundreds of style recalcs per turn in a long session. The
+  trim also nulls `_you_label` / `_reply_label` / `epigraph` when they point at
+  a widget it just deleted: a Python name aimed at a destroyed C++ object is
+  exactly the class of access violation that was logged, and it is the one lead
+  the evidence supports.
+
+No Qt object is touched off the GUI thread anywhere in the app — checked, and
+`goat_app`, `local_llm`, `local_hands` and `screen_*` import no PySide6 at all,
+while every UI callback crosses via `emit` to `event_sig`. So the stale-wrapper
+path is the remaining candidate rather than a threading violation. If it
+recurs, `goat-crash.log` now names the file and line.
+
+## Collapse to a bubble (2026-09-14 night, his order: messenger-style bubble)
+Minimize used to send GOAT to the taskbar, which hides the only thing worth
+seeing — whether it is listening. Now the window folds into a round
+always-on-top dot: `Bubble` in `ui_qt.py` (frameless + WA_TranslucentBackground
++ Qt.Tool), driven by `GoatWindow.collapse()` / `expand()` / `toggle_bubble()`.
+- Three ways in: the titlebar "–", Ctrl+B, or ANY OS minimize (taskbar, Win+D,
+  shake) via `changeEvent`, guarded by `_collapsing` against recursion.
+- The ring carries the live state from `hud_tick`, and a reply arriving while
+  collapsed ("delta") lights an accent dot — collapsed is not blind.
+- The animation timer runs ONLY while busy or unread. A dot nobody is looking
+  at must not burn a worn battery.
+- Position persists as `cfg["bubble"]` = [x, y] (logical px), saved on drag
+  release, clamped to the live work area on every placement so a position from
+  an unplugged monitor can't strand it.
+- Theme and UI scale reach it through `apply_theme()`, which is already the
+  single funnel for both.
+- Qt.Tool is deliberate: without it, collapsing leaves a second taskbar button
+  next to the window it just replaced.
+
+NOTE ON THE ORDER: it asked not to break "existing tray/notification logic".
+There is none — grep for QSystemTrayIcon/notify across the repo returns
+nothing; GOAT has never had a tray icon. Nothing to preserve, nothing broken.
+
+TRAPS: the Qt review harness writes preferences, and `ui-config.json` is his
+LIVE session — `test_bubble.py` redirects `ui_qt.UI_CONFIG` to a temp file
+before any window exists (this bit once already, in the v6 design pass).
+Also: his display runs at 125%, so Qt logical pixels (1536x816) and the
+physical pixels `screen_hands` clicks in (1920x1080) are different spaces —
+do not compare coordinates across them.
+
+VERIFIED: `test_bubble.py` 40/40 (flags, translucency, scale floor, paint,
+beat-timer gating, clamping, drag-vs-click, collapse/expand, persistence,
+theme+scale propagation, OS-minimize, state mirroring) plus rendered PNGs per
+theme for the eye. `test_engine_router.py` 100/100, `test_screen.py` 65/65,
+preflight PASS. Driven live afterwards with GOAT's own new hands: collapse
+button, Ctrl+B, drag, and click-to-open all confirmed on the running app.
+
+## Screen control (2026-09-14 evening, his goal, in his words: computer-use /
+## screen-automation — "ხედავს ეკრანს და მართავს მაუს/კლავიატურას პირდაპირ")
+GOAT could drive anything with a CLI and nothing else; it had to tell him so.
+Now it sees the screen and uses it. Four new modules under `python/`:
+- `screen_hands.py` — mss/PIL capture + Win32 SendInput. Screenshots carry a
+  grid whose labels are REAL screen pixels (the model reads a number instead
+  of undoing the downscale in its head) and a crosshair on the cursor.
+  Mouse, keyboard (Unicode, so Georgian types on an English layout), windows,
+  and stand_aside/step_back_in.
+- `screen_browser.py` — CDP. Tabs and DOM elements as objects. Chrome 136+
+  refuses remote debugging on the default profile, so GOAT drives its own
+  profile at port 9333; `tab_search` (Ctrl+Shift+A) steers the live window he
+  is actually using.
+- `screen_policy.py` — the gate. Two triggers: WHAT (label/keys/card numbers)
+  and WHERE (a banking or checkout window makes every action confirm-tier).
+  Plain word lists, editable without touching logic. Nothing is refused.
+- `screen_tools.py` — publishes `computer` and `browser` as in-process MCP
+  tools on the work lane, next to Bash and Read. Gate + JSONL ledger +
+  live emit to the left panel live here.
+
+TRAPS HIT, all fixed — do not re-learn these:
+- The SDK's shorthand `{name: type}` schema marks EVERY field required, and
+  the model dutifully filled x=0, y=0 — a click on the screen corner. Real
+  JSON Schema with `required: ["action"]` fixed it AND cut the probe cost 63%.
+- GOAT's own always-on-top window ate the clicks aimed at the app underneath,
+  and screenshots showed GOAT instead of the work. Hence stand_aside; the
+  persona now requires hide_self before driving another app.
+- A browser launched from a shell dies with that shell (job object). Needs
+  CREATE_BREAKAWAY_FROM_JOB, not just DETACHED_PROCESS.
+- `"://" in url` is not a scheme test: it turned `data:text/html,...` into
+  `https://data:text/html,...`. Match `^[a-z][a-z0-9+.-]*:` instead.
+- Chrome's `window.screenY` is the WINDOW top, not the viewport's, and the
+  chrome above the page is a different height everywhere. element_coords
+  calibrates against the Win32 client rect instead of doing that arithmetic.
+- Arrows/Delete/Home/End need KEYEVENTF_EXTENDEDKEY or the app receives the
+  numpad twin. Tested.
+- Tk (and anything not DPI aware) reports click coordinates in a scaled space
+  that does not match the physical pixel sent — the live test opts in to
+  per-monitor DPI so the two agree.
+
+VERIFIED, not assumed: `test_screen.py` 67/67 (fires nothing, safe to run
+while he works), `test_screen_live.py` 9/9 (opens its own window and really
+drives it — Georgian text arrives exactly, click lands 0px off, chords and
+wheel all arrive), `test_engine_router.py` still 100/100, preflight PASS.
+End-to-end through the real SDK: the model called `computer`, got the image
+back, and read his screen correctly.
 
 ## Thinking & answering pass (2026-09-14 midday, his goal: "run full update on
 ## my GOAT's thinking and answering system, update the design too")
@@ -1285,3 +1562,44 @@ so a continued/warm session passing is not sufficient evidence anymore.
 Superseded in large part by the Python rewrite above for anything audio/
 interrupt-related. Voice ID, watchers, idle usefulness, Phase 4 OS hands
 are still open regardless of which stack they land on.
+
+
+## Voice characters (2026-09-14)
+`tts_edge.CHARACTERS` now holds who GOAT sounds like, not a flat voice
+table: `goat` = Ava/Eka as before, `ultron` = Andrew Multilingual (en) /
+Giorgi (ka) at `pitch=-28Hz`, `rate=-4%`, plus `_ultron()` colour — a
+detuned ghost layer 19 ms behind, a 4.2 ms feedback comb at 25% mix, tanh
+drive, two room taps, output renormalised to the input peak so a character
+change is never a volume change. `color()` is a no-op for `goat`, so
+`GoatTTS.synth()` calls it on the Piper fallback unconditionally and the
+character survives going offline.
+Wired three ways: drawer row "voice character", `ui-config.json`
+`"character"`, and the `voice_character` tool in local_hands (so "sound
+like Ultron" works by voice without escalating). The tool routes
+`ui_character` through the window, which owns the prefs file.
+Trap: the edge voice name is part of the TTS cache key
+(`(tts_edge.VOICE, text)`), so cached acknowledgements never leak across
+characters — don't "simplify" that key to text alone.
+
+## Trap: alt+F4 on Explorer (2026-09-15)
+Closing a File Explorer window with `computer key alt+F4` closed it, but the
+keystroke fell through to the desktop (Program Manager) and popped the
+"Shut Down Windows" dialog. Use `ctrl+w` to close Explorer windows, or
+`Stop-Process` on the specific window — never alt+F4 on a shell window.
+Also: the Bash tool has no PATH in this environment (exit 127) — use
+PowerShell. GUI launches need `dangerouslyDisableSandbox: true` and must be
+verified with `computer action=windows`; the exit code lies.
+
+## Trap: driving his browser tabs (2026-09-15)
+Tab-strip pixels are the wrong door. Two failures in one session:
+- GOAT's own panel re-shows itself while the working brain streams, so
+  `hide_self` does not stay hidden — clicks at y=22 land on GOAT, not Brave.
+- Region screenshots can serve a STALE image for a region already captured.
+  Vary the region by a pixel (`0,0,1920,46` vs `...,44`) to force a fresh grab.
+Also seen: Brave silently minimized (`focus` reported `199x34 at (-32000,-32000)`
+= the minimized rect) with a `Claude Code` terminal on top.
+RIGHT WAY: `focus` the window -> verify with `foreground` -> `window_state
+maximize` if the rect looks minimized -> then KEYBOARD: `ctrl+N` selects tab N
+(ctrl+9 = last), `ctrl+w` closes it. Close right-to-left so indexes below stay
+valid. No pixels, immune to the panel popping back. Verify with one narrow
+screenshot of the strip.

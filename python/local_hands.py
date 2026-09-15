@@ -131,6 +131,17 @@ TOOLS = [
                       "CSS color name (blue, crimson, teal) or hex #1e90ff"}},
             "required": ["part", "color"]}}},
     {"type": "function", "function": {
+        "name": "voice_character",
+        "description": "Change WHOSE VOICE you speak in. 'goat' is your own "
+                       "voice; 'ultron' is the low synthetic one from the "
+                       "Avengers. Use when he asks you to sound like Ultron, "
+                       "to go back to your normal voice, or to change your "
+                       "voice — this is your own app, never code, never "
+                       "escalate for it.",
+        "parameters": {"type": "object", "properties": {
+            "character": {"type": "string", "enum": ["goat", "ultron"]}},
+            "required": ["character"]}}},
+    {"type": "function", "function": {
         "name": "resize_interface",
         "description": "Resize GOAT's OWN app window/interface (fonts and "
                        "controls). Use when he asks to make YOUR UI, text, "
@@ -148,6 +159,7 @@ TOOLS = [
 # Set by goat_app so the UI tools can reach the Qt window.
 _ui_scale_cb = None
 _ui_color_cb = None
+_ui_character_cb = None
 
 
 def set_ui_scale_callback(cb):
@@ -158,6 +170,11 @@ def set_ui_scale_callback(cb):
 def set_ui_color_callback(cb):
     global _ui_color_cb
     _ui_color_cb = cb
+
+
+def set_ui_character_callback(cb):
+    global _ui_character_cb
+    _ui_character_cb = cb
 
 # No command wall (his order 2026-07-12: "i dont want my local Ai to have any
 # guardlines ... full access"). Every command the model forms runs. See the
@@ -294,6 +311,14 @@ def execute(name: str, args: dict) -> str:
             ok = _ui_color_cb(part, color)
             return (f"{part} color set to {color}" if ok
                     else f"ERROR: '{color}' isn't a color I recognize")
+        if name == "voice_character":
+            if _ui_character_cb is None:
+                return "ERROR: UI not available"
+            who = str(args.get("character", "")).strip().lower()
+            if who not in ("goat", "ultron"):
+                return "ERROR: character must be goat or ultron"
+            _ui_character_cb(who)
+            return f"voice character set to {who}"
         if name == "resize_interface":
             if _ui_scale_cb is None:
                 return "ERROR: UI not available"
