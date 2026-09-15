@@ -40,3 +40,4 @@ ui-config.json
 
 # Raw mic captures from STT debugging — voice recordings never leave the machine
 python/stt-debug/
+python/screen-actions.jsonl
