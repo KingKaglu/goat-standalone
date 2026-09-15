@@ -40,7 +40,7 @@ import stt_gladia
 import stt_realtime
 import stt_whisper
 import tts_edge
-from audio_io import DuplexAudio
+from audio_io import EAR_QUIET_PEAK, DuplexAudio
 from tts_piper import PiperResident
 
 import os
@@ -1123,6 +1123,7 @@ class GoatApp:
         self._compacting = False  # a /compact turn is in flight (mute it)
         self._limit_warned = False
         self._stt_warned = False  # gates the spoken "transcriber down" warning
+        self._quiet_warned = False  # gates the spoken "mic is too quiet" one
         # wake word: boot opens a conversation window (he just launched us);
         # after WAKE_WINDOW_S of silence, voice input must carry the name.
         self.wake_enabled = os.environ.get("GOAT_WAKE", "on").lower() not in (
@@ -1525,6 +1526,39 @@ class GoatApp:
         self._lat_heard("batch")
         await self._heard(text)
 
+    # Quiet-mic guard (2026-09-15 night, his report: "GOAT cannot hear me in
+    # Georgian"). His capture endpoint had been knocked down to 66% and his
+    # speech was arriving 20dB below the level it had the night before. At
+    # that level the Georgian ear returns an empty transcript and the English
+    # one invents fluent English over his Georgian — "The truth will be $10 a
+    # month" for a Georgian sentence, "Rach Debar." for "რა ხდება". Answering
+    # that is worse than admitting deafness: it puts words in his mouth and
+    # then replies to them. So when Georgian is possible at all, a Latin-only
+    # transcript off a capture that quiet is named for what it is, once, and
+    # dropped. Georgian letters are self-evidently not a hallucination, and a
+    # healthy level clears the warning so the next outage speaks again.
+    def _mishearing(self, text: str) -> bool:
+        peak = getattr(self.audio, "last_peak", 1.0)
+        if peak >= EAR_QUIET_PEAK:
+            self._quiet_warned = False
+            return False
+        if self.language not in ("ka", "auto"):
+            return False
+        if stt_realtime._has_georgian(text):
+            return False
+        db = 20 * np.log10(max(peak, 1e-9))
+        self.emit("status", f"mic too quiet to trust ({db:.0f} dBFS) — "
+                            f"ignored: {text!r}")
+        if not self._quiet_warned:
+            self._quiet_warned = True
+            self.emit("delta", "")   # creates the reply label for the reveal
+            self.tts.say(
+                "შენი მიკროფონი ძალიან ჩუმია — ვერ გარკვევით გისმენ."
+                if self.turn_lang == "ka" else
+                "Your microphone is very quiet — I can hear something but I "
+                "can't make out the words.")
+        return True
+
     async def _heard(self, text: str | None):
         """Everything that happens to a transcript once an ear produces one.
 
@@ -1545,6 +1579,8 @@ class GoatApp:
         self._stt_warned = False
         if not text:
             return  # silence/junk — normal, stay quiet
+        if self._mishearing(text):
+            return
         if (self.wake_enabled and not self.busy
                 and not self.audio.is_tts_playing
                 and time.monotonic() - self._last_exchange > WAKE_WINDOW_S

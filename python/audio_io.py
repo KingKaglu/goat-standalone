@@ -48,6 +48,23 @@ UTT_SOFT_COMMIT_MS = 200
 UTT_MIN_VOICED_MS = 250      # discard blips shorter than this (coughs, clicks) —
                              # the STT junk filter catches what slips through
 UTT_MAX_MS = 30000           # hard cap so a stuck-open capture can't grow forever
+# Makeup gain for the EARS ONLY (2026-09-15 night, his report: "GOAT cannot
+# hear me in Georgian"). His capture endpoint had been knocked down to 66%:
+# speech arrived at -20 to -26 dBFS where the night before it was -1 to -6,
+# and at that level both ears failed the same way — the Georgian one returned
+# an empty transcript and the English one hallucinated confident English over
+# his Georgian ("The term will be $10 a month" for a Georgian sentence). The
+# same capture boosted x5 transcribed as Georgian again, so his words were in
+# the audio all along, just too quiet for the models to read.
+#
+# This is NOT WebRTC's AGC — that stays off because it fights the noise-floor
+# gate. The gate and the VAD keep seeing the raw signal; only the copy handed
+# to the STT ears is scaled, so a quiet mic costs nothing and can never again
+# turn into words he did not say.
+EAR_TARGET_PEAK = 0.5        # where his good captures sat (-6 dBFS)
+EAR_GAIN_MAX = 12.0
+EAR_QUIET_PEAK = 0.12        # below this, say so on the status line: a GOAT
+                             # that cannot hear must look like one
 NOISE_FLOOR_MARGIN = 3.0     # cleaned-block RMS must clear floor*margin to count as
                              # real speech — Silero alone judges speech SHAPE, not
                              # loudness, so quiet but speech-shaped residual echo
@@ -132,6 +149,10 @@ class DuplexAudio:
         self.on_utt_abort = None
         self._utt_soft_sent = False
         self.last_hangover_ms = 0.0
+        # Makeup gain for the ears, learned from the last utterance he spoke,
+        # and the raw peak it was learned from (what the mic really delivered).
+        self.ear_gain = 1.0
+        self.last_peak = 1.0
         self.on_utterance = on_utterance  # gets one float32 utterance (preroll
                                           # included) once the speaker goes quiet
 
@@ -363,7 +384,7 @@ class DuplexAudio:
             # of started then. Must never block — the listener only queues.
             if self.on_utt_audio:
                 try:
-                    self.on_utt_audio(chunk)
+                    self.on_utt_audio(self._ear_level(chunk))
                 except Exception:  # noqa: BLE001 — audio callback deadline
                     pass
             self._append_utt(chunk, voiced, chunk_ms)
@@ -384,9 +405,37 @@ class DuplexAudio:
             self._utt_soft_sent = False
             if self.on_utt_start:
                 try:
-                    self.on_utt_start(self._utt_chunks[0])
+                    self.on_utt_start(self._ear_level(self._utt_chunks[0]))
                 except Exception:  # noqa: BLE001
                     pass
+
+    def _ear_level(self, chunk: np.ndarray) -> np.ndarray:
+        """A block at the level the ears want. Audio-thread hot path: when
+        there is no gain to apply (the normal case on a healthy mic) the same
+        array goes straight through, uncopied."""
+        g = self.ear_gain
+        if g <= 1.0:
+            return chunk
+        return np.clip(chunk * g, -1.0, 1.0)
+
+    def _learn_ear_gain(self, audio: np.ndarray) -> np.ndarray:
+        """Scale one finished utterance for the ears, and remember the gain so
+        the NEXT utterance's live blocks go out already corrected.
+
+        Only ever louder, never quieter — a loud speaker is not a problem the
+        STT models have. Smoothed, so one shouted word cannot slam the level
+        of the following turn."""
+        peak = float(np.abs(audio).max()) if len(audio) else 0.0
+        self.last_peak = peak
+        if peak <= 1e-6:
+            return audio
+        gain = max(1.0, min(EAR_TARGET_PEAK / peak, EAR_GAIN_MAX))
+        self.ear_gain = max(1.0, min(EAR_GAIN_MAX,
+                                     0.5 * self.ear_gain + 0.5 * gain))
+        if peak < EAR_QUIET_PEAK:
+            self._status(f"mic is very quiet ({20 * np.log10(peak):.0f} dBFS) "
+                         f"— lifting it x{gain:.1f} for the ear")
+        return np.clip(audio * gain, -1.0, 1.0) if gain > 1.0 else audio
 
     def _append_utt(self, chunk: np.ndarray, voiced: bool, chunk_ms: float):
         self._utt_chunks.append(chunk)
@@ -422,6 +471,9 @@ class DuplexAudio:
         voiced_ms = self._utt_voiced_ms
         self._utt_chunks = None
         if voiced_ms >= UTT_MIN_VOICED_MS:
+            # Only real speech teaches the level. A cough is quiet by nature,
+            # and learning from one would shout the next sentence.
+            audio = self._learn_ear_gain(audio)
             self._status(f"utterance captured ({len(audio) / SAMPLE_RATE:.1f}s, "
                           f"{voiced_ms:.0f}ms voiced)")
             if self.on_utterance:

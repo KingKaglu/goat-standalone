@@ -67,6 +67,7 @@ def make_audio():
     a.on_utt_soft_end = None
     a._utt_soft_sent = False
     a.last_hangover_ms = 0.0
+    a.ear_gain = 1.0
     a.on_interrupt = None
     a.on_status = lambda m: None
     return a
@@ -324,6 +325,123 @@ check("ledger total is end-of-speech to first sound, not a stage sum",
 app._lat_sounded()   # second call in the same turn must not double-report
 check("ledger reports a turn exactly once",
       len([e for e in events if e[0] == "latency"]) == 1)
+
+# ---------------------------------------------------------------------------
+# 6. Makeup gain for the ears. His capture endpoint was found at 66% and his
+#    Georgian arrived at -26 dBFS, where the Georgian ear returned nothing and
+#    the English one invented English sentences over it. The audio held his
+#    words; it was just too quiet to read.
+# ---------------------------------------------------------------------------
+def utterance(peak, ms=1500):
+    n = int(SAMPLE_RATE * ms / 1000)
+    t = np.arange(n, dtype=np.float32) / SAMPLE_RATE
+    return (np.sin(2 * np.pi * 220 * t) * peak).astype(np.float32)
+
+
+a = make_audio()
+quiet = utterance(0.05)                      # what tonight's mic delivered
+lifted = a._learn_ear_gain(quiet)
+check(f"a -26 dBFS utterance is lifted for the ear "
+      f"(peak {float(np.abs(quiet).max()):.2f} -> "
+      f"{float(np.abs(lifted).max()):.2f})",
+      float(np.abs(lifted).max()) > 0.4,
+      f"peak={float(np.abs(lifted).max())}")
+check("the lift is remembered for the next turn's live blocks",
+      a.ear_gain > 2.0, f"ear_gain={a.ear_gain}")
+
+a = make_audio()
+healthy = utterance(0.5)                     # what his good captures looked like
+same = a._learn_ear_gain(healthy)
+check("a healthy utterance is handed over untouched, not copied",
+      same is healthy and a.ear_gain == 1.0, f"ear_gain={a.ear_gain}")
+
+a = make_audio()
+loud = utterance(0.95)
+a._learn_ear_gain(loud)
+check("a loud speaker is never turned DOWN — that is not an STT problem",
+      a.ear_gain == 1.0, f"ear_gain={a.ear_gain}")
+
+# The remembered gain has to reach the streaming ear, which is fed block by
+# block while he is still talking — boosting only the batch copy would leave
+# the fast ear deaf exactly when it matters.
+a = make_audio()
+a.ear_gain = 4.0
+blocks = []
+a.on_utt_audio = blocks.append
+a.on_utterance = lambda x: None
+a._utt_chunks = [np.zeros(0, dtype=np.float32)]
+a._utt_voiced_ms = a._utt_silence_ms = 0.0
+block = np.full(BLOCK_SAMPLES, 0.05, dtype=np.float32)
+a.on_utt_audio(a._ear_level(block))
+check("live blocks go to the streaming ear already lifted",
+      blocks and abs(float(blocks[0].max()) - 0.2) < 1e-6,
+      f"max={float(blocks[0].max()) if blocks else None}")
+check("clipping is impossible even at maximum lift",
+      float(np.abs(a._ear_level(utterance(0.9))).max()) <= 1.0)
+
+# A cough is quiet by nature. Learning the level from one would shout his next
+# sentence into the ear, so only real speech teaches it.
+a = make_audio()
+a.on_utterance = lambda x: None
+chunk_ms = BLOCK_SAMPLES / SAMPLE_RATE * 1000
+a._utt_chunks = [np.zeros(0, dtype=np.float32)]
+a._utt_voiced_ms = a._utt_silence_ms = 0.0
+blip = np.full(BLOCK_SAMPLES, 0.02, dtype=np.float32)
+a._append_utt(blip, True, chunk_ms)          # ~30ms voiced — under the floor
+quiet_ms = 0.0
+while a._utt_chunks is not None and quiet_ms < 3000:
+    a._append_utt(np.zeros(BLOCK_SAMPLES, dtype=np.float32), False, chunk_ms)
+    quiet_ms += chunk_ms
+check("a discarded blip does not teach the ear a level",
+      a.ear_gain == 1.0, f"ear_gain={a.ear_gain}")
+
+# ---------------------------------------------------------------------------
+# 7. The quiet-mic guard: GOAT must never answer words it invented off a
+#    capture too quiet to read. "Rach Debar." is not something he said.
+# ---------------------------------------------------------------------------
+def guard_app(lang, peak, turn_lang="ka"):
+    app = g.GoatApp.__new__(g.GoatApp)
+    app.emit = lambda *a_: None
+    app.tts = FakeTts()
+    app.language = lang
+    app.turn_lang = turn_lang
+    app._quiet_warned = False
+    app.audio = make_audio()
+    app.audio.last_peak = peak
+    return app
+
+
+app = guard_app("auto", 0.05)
+check("a Latin transcript off a -26 dBFS capture is not answered",
+      app._mishearing("The truth will be $10 a month") is True)
+check("and he is told why, out loud, once",
+      len(app.tts.said) == 1 and "quiet" in app.tts.said[0].lower()
+      or "ჩუმია" in "".join(app.tts.said), f"said={app.tts.said}")
+said_once = len(app.tts.said)
+app._mishearing("Rach Debar.")
+check("the spoken warning does not repeat every turn",
+      len(app.tts.said) == said_once, f"said={app.tts.said}")
+
+app = guard_app("auto", 0.05)
+check("Georgian letters are never treated as a hallucination",
+      app._mishearing("რა ხდება?") is False)
+
+app = guard_app("auto", 0.5)
+check("a healthy-level turn passes straight through",
+      app._mishearing("The truth will be $10 a month") is False)
+
+app = guard_app("en", 0.05)
+check("English-only mode is left alone — nothing to mishear it as",
+      app._mishearing("open the file") is False)
+
+app = guard_app("auto", 0.05)
+app._mishearing("first outage")
+app.audio.last_peak = 0.5
+app._mishearing("healthy turn")               # clears the gate
+app.audio.last_peak = 0.05
+app._mishearing("second outage")
+check("a later outage speaks again instead of failing silently",
+      len(app.tts.said) == 2, f"said={app.tts.said}")
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
