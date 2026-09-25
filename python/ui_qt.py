@@ -772,6 +772,36 @@ def _fmt_tok(n: int) -> str:
     return str(n)
 
 
+class BottomFollow:
+    """Keep a scroll area glued to its bottom only while he is there.
+
+    The old way — setValue(maximum()) on a 20-30ms timer after every streamed
+    word — raced the layout: the jump landed before the new line's height was
+    known, then again after, and it ignored him entirely when he scrolled up
+    to read. On the left lane that read as the bar bouncing up and down
+    (his report 2026-09-26). Now the scrollbar's own rangeChanged does the
+    snapping, once, after layout; the moment he scrolls up the page parks."""
+
+    SLACK = 6  # px from the bottom that still counts as "at the bottom"
+
+    def __init__(self, scroll: QScrollArea):
+        self.sb = scroll.verticalScrollBar()
+        self.follow = True
+        self.sb.valueChanged.connect(self._on_value)
+        self.sb.rangeChanged.connect(self._on_range)
+
+    def _on_value(self, v: int):
+        self.follow = v >= self.sb.maximum() - self.SLACK
+
+    def _on_range(self, _lo: int, hi: int):
+        if self.follow and not self.sb.isSliderDown():
+            self.sb.setValue(hi)
+
+    def snap(self):
+        if self.follow and not self.sb.isSliderDown():
+            self.sb.setValue(self.sb.maximum())
+
+
 class PageLabel(QLabel):
     """QLabel whose minimum height is its real wrapped-text height.
 
@@ -1144,6 +1174,7 @@ class WorkPanel(QWidget):
         self.col.addStretch(1)
         self.scroll.setWidget(host)
         outer.addWidget(self.scroll, stretch=1)
+        self._pin = BottomFollow(self.scroll)
 
         # Hard newlines used to break this at ~20 characters, which was right
         # when the lane was a narrow strip and wrong ever since it became half
@@ -1223,12 +1254,24 @@ class WorkPanel(QWidget):
         lbl.setWordWrap(True)
         lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.col.insertWidget(self.col.count() - 1, lbl)
-        QTimer.singleShot(20, self._down)
+        self._trim()
         return lbl
 
-    def _down(self):
-        sb = self.scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
+    # The ledger grew one label per step forever; a long night of work made
+    # every relayout (and so every scroll) heavier. Keep the recent tail.
+    LOG_MAX = 160
+
+    def _trim(self):
+        while self.col.count() - 1 > self.LOG_MAX:
+            item = self.col.takeAt(0)
+            w = item.widget() if item is not None else None
+            if w is None:
+                break
+            for attr in ("_cur_step", "_text_label", "_think_label", "_idle"):
+                if getattr(self, attr, None) is w:
+                    setattr(self, attr, None)
+            w.setParent(None)
+            w.deleteLater()
 
     def _mark_cur_done(self):
         if self._cur_step is not None:
@@ -1269,14 +1312,12 @@ class WorkPanel(QWidget):
         if self._think_label is None:
             self._think_label = self._add("… ", "workthink")
         self._think_label.setText((self._think_label.text() + piece)[-700:])
-        self._down()
 
     def text(self, piece: str):
         self._think_label = None
         if self._text_label is None:
             self._text_label = self._add("", "worktext")
         self._text_label.setText((self._text_label.text() + piece)[-1200:])
-        self._down()
 
     def add(self, note: str):
         self._add("+ " + note, "workstep")
@@ -1839,8 +1880,7 @@ class GoatWindow(QWidget):
         # Scrolling up to reread history parks the page; scrolling back down
         # (or speaking again) re-engages following. Without this the 33ms
         # word reveal yanks the page to the bottom while he's reading.
-        self._follow = True
-        self.scroll.verticalScrollBar().valueChanged.connect(self._on_scrolled)
+        self._pin = BottomFollow(self.scroll)
         # Left lane: the working brain's live build log. Middle: the talking
         # brain (Gemini) conversation. He watches Fable build on the left while
         # he keeps talking to Gemini in the middle (his order 2026-07-17).
@@ -2786,15 +2826,8 @@ class GoatWindow(QWidget):
         self.col.insertWidget(self.col.count() - 1, lbl)
         QTimer.singleShot(30, self._scroll_down)
 
-    def _on_scrolled(self, value: int):
-        sb = self.scroll.verticalScrollBar()
-        self._follow = value >= sb.maximum() - 80
-
     def _scroll_down(self):
-        if not self._follow:
-            return  # he scrolled up to read — don't snatch the page
-        sb = self.scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._pin.snap()  # no-op while he's scrolled up reading
 
     # ---- events from GoatApp (any thread) ----
     def post_event(self, kind: str, data: str):
@@ -2854,7 +2887,8 @@ class GoatWindow(QWidget):
                 self.epigraph = None
             self._dim_previous()
             self._reply_label = None
-            self._follow = True  # he spoke — bring him to the reply
+            self._pin.follow = True  # he spoke — bring him to the reply
+            self._pin.snap()
             self._you_label = self._add_line(data.lower(), "youNow")
             self.pop.hide()  # last reply's card must not stand in for the next one
             spacer = self._add_line("", "replyNow")
