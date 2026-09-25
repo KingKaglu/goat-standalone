@@ -47,7 +47,7 @@ class MockTTS:
     def cancel(self):
         pass
 
-    def say(self, text):
+    def say(self, text, filler=False):
         self.spoken.append(text)
 
     def prewarm(self, lines):
@@ -120,6 +120,7 @@ def make_app(client):
     app._compacting = False
     app._cut = False
     app._after_cut = None
+    app._warming = False
     app.language = "en"
     app.turn_lang = "en"
     app._local_unseen = []
@@ -388,6 +389,39 @@ async def main():
               f"queries={c.queries}")
         check("the 'adding that' ack pool is gone",
               not hasattr(g, "ACK_ADD"))
+
+        # 7d. warm-up (2026-09-25 speed goal): a muted turn after connect so
+        # his first real turn doesn't pay the cold prefill (3.1s vs 0.8s)
+        c = MockClient(script=[result_msg()])
+        app = make_app(c)
+        app._pending_handoff = "[context-handoff] earlier chat"
+        await app._warm_brain()
+        mid = (app.busy, app.suppressed, app._warming)
+        await app._consume()
+        check("warm-up runs muted, carries the handoff, then frees the brain",
+              mid == (True, True, True) and len(c.queries) == 1
+              and c.queries[0].startswith("[context-handoff] earlier chat")
+              and "[warm-up]" in c.queries[0]
+              and not app.busy and not app.suppressed and not app._warming
+              and app._pending_handoff == "" and app.tts.spoken == [],
+              f"mid={mid} queries={c.queries} spoken={app.tts.spoken}")
+
+        # 7e. he speaks during the warm-up: it is cut, and HIS turn is not
+        # swallowed as if it were the warm-up
+        c = MockClient(script=[result_msg(is_error=True)])
+        app = make_app(c)
+        app._safe_interrupt = fake_interrupt
+        await app._warm_brain()
+        await app._talk("what time is it")
+        await app._consume()
+        for _ in range(200):
+            if len(c.queries) > 1:
+                break
+            await asyncio.sleep(0.01)
+        check("speaking during the warm-up cuts it and answers him",
+              len(c.queries) == 2 and c.queries[1].endswith("what time is it")
+              and app.busy and not app._warming and not app.suppressed,
+              f"queries={c.queries} warming={app._warming}")
 
         # 8. Claude out -> no query, an honest spoken line, reflexes still named
         c = MockClient()

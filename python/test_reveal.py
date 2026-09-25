@@ -43,7 +43,7 @@ def make_pipeline():
 def drain(p, n_samples=SENT_SAMPLES):
     """Simulate the worker synthesizing everything currently queued."""
     while not p.q.empty():
-        gen, epoch, text = p.q.get_nowait()
+        gen, epoch, text, _filler = p.q.get_nowait()
         if gen != p.gen:
             continue
         p._register(text, n_samples, epoch)

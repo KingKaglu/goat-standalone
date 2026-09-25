@@ -200,7 +200,7 @@ class FakeTts:
         self.enabled = True
         self._sounded = False
 
-    def say(self, t):
+    def say(self, t, filler=False):
         if t and t.strip():
             self.said.append(t.strip())
 
@@ -325,6 +325,51 @@ check("ledger total is end-of-speech to first sound, not a stage sum",
 app._lat_sounded()   # second call in the same turn must not double-report
 check("ledger reports a turn exactly once",
       len([e for e in events if e[0] == "latency"]) == 1)
+
+# 2026-09-25: the backchannel ("Mm-hm" at 0.9s, from the TTS cache) used to
+# stop the clock, so every turn read ~900ms and the real answer went
+# unmeasured. A filler is noted, the clock keeps running to the answer.
+events.clear()
+app._lat_start()
+app._lat_heard("streaming")
+_t.sleep(0.02)
+app._lat_filler()
+_t.sleep(0.05)
+app._lat_sounded()
+got = [float(v) for k, v in events if k == "latency"]
+check("the backchannel does not stop the latency clock",
+      len(got) == 1 and got[0] >= 480 + 70 and app._lat_filler_ms > 0,
+      f"got={got} filler={app._lat_filler_ms}")
+
+
+class _Aud:
+    played_samples = 0
+
+    def queue_playback(self, s):
+        pass
+
+
+p = g.TtsPipeline.__new__(g.TtsPipeline)
+fired = []
+p.q = __import__("queue").Queue()
+p._lock = __import__("threading").Lock()
+p.gen, p._epoch, p._sounded, p.enabled, p.gain = 0, 0, False, True, 1.0
+p._synth_cache = {}
+p.audio = _Aud()
+p._register = lambda *a_: None
+p.on_first_audio = lambda: fired.append("answer")
+p.on_filler_audio = lambda: fired.append("filler")
+p.synth = lambda text: np.zeros(160, dtype=np.float32)
+p.say("Mm-hm.", filler=True)
+p.say("It is ten past nine.")
+import threading as _th
+_th.Thread(target=p._worker, daemon=True).start()
+for _ in range(100):
+    if len(fired) >= 2:
+        break
+    _t.sleep(0.01)
+check("the TTS worker tells a filler from the answer",
+      fired == ["filler", "answer"] and p._sounded, f"fired={fired}")
 
 # ---------------------------------------------------------------------------
 # 6. Makeup gain for the ears. His capture endpoint was found at 66% and his

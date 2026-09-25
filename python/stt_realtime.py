@@ -59,16 +59,20 @@ MODEL = os.environ.get("GOAT_STT_RT_MODEL", "scribe_v2_realtime")
 ENABLED = os.environ.get("GOAT_STT_REALTIME", "on").strip().lower() not in (
     "off", "0", "false", "no")
 # How long to wait for the committed transcript after the last chunk. Measured
-# worst case was 554 ms; 2.5 s is slack for a bad network, and blowing it just
-# means the batch ear takes over.
-COMMIT_WAIT_S = float(os.environ.get("GOAT_STT_RT_WAIT", "2.5"))
+# worst case was 554 ms. It was 2.5s, and a miss then cost 2.5s of waiting
+# PLUS the batch ear on top: 5073ms "ear" in his 2026-09-25 log. At 1.0s a
+# miss hands over to the batch ear (which already has the audio) 1.5s sooner.
+COMMIT_WAIT_S = float(os.environ.get("GOAT_STT_RT_WAIT", "1.0"))
 CONNECT_TIMEOUT_S = 4.0
 
 # ISO 639-3, which is what the realtime endpoint documents.
 LANG3 = {"ka": "kat", "en": "eng"}
 
 _down_until = [0.0]      # back off after a failure instead of retrying hot
-_DOWN_S = 120.0
+# One handshake timeout used to put the fast ear down for 2 minutes, so every
+# turn in that window paid the batch ear (1.3-1.6s in his log). A retry per
+# utterance is cheap — the socket opens while he is still talking.
+_DOWN_S = 15.0
 _SOFT = object()         # queue sentinel: commit early, keep the session open
 
 
@@ -295,7 +299,7 @@ class Session:
     async def result(self) -> str | None:
         """Committed text, or None to mean 'use the batch ear'."""
         try:
-            await asyncio.wait_for(self._done.wait(), COMMIT_WAIT_S + 2.0)
+            await asyncio.wait_for(self._done.wait(), COMMIT_WAIT_S + 0.5)
         except asyncio.TimeoutError:
             return None
         if self.error or not self.committed:
@@ -316,7 +320,7 @@ class Session:
         if self.error:
             return f"{self.lang}: {self.error}"
         if not self._done.is_set():
-            return f"{self.lang}: no answer in {COMMIT_WAIT_S + 2.0:.1f}s"
+            return f"{self.lang}: no answer in {COMMIT_WAIT_S + 0.5:.1f}s"
         return f"{self.lang}: {'empty' if not self.committed else 'blank text'}"
 
 

@@ -152,6 +152,9 @@ HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
 # Rotation is instant and carries the handoff. GOAT_COMPACT=on restores it.
 COMPACT_CLI = os.environ.get("GOAT_COMPACT", "off").lower() not in (
     "off", "0", "false")
+# Muted warm-up turn after every (re)connect — see GoatApp._warm_brain.
+WARM_BRAIN = os.environ.get("GOAT_WARM_BRAIN", "on").lower() not in (
+    "off", "0", "false")
 
 # Language modes he can pick (drawer / voice): English only, Georgian only,
 # or "auto" — the bilingual ear, where every utterance is answered in the
@@ -492,6 +495,11 @@ SPOKEN ALOUD as you write it.
   no code in the spoken part unless he asked for it.
 - SPEED: a question you can answer from the note or from what you know gets
   answered at once. Reach for tools only when the answer needs them.
+- SPEAK FIRST (his order 2026-09-25, "answers must be instant"): he hears
+  silence until your first word. So the VERY FIRST thing you output in every
+  turn is one short spoken sentence — the answer itself, or "On it." for an
+  order — written BEFORE any thinking and before any tool. Think afterwards
+  if the task needs it, then carry on.
 - VERIFY BEFORE YOU REPORT: act, check it took (process gone, window open,
   file exists), then say done. Several targets = check each and name any
   that failed. A program's process often has another name (Ubisoft = upc /
@@ -526,7 +534,10 @@ SENTENCE_RE = re.compile(r"(.*?[.!?…])(?:\s+|$)", re.DOTALL)
 FIRST_CLAUSE_RE = re.compile(r"([^.!?…]*?[,;:—–])\s+", re.DOTALL)
 # Below this many characters a clause is a fragment, not a breath — "Yes," or
 # "Well," on its own sounds like a stutter, and costs a synthesis call to say.
-FIRST_CLAUSE_MIN = int(os.environ.get("GOAT_FIRST_CLAUSE_MIN", "28"))
+# 28 -> 14 (2026-09-25): measured 0.4-0.8s between his first text and the
+# first clause at 28, e.g. "ეკრანზე მარტო ტერმინალია," (25 chars) waited for
+# the whole sentence. 14 still keeps a lone "Yes," / "Well," off the voice.
+FIRST_CLAUSE_MIN = int(os.environ.get("GOAT_FIRST_CLAUSE_MIN", "14"))
 # Don't read code/paths aloud — same rule the browser UI used.
 UNSPEAKABLE_RE = re.compile(r"[`|{}\\<>_*#=]|https?://|[A-Za-z]:[/\\]")
 
@@ -889,6 +900,7 @@ class TtsPipeline:
         # the whole point of an acknowledgement.
         self._synth_cache: dict = {}
         self.on_first_audio = None   # latency ledger hook
+        self.on_filler_audio = None  # ledger: a backchannel noise, not the answer
         self._sounded = False        # has this turn made a sound yet?
         threading.Thread(target=self._worker, daemon=True).start()
 
@@ -904,12 +916,15 @@ class TtsPipeline:
             except Exception:  # noqa: BLE001 — a cold cache is not an error
                 pass
 
-    def say(self, text: str):
+    def say(self, text: str, filler: bool = False):
+        """filler=True marks a backchannel noise: it plays, but it is not
+        the answer, so it must not stop the ledger's clock (2026-09-25: the
+        log's "think/voice ~900ms" was the Mm-hm, the answer went unmeasured)."""
         text = text.strip()
         if not text:
             return
         with self._lock:
-            self.q.put((self.gen, self._epoch, text))
+            self.q.put((self.gen, self._epoch, text, filler))
 
     def new_turn(self):
         """Fresh reply starting — the reveal accumulator resets."""
@@ -1003,7 +1018,7 @@ class TtsPipeline:
 
     def _worker(self):
         while True:
-            gen, epoch, text = self.q.get()
+            gen, epoch, text, filler = self.q.get()
             if gen != self.gen:
                 continue
             if not self.enabled or UNSPEAKABLE_RE.search(text):
@@ -1029,7 +1044,13 @@ class TtsPipeline:
                 # First real audio of this turn — the moment he actually
                 # HEARS GOAT, which is the only end of the latency budget
                 # that matters. Everything before it is silence to him.
-                if self.on_first_audio and not self._sounded:
+                if filler:
+                    if self.on_filler_audio:
+                        try:
+                            self.on_filler_audio()
+                        except Exception:  # noqa: BLE001
+                            pass
+                elif self.on_first_audio and not self._sounded:
                     self._sounded = True
                     try:
                         self.on_first_audio()
@@ -1067,6 +1088,7 @@ class GoatApp:
         self._rt: stt_realtime.Session | None = None
         self.tts = TtsPipeline(self.audio, emit)
         self.tts.on_first_audio = self._lat_sounded
+        self.tts.on_filler_audio = self._lat_filler
         self._t_speech_end = 0.0
         self._t_heard = 0.0
         self._lat_ear = ""
@@ -1098,6 +1120,7 @@ class GoatApp:
         # swallowed, and _after_cut is what he said instead, answered next.
         self._cut = False
         self._after_cut: str | None = None
+        self._warming = False   # a muted warm-up turn is in flight
         self._hold_deltas = False             # kept False now (no ESCALATE gate)
         self._delta_buf = ""
         # usage watch — session Claude totals, so Giorgi sees the burn and a
@@ -1188,8 +1211,36 @@ class GoatApp:
         if self._cut and self._cut_id == cut_id:
             self._finish_cut()
 
+    async def _warm_brain(self):
+        """One muted turn right after a (re)connect so his first real turn
+        doesn't pay the cold prefill. Measured 2026-09-25 on a fresh session:
+        first word 3.1-3.4s on turn one, 0.8-0.9s on the turns after it —
+        the difference is building the prompt cache for the persona, the
+        tool list and the history. This turn builds it while he is silent.
+        A pending rotation handoff rides along, so the fresh session has its
+        memory before he speaks. If he talks during it, _cut_turn ends it."""
+        if self.busy or self.claude_out or not WARM_BRAIN:
+            return
+        text = ("[warm-up] You just (re)connected. This is not from Giorgi — "
+                "reply with only: OK")
+        if self._pending_handoff:
+            text = f"{self._pending_handoff}\n\n{text}"
+            self._pending_handoff = ""
+        self._warming = True
+        self.suppressed = True
+        self.busy = True
+        self._turn_has_tools = False
+        try:
+            await self.client.query(text)
+        except Exception as e:  # noqa: BLE001 — a failed warm-up costs nothing
+            self._warming = False
+            self.suppressed = False
+            self.busy = False
+            self.emit("status", f"warm-up skipped: {e}")
+
     def _finish_cut(self):
         self._cut = False
+        self._warming = False   # a cut warm-up must not swallow HIS turn
         self.suppressed = False
         self.busy = False
         self._say_buf = ""
@@ -1216,7 +1267,7 @@ class GoatApp:
             return    # the real answer beat it here, or the turn was cancelled
         pool = BACKCHANNEL.get(self.turn_lang) or BACKCHANNEL["en"]
         self._bc_i = (getattr(self, "_bc_i", -1) + 1) % len(pool)
-        self.tts.say(pool[self._bc_i])
+        self.tts.say(pool[self._bc_i], filler=True)
 
     # ---- latency ledger -----------------------------------------------------
     # His target: under 500ms from "he stops talking" to "GOAT makes a sound",
@@ -1233,6 +1284,12 @@ class GoatApp:
         self._lat_hang = hang * 1000
         self._t_heard = 0.0
         self._lat_ear = ""
+        self._lat_filler_ms = -1.0
+
+    def _lat_filler(self):
+        t0 = getattr(self, "_t_speech_end", 0.0)
+        if t0 and getattr(self, "_lat_filler_ms", -1.0) < 0:
+            self._lat_filler_ms = (time.monotonic() - t0) * 1000
 
     def _lat_heard(self, ear: str):
         if getattr(self, "_t_speech_end", 0.0):
@@ -1250,9 +1307,11 @@ class GoatApp:
         self._t_speech_end = 0.0
         mark = "✓" if total < 500 else ("·" if total < 1000 else "!")
         hang = getattr(self, "_lat_hang", 0.0)
+        filler = getattr(self, "_lat_filler_ms", -1.0)
         print(f"[latency] {mark} endpoint {hang:.0f}ms + ear({self._lat_ear}) "
               f"{ear - hang:.0f}ms + think/voice {rest:.0f}ms "
-              f"= {total:.0f}ms to first sound")
+              f"= {total:.0f}ms to first word"
+              + (f" (filler at {filler:.0f}ms)" if filler >= 0 else ""))
         self.emit("latency", f"{total:.0f}")
 
     # ---- streaming ear (audio callback thread — queue only, never block) ----
@@ -1270,6 +1329,9 @@ class GoatApp:
     def _on_utt_start(self, preroll):
         if self.mic_muted or not self.loop:
             return
+        # Dial (or re-dial) the voice socket while he is still talking, so
+        # the answer's first clause doesn't pay the connection. Non-blocking.
+        tts_edge.prime()
         self._rt = stt_realtime.start_threadsafe(self._rt_lang(), self.loop)
         if self._rt is not None and preroll is not None and len(preroll):
             self._rt.feed(preroll)   # his first word lives in the preroll
@@ -1952,6 +2014,14 @@ class GoatApp:
                     # The turn he talked over or stopped — see _cut_turn.
                     self._finish_cut()
                     continue
+                if self._warming:
+                    # The muted warm-up — see _warm_brain. Nothing to say.
+                    self._warming = False
+                    self.suppressed = False
+                    self.busy = False
+                    self._reply_acc = ""
+                    self._say_buf = ""
+                    continue
                 self.suppressed = False
                 self.busy = False
                 err = str(getattr(msg, "result", "") or "").lower()
@@ -2166,6 +2236,7 @@ class GoatApp:
         at process start — play a scripted line with interrupt decisions
         disabled so it can adapt before anything can false-trigger."""
         self.emit("status", "learning the room — one moment")
+        tts_edge.prime()
         samples = await asyncio.to_thread(self.tts.synth, _greeting())
         self.audio.warming_up = True
         self.audio.queue_playback(samples)
@@ -2289,6 +2360,8 @@ class GoatApp:
                 "[boot-briefing] Giorgi just started you after about "
                 f"{away_h:.0f} hours away. It is {now:%A}, {now:%H:%M}.",
                 echo=False)
+        else:
+            await self._warm_brain()   # the briefing already warms it
 
         retried_text = None  # retry each wall-hit once, so one oversized
         crashes = 0          # message can't ping-pong fresh sessions forever
@@ -2344,6 +2417,7 @@ class GoatApp:
                     self.busy = False
                     self.suppressed = False
                     self.emit("status", f"thinking at {self.effort} — ready")
+                    await self._warm_brain()
                     continue
                 # Context full: fresh session, retry the wall-hit message.
                 await self.client.disconnect()
@@ -2356,7 +2430,9 @@ class GoatApp:
                     # the next work order carries the handoff.
                     self._rotate_only = False
                     retried_text = None
+                    self.busy = False
                     self.emit("status", "fresh session — working brain ready")
+                    await self._warm_brain()   # carries the handoff
                     continue
                 self.emit("status", "fresh session — working brain ready")
                 if self.last_user_text and self.last_user_text != retried_text:
