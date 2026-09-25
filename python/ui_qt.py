@@ -56,6 +56,7 @@ from PySide6.QtCore import (
     QPointF,
     QPropertyAnimation,
     QRect,
+    QRectF,
     Qt,
     QTimer,
     Signal,
@@ -63,6 +64,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QGuiApplication,
     QIcon,
     QKeySequence,
     QLinearGradient,
@@ -70,6 +72,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QRadialGradient,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -101,6 +104,16 @@ UI_CONFIG = os.path.join(GOAT_ROOT, "ui-config.json")
 # themes lifted a full step: backgrounds up from near-black, dim/faint
 # raised so secondary text is READABLE, not archaeological.
 THEMES = {
+    # The HUD (his order 2026-09-26: "the whole interface, like JARVIS").
+    # "hud" switches on the painted layer — arc reactor, grid, corner
+    # brackets — so every other theme stays exactly the instrument it was.
+    "jarvis": {         # deep-space navy, arc-reactor cyan
+        "bg_top": "#081521", "bg_bot": "#030a11",
+        "paper": "#e2f7ff", "dim": "#82b5c9", "faint": "#39677e",
+        "accent": "#3fd6ff", "string_base": "#2f86a6",
+        "you_old": "#66c3e2", "reply_old": "#9fc6d5", "sel": "#0e4a66",
+        "hud": True,
+    },
     "ember": {          # the original: warm dark, amber string
         "bg_top": "#1a1713", "bg_bot": "#14110e",
         "paper": "#f4ede0", "dim": "#948d7e", "faint": "#5c5649",
@@ -126,7 +139,7 @@ THEMES = {
         "you_old": "#b6b6bc", "reply_old": "#a8a8af", "sel": "#44444f",
     },
 }
-THEME_ORDER = ["ember", "paper", "phosphor", "graphite"]
+THEME_ORDER = ["jarvis", "ember", "paper", "phosphor", "graphite"]
 
 
 # Reply type sizes: the current answer's pt size (older lines stay put).
@@ -168,7 +181,7 @@ LANGS = {"english": "en", "ქართული": "ka", "ორივე": "aut
 COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
                "background": ["bg_top", "bg_bot"]}
 
-DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
+DEFAULT_CFG = {"theme": "jarvis", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
                "lang": "en", "character": "goat",
                "work_model": "opus 5.5", "hard_model": "opus 5.5",
@@ -406,6 +419,33 @@ QLabel#workctx {{
   color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px;
   letter-spacing: 1px; padding-top: {s(4)}px; }}
 QLabel#workfail {{ color: {t['accent']}; font-family: {MONO_FONT}; font-size: {s(13)}px; font-weight: 500; }}
+""" + (_hud_style(t, s) if t.get("hud") else "")
+
+
+def _hud_style(t: dict, s) -> str:
+    """The JARVIS layer's type: framed controls, glowing wordmark. Appended
+    after the base sheet, so equal-specificity rules here win."""
+    a = t["accent"].lstrip("#")
+    ar, ag, ab = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
+    tint = f"rgba({ar},{ag},{ab},16)"
+    edge = f"rgba({ar},{ag},{ab},90)"
+    return f"""
+QLabel#wordmark {{ color: {t['accent']}; letter-spacing: {s(7)}px; }}
+QLabel#stateword {{ letter-spacing: {s(3)}px; }}
+QLabel#clock {{ color: {t['accent']}; }}
+QLineEdit#cmd {{
+  background: {tint}; border: 1px solid {edge}; border-radius: {s(2)}px;
+  padding: {s(9)}px {s(12)}px;
+}}
+QLineEdit#cmd:focus {{ border: 1px solid {t['accent']}; }}
+QPushButton#sendbtn, QPushButton#workbtn {{
+  border: 1px solid {hairline(t, 140)}; border-radius: {s(2)}px;
+  margin-left: {s(6)}px; padding: {s(8)}px {s(12)}px;
+}}
+QPushButton#sendbtn {{ color: {t['accent']}; border: 1px solid {edge}; }}
+QPushButton#sendbtn:hover, QPushButton#workbtn:hover {{
+  background: {tint}; border: 1px solid {t['accent']}; }}
+QLabel#epigraph {{ color: {t['dim']}; letter-spacing: {s(8)}px; }}
 """
 
 
@@ -416,18 +456,89 @@ class Backdrop(QWidget):
         super().__init__()
         self.top = QColor("#0f0e0c")
         self.bot = QColor("#0b0a09")
+        self.hud = False
+        self.acc = QColor("#3fd6ff")
+        self.anchor: QWidget | None = None   # the reactor the glow sits behind
+        self._cache: QPixmap | None = None
+        self._cache_key = None
 
     def set_theme(self, t: dict):
         self.top = QColor(t["bg_top"])
         self.bot = QColor(t["bg_bot"])
+        self.hud = bool(t.get("hud"))
+        self.acc = QColor(t["accent"])
+        self._cache = None
         self.update()
 
     def paintEvent(self, _ev):
         p = QPainter(self)
-        g = QLinearGradient(0, 0, 0, self.height())
+        if not self.hud:
+            g = QLinearGradient(0, 0, 0, self.height())
+            g.setColorAt(0.0, self.top)
+            g.setColorAt(1.0, self.bot)
+            p.fillRect(self.rect(), g)
+            return
+        # The HUD layer is static, but this widget repaints under the reactor
+        # thirty times a second — so it is drawn once into a pixmap and only
+        # rebuilt when the size or the reactor's position changes.
+        cy = (self.anchor.geometry().center().y()
+              if self.anchor is not None else int(self.height() * 0.16))
+        key = (self.width(), self.height(), cy)
+        if self._cache is None or key != self._cache_key:
+            self._cache = self._paint_hud(cy)
+            self._cache_key = key
+        p.drawPixmap(0, 0, self._cache)
+
+    def _paint_hud(self, cy: int) -> QPixmap:
+        w, h = max(1, self.width()), max(1, self.height())
+        pm = QPixmap(w, h)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        g = QLinearGradient(0, 0, 0, h)
         g.setColorAt(0.0, self.top)
         g.setColorAt(1.0, self.bot)
-        p.fillRect(self.rect(), g)
+        p.fillRect(0, 0, w, h, g)
+
+        def acc(alpha: int) -> QColor:
+            c = QColor(self.acc)
+            c.setAlpha(max(0, min(255, alpha)))
+            return c
+
+        # Reactor glow: light spilling from the presence onto the room.
+        glow = QRadialGradient(QPointF(w / 2, cy), max(w, h) * 0.5)
+        glow.setColorAt(0.0, acc(46))
+        glow.setColorAt(0.35, acc(14))
+        glow.setColorAt(1.0, acc(0))
+        p.fillRect(0, 0, w, h, glow)
+
+        # Dot grid — the holotable surface. Faint enough to vanish behind type.
+        step = 32
+        p.setPen(QPen(acc(26), 1.4))
+        for y in range(step, h, step):
+            for x in range(step, w, step):
+                p.drawPoint(x, y)
+
+        # Vignette: the edges fall off into dark, so the eye sits centre.
+        vig = QRadialGradient(QPointF(w / 2, h / 2), max(w, h) * 0.75)
+        vig.setColorAt(0.55, QColor(0, 0, 0, 0))
+        vig.setColorAt(1.0, QColor(0, 0, 0, 150))
+        p.fillRect(0, 0, w, h, vig)
+
+        # Corner brackets — the frame of a heads-up display.
+        m, L = 10, 34
+        p.setPen(QPen(acc(170), 1.6, Qt.SolidLine, Qt.SquareCap))
+        for (x, y, dx, dy) in ((m, m, 1, 1), (w - m, m, -1, 1),
+                               (m, h - m, 1, -1), (w - m, h - m, -1, -1)):
+            p.drawLine(x, y, x + dx * L, y)
+            p.drawLine(x, y, x, y + dy * L)
+        # Scale ticks along the side rails, like a gauge's edge.
+        p.setPen(QPen(acc(55), 1))
+        for y in range(m + L + 16, h - m - L - 8, 16):
+            n = 7 if (y // 16) % 5 == 0 else 3
+            p.drawLine(m, y, m + n, y)
+            p.drawLine(w - m, y, w - m - n, y)
+        p.end()
+        return pm
 
 
 class StringLine(QWidget):
@@ -450,6 +561,8 @@ class StringLine(QWidget):
         self._base = QColor("#6f6a60")
         self._accent = QColor("#ffa94d")
         self._ignite_t0 = 0.0  # boot ritual: light travels down the string
+        self.hud = False
+        self._paper = QColor("#e2f7ff")
         self.setMinimumHeight(STRING_BAND)
 
     def ignite(self, duration: float = 1.6):
@@ -459,6 +572,8 @@ class StringLine(QWidget):
     def set_theme(self, t: dict):
         self._base = QColor(t["string_base"])
         self._accent = QColor(t["accent"])
+        self._paper = QColor(t["paper"])
+        self.hud = bool(t.get("hud"))
         self.update()
 
     def tick(self, level: float, state: str):
@@ -499,13 +614,26 @@ class StringLine(QWidget):
         margin = max(30, int(w * 0.06))
         span = w - margin * 2
 
+        # HUD: the reactor owns the centre; the string runs into it from both
+        # sides, re-pinned at the reactor's rim so it reads as feeding it.
+        R = min(mid - 6, 78.0) if self.hud else 0.0
+        cx = w / 2
         path = QPainterPath()
+        pen_down = False
         for i in range(self.N + 1):
             u = i / self.N
             x = margin + span * u
-            y = mid + self._amplitude_at(u)
-            if i == 0:
+            gap = abs(x - cx) - (R + 10)
+            if self.hud and gap < 0:
+                pen_down = False
+                continue
+            amp = self._amplitude_at(u)
+            if self.hud:
+                amp *= min(1.0, gap / max(1.0, span * 0.07))
+            y = mid + amp
+            if not pen_down:
                 path.moveTo(x, y)
+                pen_down = True
             else:
                 path.lineTo(x, y)
 
@@ -547,6 +675,78 @@ class StringLine(QWidget):
         p.drawPath(path)
         p.setPen(QPen(grad, 1.4, Qt.SolidLine, Qt.RoundCap))
         p.drawPath(path)
+        if self.hud:
+            self._paint_reactor(p, QPointF(cx, mid), R, col, heat)
+
+    # How fast the reactor's rings turn per state (degrees per tick unit).
+    SPIN = {"idle": 10, "booting": 10, "listening": 28,
+            "thinking": 80, "working": 80, "speaking": 42}
+
+    def _paint_reactor(self, p: QPainter, c: QPointF, R: float,
+                       col: QColor, heat: float):
+        """JARVIS's presence: concentric rings around a live core.
+
+        Every ring is a different speed and direction, so even idle it reads
+        as a machine that is on. The core breathes with the real audio level
+        and the outermost arc IS the meter — it sweeps with his voice or ours.
+        """
+        t = self._t
+        spin = self.SPIN.get(self.state, 30)
+
+        def c_(alpha, base: QColor = col) -> QColor:
+            q = QColor(base)
+            q.setAlpha(max(0, min(255, int(alpha))))
+            return q
+
+        def ring(r: float) -> QRectF:
+            return QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+
+        def arc(r, start, span, alpha, width):
+            p.setPen(QPen(c_(alpha), width, Qt.SolidLine, Qt.FlatCap))
+            p.drawArc(ring(r), int(start * 16), int(span * 16))
+
+        p.setBrush(Qt.NoBrush)
+        # core glow
+        pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * 1.3))
+        g = QRadialGradient(c, R * 0.62)
+        g.setColorAt(0.0, c_(150 + 100 * heat, self._paper))
+        g.setColorAt(0.22, c_((120 + 110 * heat) * pulse))
+        g.setColorAt(1.0, c_(0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(ring(R * 0.62))
+        p.setBrush(Qt.NoBrush)
+        # inner ring + core rim
+        p.setPen(QPen(c_(210), 1.6))
+        p.drawEllipse(ring(R * 0.3))
+        p.setPen(QPen(c_(120 + 100 * heat, self._paper), 1.2))
+        p.drawEllipse(ring(R * 0.15 + self.level * R * 0.08))
+        # segmented ring — the reactor's coils
+        a = t * spin
+        for k in range(10):
+            arc(R * 0.47, a + k * 36, 24, 150 + 80 * heat, 3.2)
+        # thin guide ring
+        p.setPen(QPen(c_(70), 1))
+        p.drawEllipse(ring(R * 0.62))
+        # three long arcs counter-rotating
+        b = -t * spin * 0.6
+        for k in range(3):
+            arc(R * 0.76, b + k * 120, 78, 190, 2.2)
+        # tick crown
+        p.setPen(QPen(c_(80), 1))
+        for k in range(72):
+            ang = math.radians(k * 5 + t * spin * 0.15)
+            r0 = R * (0.86 if k % 6 else 0.83)
+            p.drawLine(QPointF(c.x() + math.cos(ang) * r0,
+                               c.y() + math.sin(ang) * r0),
+                       QPointF(c.x() + math.cos(ang) * R * 0.9,
+                               c.y() + math.sin(ang) * R * 0.9))
+        # level meter arc: sweeps from the top with the live audio
+        if self.state in ("listening", "speaking"):
+            sweep = 20 + 320 * min(1.0, self.level * 1.6)
+            arc(R * 0.97, 90, -sweep, 230, 2.6)
+        else:
+            arc(R * 0.97, 90 - (t * spin * 1.4) % 360, -40, 120, 1.6)
 
 
 def _sweep_inbox(folder: str = INBOX, days: float = 7.0):
@@ -622,6 +822,9 @@ class TopFade(QWidget):
     def set_theme(self, t: dict):
         self._top = QColor(t["bg_top"])
         self._bot = QColor(t["bg_bot"])
+        # The HUD backdrop glows radially, so a flat-colour lip can't match
+        # it at any position — it read as a dark slab. Off in that theme.
+        self.setVisible(not t.get("hud"))
         self._mix()
 
     def set_frac(self, f: float):
@@ -975,8 +1178,8 @@ class WorkPanel(QWidget):
     def set_theme(self, t: dict):
         self._bg = QColor(t["bg_bot"])
         self._bg.setAlpha(80)
-        self._line = QColor(t["faint"])
-        self._line.setAlpha(110)  # lane rule whispers like the other hairlines
+        self._line = QColor(t["accent"] if t.get("hud") else t["faint"])
+        self._line.setAlpha(70 if t.get("hud") else 110)  # lane rule whispers
         self.meter.set_theme(t)
         self.update()
 
@@ -1111,6 +1314,22 @@ class WorkPanel(QWidget):
         p.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
 
 
+def pin_topmost(w: QWidget):
+    """Put a floating window back at the top of the z-order, without focus.
+
+    WindowStaysOnTopHint is set once, at creation. Windows drops a window out
+    of the topmost band when another topmost or full-screen app takes it,
+    and Qt never puts it back — the bubble then hid behind whatever he opened
+    until he minimised it (his report, 2026-09-26).
+    """
+    if not w.isVisible() or QGuiApplication.platformName() != "windows":
+        return
+    SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_NOOWNERZORDER = 0x1, 0x2, 0x10, 0x200
+    ctypes.windll.user32.SetWindowPos(
+        ctypes.wintypes.HWND(int(w.winId())), ctypes.wintypes.HWND(-1),  # HWND_TOPMOST
+        0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER)
+
+
 class Bubble(QWidget):
     """GOAT collapsed to a single dot — the messenger-bubble mode.
 
@@ -1231,6 +1450,16 @@ class Bubble(QWidget):
         p.setPen(QPen(rim, max(2, self._d // 22)))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(disc)
+        if t.get("hud"):
+            # Three coils around the G, turning while GOAT is busy.
+            coil = QColor(accent)
+            coil.setAlpha(int(110 + 130 * glow))
+            p.setPen(QPen(coil, max(1.5, self._d / 30), Qt.SolidLine, Qt.FlatCap))
+            inner = QRectF(disc).adjusted(disc.width() * 0.14, disc.height() * 0.14,
+                                          -disc.width() * 0.14, -disc.height() * 0.14)
+            a0 = self._phase * 360
+            for k in range(3):
+                p.drawArc(inner, int((a0 + k * 120) * 16), int(80 * 16))
 
         f = self.font()
         f.setFamilies(["Segoe UI Variable Display", "Segoe UI"])
@@ -1394,6 +1623,7 @@ class MessagePop(QWidget):
         if not self.isVisible():
             self.show()
         self.raise_()
+        pin_topmost(self)
         self._fade.start(self.HOLD_MS)
 
     def follow(self, anchor: QRect):
@@ -1443,8 +1673,18 @@ class MessagePop(QWidget):
         edge.setAlpha(170)
         p.setPen(QPen(edge, 1.2))
         p.setBrush(g)
-        rad = max(10, self._pad)
+        rad = 3 if t.get("hud") else max(10, self._pad)
         p.drawRoundedRect(r, rad, rad)
+        if t.get("hud"):
+            edge.setAlpha(255)
+            p.setPen(QPen(edge, 2, Qt.SolidLine, Qt.SquareCap))
+            L = max(10, self._pad)
+            for (x, y, dx, dy) in ((r.left(), r.top(), 1, 1),
+                                   (r.right(), r.top(), -1, 1),
+                                   (r.left(), r.bottom(), 1, -1),
+                                   (r.right(), r.bottom(), -1, -1)):
+                p.drawLine(x, y, x + dx * L, y)
+                p.drawLine(x, y, x, y + dy * L)
 
     def mouseReleaseEvent(self, ev):
         self._fade.stop()
@@ -1565,6 +1805,7 @@ class GoatWindow(QWidget):
         # ---- the string ----
         self.string = StringLine()
         lay.addWidget(self.string)
+        self.canvas.anchor = self.string
 
         # ---- the page: conversation as typography ----
         self.col = QVBoxLayout()
@@ -1717,6 +1958,12 @@ class GoatWindow(QWidget):
         self.pop.clicked.connect(self.expand)
         self.bubble.relocated.connect(
             lambda: self.pop.follow(self.bubble.frameGeometry()))
+        # Windows knocks floating windows out of the topmost band and shoves
+        # them around on display changes; while collapsed, a slow keeper puts
+        # the dot back where he left it, on top, with the card glued beside it.
+        self._keeper = QTimer(self)
+        self._keeper.setInterval(1500)
+        self._keeper.timeout.connect(self._keep_bubble_up)
         self.apply_theme(self._theme_name)
 
     # ---- window controls ----
@@ -1733,6 +1980,8 @@ class GoatWindow(QWidget):
         self.bubble.set_unread(False)
         self.bubble.show()
         self.bubble.raise_()
+        pin_topmost(self.bubble)
+        self._keeper.start()
         self._collapsing = True        # hide() fires changeEvent; don't recurse
         try:
             self.hide()
@@ -1742,6 +1991,7 @@ class GoatWindow(QWidget):
     def expand(self):
         """Back to the full window, exactly where it was."""
         self.bubble.set_unread(False)
+        self._keeper.stop()
         self.pop.hide()
         self.bubble.hide()
         self._collapsing = True
@@ -1758,6 +2008,17 @@ class GoatWindow(QWidget):
 
     def toggle_bubble(self):
         self.expand() if self.bubble.isVisible() else self.collapse()
+
+    def _keep_bubble_up(self):
+        if not self.bubble.isVisible():
+            self._keeper.stop()
+            return
+        if self.bubble._press is None:      # never fight his drag
+            self.bubble.place(self.cfg.get("bubble"))
+        pin_topmost(self.bubble)
+        if self.pop.isVisible():
+            self.pop.follow(self.bubble.frameGeometry())
+            pin_topmost(self.pop)
 
     def _save_bubble_pos(self):
         self.cfg["bubble"] = [self.bubble.x(), self.bubble.y()]
