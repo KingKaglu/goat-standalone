@@ -2031,6 +2031,8 @@ class GoatWindow(QWidget):
         to the next event-loop turn rather than run inside the handler.
         """
         super().changeEvent(ev)
+        if ev.type() == QEvent.WindowStateChange and not self.isFullScreen():
+            QTimer.singleShot(0, self._native_frame)   # fullscreen exit resets it
         if (ev.type() == QEvent.WindowStateChange and self.isMinimized()
                 and not self._collapsing and not self.bubble.isVisible()):
             QTimer.singleShot(0, self.collapse)
@@ -2454,6 +2456,61 @@ class GoatWindow(QWidget):
                 return 2      # HTCAPTION — drag/snap/double-click-maximize
         return None           # HTCLIENT (default)
 
+    # Hit-testing alone isn't enough for Snap: Windows only snaps (Win+arrow,
+    # drag-to-edge, Snap Layouts, half-and-half with Chrome) a window whose
+    # STYLE says it has a sizing frame and a maximize box. Qt's frameless
+    # window is a bare WS_POPUP, so Windows refused (2026-09-26: "I can't
+    # have half GOAT and half Chrome"). Add the styles back; WM_NCCALCSIZE
+    # below keeps the drawn frame at zero so the look doesn't change.
+    _SNAP_STYLE = (0x00C00000     # WS_CAPTION
+                   | 0x00040000   # WS_THICKFRAME
+                   | 0x00020000   # WS_MINIMIZEBOX
+                   | 0x00010000   # WS_MAXIMIZEBOX
+                   | 0x00080000)  # WS_SYSMENU
+
+    def _native_frame(self):
+        if sys.platform != "win32" or self.isFullScreen():
+            return
+        try:
+            hwnd = int(self.winId())
+            u = ctypes.windll.user32
+            st = u.GetWindowLongW(hwnd, -16) & 0xFFFFFFFF   # GWL_STYLE
+            want = (st | self._SNAP_STYLE) & ~0x80000000    # drop WS_POPUP
+            if want == st:
+                return
+            u.SetWindowLongW(hwnd, -16, ctypes.c_long(want))
+            # SWP_FRAMECHANGED | NOMOVE | NOSIZE | NOZORDER | NOACTIVATE
+            u.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x20 | 0x2 | 0x1 | 0x4 | 0x10)
+        except Exception:  # noqa: BLE001 — cosmetic; never break the window
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        QTimer.singleShot(0, self._native_frame)
+
+    def _nc_calc_size(self, msg):
+        """WM_NCCALCSIZE: whole window is client area (no drawn frame).
+        Maximized, Windows oversizes the window by the frame width — clamp
+        the client to the monitor's work area so nothing hangs off-screen."""
+        if not msg.wParam:
+            return None
+        if self.isMaximized():
+            rc = ctypes.wintypes.RECT.from_address(msg.lParam)
+
+            class _MI(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_ulong),
+                            ("rcMonitor", ctypes.wintypes.RECT),
+                            ("rcWork", ctypes.wintypes.RECT),
+                            ("dwFlags", ctypes.c_ulong)]
+            mi = _MI()
+            mi.cbSize = ctypes.sizeof(_MI)
+            u = ctypes.windll.user32
+            mon = u.MonitorFromWindow(ctypes.wintypes.HWND(msg.hWnd), 2)
+            if mon and u.GetMonitorInfoW(ctypes.c_void_p(mon), ctypes.byref(mi)):
+                rc.left, rc.top = mi.rcWork.left, mi.rcWork.top
+                rc.right, rc.bottom = mi.rcWork.right, mi.rcWork.bottom
+        return 0
+
     def nativeEvent(self, eventType, message):
         if eventType == "windows_generic_MSG" and not self.isFullScreen():
             try:
@@ -2461,6 +2518,10 @@ class GoatWindow(QWidget):
                 if not addr:
                     return super().nativeEvent(eventType, message)
                 msg = ctypes.wintypes.MSG.from_address(addr)
+                if msg.message == 0x0083:  # WM_NCCALCSIZE
+                    r = self._nc_calc_size(msg)
+                    if r is not None:
+                        return True, r
                 if msg.message == 0x0084:  # WM_NCHITTEST
                     gx = ctypes.c_short(msg.lParam & 0xFFFF).value
                     gy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
