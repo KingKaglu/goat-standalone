@@ -428,25 +428,45 @@ async def main():
               has(app, "work_fail") and has(app, "work_done") and not app.busy,
               f"events={[e[0] for e in app.events]}")
 
-        # ---- context economy (unchanged machinery) ----
-        big = result_msg(ctx=g.ROTATE_CTX + 5000)
-        small_after = result_msg(ctx=100)
-        c = MockClient(script=[big, small_after], ctx_after=9000)
-        app = make_app(c)
-        app.busy = True
-        app.last_user_text = "big work"
-        wants_fresh = await app._consume()
-        check("compact fires past 60k and session survives",
-              "/compact" in c.queries and wants_fresh is False
-              and app._last_ctx == 9000 and not app._compacting,
-              f"queries={c.queries} wants_fresh={wants_fresh} ctx={app._last_ctx}")
-
+        # ---- context economy ----
+        # Every case here can rotate, and rotation deletes SESSION_FILE — so
+        # point it at a temp file. (2026-09-25: this block ran against the
+        # REAL .goat-session-py and deleted his live session pointer.)
         tmp2 = tempfile.NamedTemporaryFile(delete=False)
         tmp2.write(b"sid")
         tmp2.close()
         old_session = g.SESSION_FILE
+        old_compact = g.COMPACT_CLI
         g.SESSION_FILE = tmp2.name
         try:
+            # Default since the one-brain switch: rotate, never a blocking
+            # /compact (it froze the only brain for 2m09s).
+            check("compact is off by default", old_compact is False)
+            c = MockClient(script=[result_msg(ctx=g.ROTATE_CTX + 5000)])
+            app = make_app(c)
+            app.busy = True
+            app.last_user_text = "big work"
+            wants_fresh = await app._consume()
+            check("past 60k rotates at once, no /compact turn",
+                  "/compact" not in c.queries and wants_fresh is True
+                  and not app._compacting,
+                  f"queries={c.queries} wants_fresh={wants_fresh}")
+
+            with open(tmp2.name, "w") as f:
+                f.write("sid")
+            g.COMPACT_CLI = True    # opt-in path (GOAT_COMPACT=on)
+            big = result_msg(ctx=g.ROTATE_CTX + 5000)
+            small_after = result_msg(ctx=100)
+            c = MockClient(script=[big, small_after], ctx_after=9000)
+            app = make_app(c)
+            app.busy = True
+            app.last_user_text = "big work"
+            wants_fresh = await app._consume()
+            check("opt-in compact fires past 60k and session survives",
+                  "/compact" in c.queries and wants_fresh is False
+                  and app._last_ctx == 9000 and not app._compacting,
+                  f"queries={c.queries} wants_fresh={wants_fresh} ctx={app._last_ctx}")
+
             big = result_msg(ctx=g.ROTATE_CTX + 5000)
             still_big = result_msg(ctx=g.ROTATE_CTX + 5000)
             c = MockClient(script=[big, still_big], ctx_after=g.ROTATE_CTX + 4000)
@@ -461,6 +481,7 @@ async def main():
                   f"wants_fresh={wants_fresh} rotate={app._rotate_only}")
         finally:
             g.SESSION_FILE = old_session
+            g.COMPACT_CLI = old_compact
             if os.path.exists(tmp2.name):
                 os.unlink(tmp2.name)
 

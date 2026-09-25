@@ -141,7 +141,12 @@ HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
 # get_context_usage() afterwards; if it didn't take, fall back to rotation.
 # The CLI's built-in autocompact can't do this job: measured threshold is
 # ~934k tokens (1M window) — crash protection, not cost control.
-COMPACT_CLI = os.environ.get("GOAT_COMPACT", "on").lower() not in (
+# OFF by default since the one-brain switch (2026-09-25): /compact used to run
+# on the silent work lane while the talk lane kept him company. With one brain
+# it blocks EVERYTHING — measured 2m09s of dead air right after his first
+# turn, every word he said queued behind it, and it looked frozen to him.
+# Rotation is instant and carries the handoff. GOAT_COMPACT=on restores it.
+COMPACT_CLI = os.environ.get("GOAT_COMPACT", "off").lower() not in (
     "off", "0", "false")
 
 # Language modes he can pick (drawer / voice): English only, Georgian only,
