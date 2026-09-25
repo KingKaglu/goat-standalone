@@ -670,6 +670,28 @@ def set_topmost(hwnd: int, on: bool) -> None:
                          0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
 
 
+WS_EX_TOOLWINDOW = 0x00000080
+SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
+
+
+def _own_windows(pid: int) -> tuple[dict | None, list[dict]]:
+    """GOAT's visible windows split into (main window, floating extras).
+
+    Collapsed, GOAT is not a window at all but a dot and its message card —
+    both Qt.Tool windows. Minimizing the dot like a window turned it into a
+    half-cut caption stub on the desktop and left the card stranded on its
+    own across the screen (his report, 2026-09-26)."""
+    main, floats = None, []
+    for w in windows(all_windows=True):
+        if w["pid"] != pid or w["width"] <= 0 or w["height"] <= 0:
+            continue
+        if _user32.GetWindowLongW(w["hwnd"], GWL_EXSTYLE) & WS_EX_TOOLWINDOW:
+            floats.append(w)
+        elif main is None and w["title"].strip():
+            main = w
+    return main, floats
+
+
 def stand_aside(minimize: bool = True) -> dict:
     """Clear GOAT's window out of the way of whatever it is about to drive.
 
@@ -678,36 +700,52 @@ def stand_aside(minimize: bool = True) -> dict:
     screenshot shows GOAT rather than the thing being worked on (measured
     2026-09-14 — a click at (308,108) meant for a browser field hit GOAT's
     panel and typed into nothing). Dropping topmost is the part that matters;
-    minimizing also frees the pixels.
+    minimizing also frees the pixels. The collapsed dot and its card are
+    hidden outright instead — they are not windows to minimize.
     """
     global _aside
     w = self_window()
     if not w:
         return {"aside": False, "reason": "GOAT's own window was not found"}
+    main, floats = _own_windows(w["pid"])
     if _aside is None:
-        _aside = {"hwnd": w["hwnd"], "topmost": is_topmost(w["hwnd"]),
-                  "minimized": w["minimized"]}
-    set_topmost(w["hwnd"], False)
-    if minimize and not w["minimized"]:
-        _user32.ShowWindow(w["hwnd"], SW_MINIMIZE)
+        _aside = {"hwnd": main["hwnd"] if main else None,
+                  "topmost": is_topmost(main["hwnd"]) if main else True,
+                  "minimized": main["minimized"] if main else True,
+                  "hidden": []}
+    for f in floats:
+        _user32.ShowWindow(f["hwnd"], SW_HIDE)
+        if f["hwnd"] not in _aside["hidden"]:
+            _aside["hidden"].append(f["hwnd"])
+    if main:
+        set_topmost(main["hwnd"], False)
+        if minimize and not main["minimized"]:
+            _user32.ShowWindow(main["hwnd"], SW_MINIMIZE)
     time.sleep(0.2)  # let the desktop repaint before anyone screenshots it
-    return {"aside": True, "hwnd": w["hwnd"], "minimized": bool(minimize),
-            "was_topmost": _aside["topmost"]}
+    return {"aside": True, "hwnd": main["hwnd"] if main else w["hwnd"],
+            "minimized": bool(minimize), "was_topmost": _aside["topmost"]}
 
 
 def step_back_in() -> dict:
     """Undo stand_aside — exactly as GOAT was, on-top state included."""
     global _aside
+    want = _aside or {"topmost": True, "minimized": False, "hidden": []}
+    for h in want.get("hidden", []):
+        if _user32.IsWindow(h):
+            _user32.ShowWindow(h, SW_SHOWNOACTIVATE)
+            set_topmost(h, True)
     w = self_window()
-    if not w:
+    main, _ = _own_windows(w["pid"]) if w else (None, [])
+    hwnd = want.get("hwnd") or (main["hwnd"] if main else None)
+    if not hwnd and not want.get("hidden"):
         return {"restored": False, "reason": "GOAT's own window was not found"}
-    want = _aside or {"topmost": True, "minimized": False}
-    if not want.get("minimized"):
-        _user32.ShowWindow(w["hwnd"], SW_RESTORE)
-    set_topmost(w["hwnd"], bool(want.get("topmost", True)))
+    if hwnd and not want.get("minimized"):
+        _user32.ShowWindow(hwnd, SW_RESTORE)
+    if hwnd:
+        set_topmost(hwnd, bool(want.get("topmost", True)))
     _aside = None
     time.sleep(0.15)
-    return {"restored": True, "hwnd": w["hwnd"],
+    return {"restored": True, "hwnd": hwnd,
             "topmost": bool(want.get("topmost", True))}
 
 
