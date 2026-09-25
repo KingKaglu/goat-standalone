@@ -273,7 +273,7 @@ async def backchannel_cases():
 
 asyncio.run(backchannel_cases())
 check("backchannel lines are in the TTS prewarm list, so they cost no network",
-      all(line in (list(g.ACK_ORDER["en"]) + list(g.ACK_ADD["en"])
+      all(line in (list(g.ACK_ORDER["en"])
                    + list(g.ACK_REFLEX["en"]) + list(g.BACKCHANNEL["en"]))
           for line in g.BACKCHANNEL["en"]))
 

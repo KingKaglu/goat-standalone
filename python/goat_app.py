@@ -67,7 +67,11 @@ TRANSCRIPT_MAX = 400  # lines kept when the file is trimmed
 # of it, and the selected model is set on the work client per dispatch.
 # Roster refreshed 2026-09-14 (his order: "latest models, highest thinking").
 # MODEL_FULL is the DEFAULT working brain and the fallback for every lookup.
-MODEL_FULL = "claude-opus-5"      # was claude-opus-4-8
+# 2026-09-25 (his order: "operate on Opus 5.5 as default"): Opus 5.5 answers
+# "OK" on his account (3.0s) — it needed SDK 0.2.159 (bundled CLI 2.1.281;
+# 2.1.259 refused the id). Opus 5 stays as the fallback model.
+MODEL_FULL = "claude-opus-5-5"    # was claude-opus-5
+MODEL_PREV = "claude-opus-5"      # fallback if 5.5 is unavailable
 MODEL_FAST = "claude-sonnet-5"
 MODEL_FABLE = "claude-fable-5-1"  # was claude-fable-5 (Fable 5.1, GA 2026-09-01)
 # Re-measured 2026-09-14 11:40 on his account with `claude --model <id> -p`:
@@ -87,14 +91,14 @@ MODEL_FABLE = "claude-fable-5-1"  # was claude-fable-5 (Fable 5.1, GA 2026-09-01
 # and the work client carries fallback_model=MODEL_FULL so picking it can
 # never dead-end the left lane.
 # What the footer shows. The UI displays these verbatim — keep them speakable.
-MODEL_NAMES = {MODEL_FULL: "opus 5", MODEL_FAST: "sonnet 5",
+MODEL_NAMES = {MODEL_FULL: "opus 5.5", MODEL_PREV: "opus 5", MODEL_FAST: "sonnet 5",
                MODEL_FABLE: "fable 5.1"}
 # Selectable Claude models for the working / hard roles (display -> id).
-WORK_BRAINS = {"opus 5": MODEL_FULL, "fable 5.1": MODEL_FABLE}
+WORK_BRAINS = {"opus 5.5": MODEL_FULL, "fable 5.1": MODEL_FABLE}
 # Talking-brain choices. "gemini flash" = the local_llm transport (free,
 # always up); "sonnet 5" routes talk through a dedicated Claude talk client.
-DEFAULT_WORK = "opus 5"
-DEFAULT_HARD = "opus 5"
+DEFAULT_WORK = "opus 5.5"
+DEFAULT_HARD = "opus 5.5"
 
 # ---- thinking depth (his order 2026-09-14: "the highest thinking") ----
 # Effort is what buys thinking depth on the current models: adaptive thinking
@@ -497,7 +501,7 @@ SPOKEN ALOUD as you write it.
   already did for him (open, close, volume…). It is your own memory — never
   reply to it.
 - MODEL TRUTH: if he asks which model is answering, name the working brain
-  he has selected (Opus 5 unless he switched it). Never claim a switch.
+  he has selected (Opus 5.5 unless he switched it). Never claim a switch.
 """.strip()
 
 def _greeting() -> str:
@@ -579,8 +583,6 @@ ACK_ORDER = {
     "en": ("On it.", "Right away.", "Got it — starting now.", "Working on it."),
     "ka": ("ვიწყებ.", "კეთდება.", "მაშინვე.", "გასაგებია, ვიწყებ."),
 }
-ACK_ADD = {"en": ("Adding that.", "Folding it in."),
-           "ka": ("ვამატებ.", "ესეც ჩავამატე.")}
 # The reflex lane's voice. These are deliberately SHORT and fixed: they live
 # in the TTS cache, so the sound starts the moment he stops talking instead of
 # after a ~0.85s edge-tts call. Saying the thing's name out loud would be
@@ -1092,6 +1094,10 @@ class GoatApp:
         self.busy = False                     # a WORK turn is in flight
         self.last_user_text = None            # work text (re-run on rotation)
         self.suppressed = False
+        # A turn he talked over or stopped (see _cut_turn): its result is
+        # swallowed, and _after_cut is what he said instead, answered next.
+        self._cut = False
+        self._after_cut: str | None = None
         self._hold_deltas = False             # kept False now (no ESCALATE gate)
         self._delta_buf = ""
         # usage watch — session Claude totals, so Giorgi sees the burn and a
@@ -1158,6 +1164,41 @@ class GoatApp:
             await self.client.interrupt()
         except Exception as e:  # noqa: BLE001
             self.emit("status", f"interrupt failed: {e}")
+
+    async def _cut_turn(self, then: str | None):
+        """End the running turn NOW and, if he said something, answer that.
+
+        interrupt() ends the turn with an error_during_execution result about
+        20ms later (measured 2026-09-25, SDK 0.2.152). _consume swallows that
+        result — no FAIL line, no tail of the old answer — and starts `then`
+        as a fresh turn. The session keeps the cut-off reply, so the brain
+        knows where it was when he spoke."""
+        self._cut = True
+        self._cut_id = getattr(self, "_cut_id", 0) + 1
+        self._after_cut = then
+        self.suppressed = True
+        self.tts.cancel()
+        self._say_buf = ""
+        await self._safe_interrupt()
+        asyncio.create_task(self._cut_watchdog(self._cut_id))
+
+    async def _cut_watchdog(self, cut_id: int, wait_s: float = 8.0):
+        """If the cut turn's result never arrives, don't leave him stuck."""
+        await asyncio.sleep(wait_s)
+        if self._cut and self._cut_id == cut_id:
+            self._finish_cut()
+
+    def _finish_cut(self):
+        self._cut = False
+        self.suppressed = False
+        self.busy = False
+        self._say_buf = ""
+        self._reply_acc = ""
+        self._work_done_at = time.monotonic()
+        self.emit("work_done", "")
+        nxt, self._after_cut = self._after_cut, None
+        if nxt:
+            asyncio.create_task(self._work(nxt))
 
     async def _backchannel(self, gen: int):
         """One listening noise, if the gap runs long enough to need it.
@@ -1441,7 +1482,7 @@ class GoatApp:
     def _prewarm_voice(self):
         """Fill the TTS cache for the voice that is current RIGHT NOW."""
         lang = self.turn_lang if self.turn_lang in ACK_ORDER else "en"
-        lines = list(ACK_ORDER[lang]) + list(ACK_ADD[lang]) + list(
+        lines = list(ACK_ORDER[lang]) + list(
             ACK_REFLEX[lang]) + list(BACKCHANNEL[lang]) + [
             DONE_LEAD[lang], FAIL_LEAD[lang], REFLEX_FAIL[lang],
             "Stopped." if lang == "en" else "შევჩერდი."]
@@ -1586,13 +1627,13 @@ class GoatApp:
             self.emit("you", text)
         # Spoken brake on a running work turn.
         if self.busy and STOP_RE.search(text) and len(text.split()) <= 5:
-            await self._safe_interrupt()
-            self.busy = False
+            # Through _cut_turn so the interrupted turn's error result is
+            # swallowed — it used to follow "Stopped." with "That one failed."
+            await self._cut_turn(None)
             self.emit("work_fail", "Stopped.")
-            self.emit("work_done", "")
             self.tts.mark_reply()
             self.emit("delta", "")
-            self.tts.say("Stopped.")
+            self.tts.say("Stopped." if self.turn_lang != "ka" else "შევჩერდი.")
             return
         # REFLEX LANE (2026-09-15, his complaint: "opening a file or Google
         # takes long — I want it to feel instant"). A device command that can
@@ -1724,12 +1765,23 @@ class GoatApp:
         target_name = self.hard_model if hard else self.work_model
         target = WORK_BRAINS.get(target_name, MODEL_FULL)
         if self.busy:
-            # A work turn is already running — fold this order in so the
-            # running turn sees his additions (Node parity).
+            # He spoke while GOAT is mid-turn. JARVIS doesn't announce
+            # "adding that" (his goal 2026-09-25: it kept saying "ესეც
+            # ჩავამატე" to every word, even "Hmm?") — he stops and listens.
+            if self._cut:
+                # A cut is already in flight; this rides along with it.
+                self._after_cut = (f"{self._after_cut}\n{text}"
+                                   if self._after_cut else text)
+                return
+            if not self._turn_has_tools:
+                # He talked over a spoken answer: drop it, answer this.
+                await self._cut_turn(text)
+                return
+            # Real work under way (tools running): fold it in silently so the
+            # running turn sees it at its next step.
             if self.last_user_text:
                 self.last_user_text += "\n" + text
             self.emit("work_add", text[:120])
-            self._ack(ACK_ADD)
             await self.client.query(text)
             return
         if self.claude_out:
@@ -1895,6 +1947,10 @@ class GoatApp:
                     self.emit("work_ctx", f"{after}|{ROTATE_CTX}")
                     self.emit("status",
                               f"context compacted to {after // 1000}k — usage saved")
+                    continue
+                if self._cut:
+                    # The turn he talked over or stopped — see _cut_turn.
+                    self._finish_cut()
                     continue
                 self.suppressed = False
                 self.busy = False
@@ -2160,7 +2216,7 @@ class GoatApp:
             # If the picked brain can't serve (Fable's separate credit
             # bucket, or an overload), the turn lands on Opus 5 instead of
             # dying. Without this a credit-less Fable pick kills work.
-            fallback_model=MODEL_FULL,
+            fallback_model=MODEL_PREV,
             system_prompt={"type": "preset", "preset": "claude_code", "append": persona},
             include_partial_messages=True,
             # "project" = ONLY workspace/.claude — GOAT's own skill library.

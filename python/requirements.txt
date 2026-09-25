@@ -3,7 +3,7 @@ numpy
 scipy
 silero-vad
 livekit
-claude-agent-sdk>=0.2.152
+claude-agent-sdk>=0.2.159   # 0.2.159 bundles CLI 2.1.281, the first that knows claude-opus-5-5
 httpx
 edge-tts
 soundfile

@@ -141,11 +141,13 @@ TEXT_SIZES = {"small": 24, "normal": 32, "large": 40}
 # Fable 5. Opus 5 leads because Fable bills from a credit bucket his account
 # doesn't have (measured) — picking Fable still works, the engine just falls
 # back to Opus 5 instead of dead-ending the work lane.
-WORK_OPTS = ["opus 5", "fable 5.1"]
+# 2026-09-25: Opus 5.5 replaces Opus 5 as the default (his order).
+WORK_OPTS = ["opus 5.5", "fable 5.1"]
 # Old names, so a saved config from before the refresh lands on the model
 # that replaced its pick instead of being silently reset.
-WORK_OPTS_RENAMED = {"fable 5": "fable 5.1", "opus 4.8": "opus 5",
-                     "opus 4.6": "opus 5", "sonnet 4.6": "opus 5"}
+WORK_OPTS_RENAMED = {"fable 5": "fable 5.1", "opus 5": "opus 5.5",
+                     "opus 4.8": "opus 5.5", "opus 4.6": "opus 5.5",
+                     "sonnet 4.6": "opus 5.5"}
 # Thinking depth on the work lane (his order 2026-09-14: "highest thinking").
 # Same ladder the API exposes; "max" is the top and the default.
 EFFORT_OPTS = ["low", "medium", "high", "xhigh", "max"]
@@ -169,7 +171,7 @@ COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
 DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
                "lang": "en", "character": "goat",
-               "work_model": "opus 5", "hard_model": "opus 5",
+               "work_model": "opus 5.5", "hard_model": "opus 5.5",
                "effort": "high", "last_lang": "en",
                "scale": 1.0, "colors": {},
                "geom": None,    # [x, y, w, h] — remembered window box
@@ -202,7 +204,7 @@ def load_ui_config() -> dict:
     cfg.pop("talk_brain", None)      # retired 2026-09-23 (one brain)
     for key in ("work_model", "hard_model"):
         if cfg[key] not in WORK_OPTS:
-            cfg[key] = WORK_OPTS_RENAMED.get(cfg[key], "opus 5")
+            cfg[key] = WORK_OPTS_RENAMED.get(cfg[key], "opus 5.5")
     if cfg["effort"] not in EFFORT_OPTS:
         cfg["effort"] = "max"
     if cfg["last_lang"] not in ("en", "ka"):
@@ -1907,13 +1909,13 @@ class GoatWindow(QWidget):
         self._save()
 
     def set_work_opt(self, name: str):
-        self.cfg["work_model"] = name if name in WORK_OPTS else "opus 5"
+        self.cfg["work_model"] = name if name in WORK_OPTS else "opus 5.5"
         if self.goat:
             self.goat.set_work_model(self.cfg["work_model"])
         self._save()
 
     def set_hard_opt(self, name: str):
-        self.cfg["hard_model"] = name if name in WORK_OPTS else "opus 5"
+        self.cfg["hard_model"] = name if name in WORK_OPTS else "opus 5.5"
         if self.goat:
             self.goat.set_hard_model(self.cfg["hard_model"])
         self._save()
@@ -1970,8 +1972,8 @@ class GoatWindow(QWidget):
         # Before the engine thread starts: run() applies voice + hearing
         # model + persona note itself from this attribute.
         goat.language = self.cfg["lang"]
-        goat.work_model = self.cfg.get("work_model", "opus 5")
-        goat.hard_model = self.cfg.get("hard_model", "opus 5")
+        goat.work_model = self.cfg.get("work_model", "opus 5.5")
+        goat.hard_model = self.cfg.get("hard_model", "opus 5.5")
         goat.effort = self.cfg.get("effort", "high")
         if self.cfg.get("lang") == "auto":
             goat.turn_lang = self.cfg.get("last_lang", "en")

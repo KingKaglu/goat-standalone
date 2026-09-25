@@ -118,6 +118,8 @@ def make_app(client):
     app._rotate_only = False
     app._pending_handoff = ""
     app._compacting = False
+    app._cut = False
+    app._after_cut = None
     app.language = "en"
     app.turn_lang = "en"
     app._local_unseen = []
@@ -230,7 +232,7 @@ async def main():
         # 3. work_model / hard_model still pick the model
         c = MockClient()
         app = make_app(c)
-        app.work_model = "opus 5"
+        app.work_model = "opus 5.5"
         await app._work("fix the scroll bug in the app")
         check("normal turn -> work_model",
               c.models == [g.MODEL_FULL] and app.busy
@@ -297,17 +299,20 @@ async def main():
                   f"said={app.tts.spoken}")
 
             g.reflex = StubReflex()
-            app = make_app(MockClient())
+            app = make_app(MockClient(script=[result_msg(is_error=True)]))
             app.busy = True
             await app._talk("stop")
+            await app._consume()
             check("the stop brake still wins over the reflex lane",
                   not app.busy and "Stopped." in app.tts.spoken,
                   f"busy={app.busy} said={app.tts.spoken}")
         finally:
             g.reflex = real_reflex
 
-        # 6. spoken 'stop' brakes a running turn
-        c = MockClient()
+        # 6. spoken 'stop' brakes a running turn. interrupt() ends the turn
+        # with an error_during_execution result (measured) — that result must
+        # be swallowed, not followed by "That one failed."
+        c = MockClient(script=[result_msg(is_error=True)])
         app = make_app(c)
         app.busy = True
         interrupted = []
@@ -316,21 +321,73 @@ async def main():
             interrupted.append(True)
         app._safe_interrupt = fake_interrupt
         await app._talk("stop")
-        check("spoken stop brakes the running turn",
+        await app._consume()
+        check("spoken stop brakes the running turn, says only 'Stopped.'",
               interrupted and app.tts.spoken == ["Stopped."]
               and not app.busy and c.queries == [] and has(app, "work_fail"),
               f"interrupted={interrupted} spoken={app.tts.spoken}")
 
-        # 7. something said mid-turn folds into the running turn
+        # 7. JARVIS mid-turn (his goal 2026-09-25: "it keeps saying ესეც
+        # ჩავამატე"). Nothing he says mid-turn is ever answered with an
+        # "adding that" line.
+        # 7a. real work under way (tools ran) -> folded in, silently
         c = MockClient()
         app = make_app(c)
         app.busy = True
+        app._turn_has_tools = True
         app.last_user_text = "original"
-        await app._talk("also add tests")
-        check("speech mid-turn folds into the running turn",
-              c.queries == ["also add tests"]
-              and app.last_user_text == "original\nalso add tests"
-              and has(app, "work_add"), f"queries={c.queries}")
+        app.turn_lang = "ka"
+        await app._talk("ტესტებიც დაამატე")
+        check("mid-work order folds in silently (no 'ესეც ჩავამატე')",
+              c.queries == ["ტესტებიც დაამატე"]
+              and app.last_user_text == "original\nტესტებიც დაამატე"
+              and has(app, "work_add") and app.tts.spoken == [],
+              f"queries={c.queries} spoken={app.tts.spoken}")
+
+        # 7b. talking over a spoken answer -> old answer dropped, his new
+        # words answered as a fresh turn
+        c = MockClient(script=[result_msg(is_error=True)])
+        app = make_app(c)
+        app._log_exchange = lambda *a: None
+        app.busy = True
+        app.last_user_text = "tell me about the weather"
+        app._reply_acc = "The weather today is"
+        app._say_buf = "and tomorrow"
+        interrupted = []
+        app._safe_interrupt = fake_interrupt
+        await app._talk("what time is it")
+        mid = (app._cut, app.suppressed, list(c.queries))
+        await app._consume()
+        for _ in range(200):          # the fresh turn runs as its own task
+            if c.queries:
+                break
+            await asyncio.sleep(0.01)
+        check("talking over GOAT cuts the answer and answers him",
+              interrupted and mid == (True, True, [])
+              and len(c.queries) == 1
+              and c.queries[0].endswith("what time is it")
+              and app.busy and not app._cut and not app.suppressed
+              and app.tts.spoken == [],
+              f"mid={mid} queries={c.queries} spoken={app.tts.spoken}")
+
+        # 7c. more words while the cut is in flight ride along with it
+        c = MockClient(script=[result_msg(is_error=True)])
+        app = make_app(c)
+        app.busy = True
+        app._safe_interrupt = fake_interrupt
+        await app._talk("wait")
+        await app._talk("open the other one")
+        await app._consume()
+        for _ in range(200):          # the fresh turn runs as its own task
+            if c.queries:
+                break
+            await asyncio.sleep(0.01)
+        check("words during a cut are answered together, once",
+              len(c.queries) == 1
+              and c.queries[0].endswith("wait\nopen the other one"),
+              f"queries={c.queries}")
+        check("the 'adding that' ack pool is gone",
+              not hasattr(g, "ACK_ADD"))
 
         # 8. Claude out -> no query, an honest spoken line, reflexes still named
         c = MockClient()
@@ -732,14 +789,14 @@ async def main():
     import ui_qt
     check("UI default roles present (no talking brain)",
           "talk_brain" not in ui_qt.DEFAULT_CFG
-          and ui_qt.DEFAULT_CFG["work_model"] == "opus 5"
+          and ui_qt.DEFAULT_CFG["work_model"] == "opus 5.5"
           and ui_qt.LANGS.get("ორივე") == "auto"
           and ui_qt.EFFORT_OPTS[-1] == "max"
           and ui_qt.DEFAULT_CFG["effort"] == "high"
-          and ui_qt.DEFAULT_CFG["hard_model"] == "opus 5")
+          and ui_qt.DEFAULT_CFG["hard_model"] == "opus 5.5")
     check("UI brain option lists",
           not hasattr(ui_qt, "TALK_OPTS")
-          and ui_qt.WORK_OPTS == ["opus 5", "fable 5.1"])
+          and ui_qt.WORK_OPTS == ["opus 5.5", "fable 5.1"])
     # Every name the drawer offers must resolve in the engine, or picking it
     # silently lands on a default and the footer starts lying again.
     check("UI rosters resolve in the engine",
