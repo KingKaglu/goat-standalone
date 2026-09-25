@@ -134,11 +134,9 @@ TEXT_SIZES = {"small": 24, "normal": 32, "large": 40}
 # Manual brain roster (his order 2026-07-17): three independent roles he sets
 # by hand from the drawer — no auto-routing, no escalation. Values are the
 # display names the engine (goat_app) understands directly.
-#   talking brain  — the middle lane, out loud (Gemini Flash = free + always
-#                    up even when Claude is spent).
-#   working brain  — the left lane, tools, for normal work.
-#   hard brain     — the left lane, for heavy work.
-TALK_OPTS = ["gemini flash", "sonnet 5"]
+#   working brain  — the one brain (2026-09-23: the talking brain is gone);
+#                    it hears everything, sees the desktop, and speaks.
+#   hard brain     — the same, on the heavier model.
 # Roster refreshed 2026-09-14: Opus 5 replaces Opus 4.8, Fable 5.1 replaces
 # Fable 5. Opus 5 leads because Fable bills from a credit bucket his account
 # doesn't have (measured) — picking Fable still works, the engine just falls
@@ -171,9 +169,8 @@ COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
 DEFAULT_CFG = {"theme": "ember", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
                "lang": "en", "character": "goat",
-               "talk_brain": "gemini flash",
                "work_model": "opus 5", "hard_model": "opus 5",
-               "effort": "max", "last_lang": "en",
+               "effort": "high", "last_lang": "en",
                "scale": 1.0, "colors": {},
                "geom": None,    # [x, y, w, h] — remembered window box
                "bubble": None}  # [x, y] — remembered collapsed-bubble corner
@@ -202,8 +199,7 @@ def load_ui_config() -> dict:
         cfg["lang"] = "en"
     if cfg["character"] not in VOICE_CHARACTERS:
         cfg["character"] = "goat"
-    if cfg["talk_brain"] not in TALK_OPTS:
-        cfg["talk_brain"] = "gemini flash"
+    cfg.pop("talk_brain", None)      # retired 2026-09-23 (one brain)
     for key in ("work_model", "hard_model"):
         if cfg[key] not in WORK_OPTS:
             cfg[key] = WORK_OPTS_RENAMED.get(cfg[key], "opus 5")
@@ -774,7 +770,6 @@ class SettingsPanel(QWidget):
             lay.addLayout(h)
             self._groups[key] = btns
 
-        row("talking brain", "talk_brain", TALK_OPTS, self.win.set_talk_opt)
         row("working brain", "work_model", WORK_OPTS, self.win.set_work_opt)
         row("hard brain", "hard_model", WORK_OPTS, self.win.set_hard_opt)
         row("thinking", "effort", EFFORT_OPTS, self.win.set_effort_opt)
@@ -1505,7 +1500,7 @@ class GoatWindow(QWidget):
         send_btn = QPushButton("TALK ↵")
         send_btn.setObjectName("sendbtn")
         send_btn.setCursor(Qt.PointingHandCursor)
-        send_btn.setToolTip("send to the talking brain — or press enter")
+        send_btn.setToolTip("send to GOAT — or press enter")
         send_btn.clicked.connect(self._submit)
         work_btn = QPushButton("WORK ⌃↵")
         work_btn.setObjectName("workbtn")
@@ -1911,12 +1906,6 @@ class GoatWindow(QWidget):
         self._refresh_mic_btn()
         self._save()
 
-    def set_talk_opt(self, name: str):
-        self.cfg["talk_brain"] = name if name in TALK_OPTS else "gemini flash"
-        if self.goat:
-            self.goat.set_talk_brain(self.cfg["talk_brain"])
-        self._save()
-
     def set_work_opt(self, name: str):
         self.cfg["work_model"] = name if name in WORK_OPTS else "opus 5"
         if self.goat:
@@ -1981,10 +1970,9 @@ class GoatWindow(QWidget):
         # Before the engine thread starts: run() applies voice + hearing
         # model + persona note itself from this attribute.
         goat.language = self.cfg["lang"]
-        goat.talk_brain = self.cfg.get("talk_brain", "gemini flash")
         goat.work_model = self.cfg.get("work_model", "opus 5")
         goat.hard_model = self.cfg.get("hard_model", "opus 5")
-        goat.effort = self.cfg.get("effort", "max")
+        goat.effort = self.cfg.get("effort", "high")
         if self.cfg.get("lang") == "auto":
             goat.turn_lang = self.cfg.get("last_lang", "en")
             self._turnlang = goat.turn_lang

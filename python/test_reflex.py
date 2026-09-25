@@ -87,11 +87,37 @@ hits("open calculator", "open_app", detail="calc")
 
 # ------------------------------------------------------- open: his own disk
 # The exact sentence that cost him ~20s and a screenshot hunt on 2026-09-15.
-hits("ოქეი, გახსენი ახლა აპლიკაცია, უფრო სწორად ფაილი, სახელად GG, "
-     "დესკტოპზე არის", "open_path", "ka", "gg")
-hits("open the file called GG on my desktop", "open_path", detail="gg")
-hits("open gg", "open_path", detail="gg")
-hits("open the folder gg", "open_path", detail="gg")
+# His real GG folder has since left the desktop, so the test brings its own
+# and removes it again (only if it made it).
+_gg = os.path.join(dirs["desktop"], "GG")
+_made_gg = not os.path.exists(_gg)
+if _made_gg:
+    os.makedirs(_gg)
+try:
+    reflex_index.refresh(background=False)
+    hits("ოქეი, გახსენი ახლა აპლიკაცია, უფრო სწორად ფაილი, სახელად GG, "
+         "დესკტოპზე არის", "open_path", "ka", "gg")
+    hits("open the file called GG on my desktop", "open_path", detail="gg")
+    hits("open gg", "open_path", detail="gg")
+    hits("open the folder gg", "open_path", detail="gg")
+finally:
+    if _made_gg:
+        os.rmdir(_gg)
+        reflex_index.refresh(background=False)
+
+# 2026-09-18: the name sits in the first sentence; the rest is chatter.
+_pic = os.path.join(dirs["desktop"], "goat-selftest-pfp.jpg")
+_made_pic = not os.path.exists(_pic)
+if _made_pic:
+    open(_pic, "wb").close()
+try:
+    hits("Hey, can you open the goat-selftest-pfp picture? For me. That I have "
+         "on my desktop.", "open_path", detail="goat-selftest-pfp")
+    hits("open the goat-selftest-pfp photo that I have on my desktop",
+         "open_path", detail="goat-selftest-pfp")
+finally:
+    if _made_pic:
+        os.remove(_pic)
 
 # A file saved AFTER the index was built must still open — "I just downloaded
 # it, open it" is one of the most natural things he can say, and a boot-time
@@ -145,6 +171,33 @@ hits("გაადიდე ფანჯარა", "window", "ka", "maximize")
 hits("დახურე ფანჯარა", "window", "ka", "close")
 # Window named by title, STT-garbled ("გაადგიდე"), with a trailing intensifier.
 hits("გაადგიდე გუგლის ფანჯარა ბოლომდე", "window", "ka", "maximize")
+hits("გამორთე ხმა", "volume", "ka", "mute")
+hits("ხმა გამორთე", "volume", "ka", "mute")
+
+# Quitting apps — process level, every target must be known.
+hits("close steam", "quit", detail="steam")
+hits("Can you turn off the Ubisoft and the Roblox for me, and the Steam?",
+     "quit", detail="ubisoft, roblox, steam")
+hits("დახურე სტიმი", "quit", "ka", "steam")
+hits("სტიმი და რობლოქსი გათიშე", "quit", "ka", "steam, roblox")
+hits("kill discord", "quit", detail="discord")
+# Exactly what the realtime ear wrote back on 2026-09-23 (test_voice_e2e).
+hits("გამორთე, ხმა.", "volume", "ka", "mute")
+hits("დახურეს, ტიმი.", "quit", "ka", "steam")
+hits("Google-ი გახსენი.", "open_url", "ka", "google.com")
+# Unknown targets never get a process killed or the front window closed.
+falls_through("close zzzznotawindow")
+falls_through("დახურე ზზზზარაფერი", "ka")
+falls_through("turn off the wifi")
+falls_through("გამორთე ლეპტოპი", "ka")
+check("a named window that is not open reports an error, never closes the "
+      "front one",
+      reflex._window("close", "zzzznotawindow").startswith("ERROR"))
+# A fake app, so the test can never kill anything real of his.
+reflex.QUIT_APPS["goat-selftest"] = ("zzzz-goat-selftest",)
+check("quitting an app that is not running says so, never 'closed it'",
+      "was not running" in reflex._quit_apps(["goat-selftest"]))
+del reflex.QUIT_APPS["goat-selftest"]
 
 # ----------------------------------------------- answers GOAT gives itself
 hits("what time is it", "answer", detail="time")

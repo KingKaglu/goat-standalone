@@ -39,6 +39,8 @@ CORE = [
     "tts_edge.py",
     "tts_piper.py",
     "goat_app.py",
+    "live_view.py",
+    "reflex.py",
     "ui_qt.py",
     "goat_doctor.py",
     "self_check.py",

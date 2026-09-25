@@ -1,5 +1,73 @@
 # GOAT State — handoff brief
 
+## ONE BRAIN WITH SIGHT (2026-09-23 night — his order: "remove the talking
+## model and Gemini; it must see and perceive everything on my laptop")
+
+Trigger: asked about his screen, the talking brain answered "I can't see the
+screen directly — that's the working side's job, but I can check which
+terminal processes are running." Two minds, one of them blind.
+- **Talking lane deleted.** `_talk_gemini`, `_talk_claude`,
+  `_ensure_talk_client`, `_escalate_from_talk`, `_offline_cover`,
+  TALK_BRAINS and `local_llm.py` (Gemini) are gone; the drawer's "talking
+  brain" row and TALK_OPTS are gone from ui_qt. `set_talk_brain` is a no-op
+  stub so an old config can't crash. Routing is now: stop brake -> reflex ->
+  the one Claude brain (`_work`), for everything.
+- **It speaks.** `_consume` sends text deltas to `_speak_delta` (middle
+  label + TTS) instead of the silent left panel; the tail is flushed at
+  turn end. Thinking still goes to the left panel, never the voice. A
+  backchannel covers a slow start instead of the old "On it" ack.
+- **It sees.** `live_view.note()` (~20ms: EnumWindows + psutil) prefixes
+  every turn: front window, open windows with their apps, busiest processes
+  since he last spoke, RAM, battery, time. Screenshots stay available via
+  the `computer` tool for pixels. PERSONA "ONE BRAIN, WITH EYES" replaces the
+  old YOUR BRAINS section.
+- **Speed:** default effort max -> high (ui_qt DEFAULT_CFG and his
+  ui-config.json). Live probe (`probe_sight.py`, real Opus 5):
+  "რა მაქვს ახლა ეკრანზე?" -> described Brave/Katy Perry, the terminals,
+  minimised Notepad, RAM — first word 3.0s cold; "what app is using the most
+  CPU" -> "MsMpEng at 14 percent", first word 0.8s.
+- Claude out of usage: honest spoken line with the reset time; reflexes
+  (open/close/volume/media/time) keep working with no model.
+- Rollback safety: `.self-backup/last-good/local_llm.py` restored from git
+  HEAD, because the last-good goat_app still imports it.
+Tests: test_engine_router rewritten for one brain (83/83), reflex 89,
+latency 39, bubble 40, statusword/audio/reveal pass, PREFLIGHT PASS.
+
+## Act, verify, then report (2026-09-23 — his goal: "work like Claude Code
+## in the terminal: do what I say, voice, Georgian + English, fast, exact")
+
+Read from the 2026-09-18 transcript. Four failure shapes, each fixed:
+1. **False "done".** "Turn off Ubisoft, Roblox and Steam" -> "closed all
+   three"; Ubisoft (process `upc`) was still up. New reflex `quit`
+   (`reflex.QUIT_APPS`, EN + KA stems): terminate, force stragglers, then
+   re-list processes; the result names what is STILL running, so the
+   REFLEX_FAIL line is spoken instead of an ack-and-lie.
+2. **Closing the wrong window.** `_window(close, "სტიმი")` found no such
+   title and closed the FOREGROUND window, then reported Steam closed. A
+   named target that doesn't resolve is now `ERROR`, and a close with an
+   unknown name is not a reflex at all (a brain looks for it).
+3. **Georgian blind spot in the lie gate** (`local_llm.ACTION_HINT_RE` /
+   `CLAIM_RE` were English-only). Georgian orders and claims added.
+4. **Run-on sentences.** "open the PFP picture? For me. That I have on my
+   desktop." fell through. `_clean_target` keeps the first sentence and drops
+   "that I have…"; picture/photo/video (+ KA) are file nouns.
+Also: both talk personas carry a VERIFY-BEFORE-REPORT rule, the Sonnet talk
+client's `max_turns` 4 -> 8 (room to check), "გამორთე ხმა" = mute.
+Tests: test_reflex 86/86 (GG tests now bring their own folder — his real GG
+left the desktop), test_engine_router 106/106, test_voice_latency 39/39.
+**Voice end-to-end, `test_voice_e2e.py` — 13/13.** edge-tts speaks each
+phrase (Georgian neural voice for KA), it streams into the real
+`stt_realtime.Pair`, the transcript goes through `reflex.match`, and the
+result is checked against Windows (mute state via pycaw, the test's own
+window process exiting, the steam process list). Ear commit 220-300ms.
+The real ear found four bugs no unit test had: it punctuates ("გამორთე,
+ხმა."), writes case endings on Latin names ("Google-ი"), moves ს across the
+word gap ("დახურე სტიმი" -> "დახურეს ტიმი"), and "close the Zebra window"
+looked for "the Zebra". All fixed, and pinned in test_reflex (89/89).
+Trap: never test window-close on Notepad — Win11 Notepad opens files as tabs
+in HIS window. The e2e test uses its own tkinter window titled "zebra".
+Not yet tried by him live.
+
 Updated: 2026-09-15 night (sub-500ms voice shipped; then the deafness:
 his mic endpoint was at 66% and GOAT was inventing English over his Georgian)
 

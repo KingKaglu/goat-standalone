@@ -1,4 +1,4 @@
-"""Engine logic tests — the manual two-lane brain (2026-07-17 redesign).
+"""Engine logic tests — one brain with sight (2026-09-23 redesign).
 
 No audio, no SDK subprocess, no API cost: the clients and TTS are mocks.
 Verifies: talk lane (Gemini, middle) vs work lane (Claude, left), manual
@@ -85,12 +85,6 @@ def make_app(client):
     app.events = []
     app.client = client
     app.tts = MockTTS()
-    # talk lane
-    app.talk_brain = "gemini flash"
-    app.talk_busy = False
-    app.talk_client = None
-    app._talk_client_model = None
-    app._talk_lock = asyncio.Lock()
     # work lane
     app.work_model = g.DEFAULT_WORK
     app.hard_model = g.DEFAULT_WORK
@@ -128,33 +122,6 @@ def make_app(client):
     app.turn_lang = "en"
     app._local_unseen = []
     return app
-
-
-class FakeLocal:
-    """Stands in for local_llm (Gemini transport) — deterministic, no network."""
-    def __init__(self, up=True, reply=None):
-        self.up = up
-        self.reply = reply
-        self.chats = []
-        self.noted = []
-        self.offline = []
-        self.statuses = []
-        self.LOCAL_KA = False
-        self.LOCAL_NAME = "gemini flash"
-
-    def available(self):
-        return self.up
-
-    def chat(self, text, on_delta=None, lang="en", offline=False, status=""):
-        self.chats.append(text)
-        self.offline.append(offline)
-        self.statuses.append(status)
-        if self.reply and self.reply != "ESCALATE" and on_delta:
-            on_delta(self.reply)
-        return self.reply
-
-    def note_exchange(self, user, reply):
-        self.noted.append((user, reply))
 
 
 def _hands_roundtrip(lh):
@@ -234,152 +201,94 @@ async def main():
     old_tr = g.TRANSCRIPT_FILE
     g.TRANSCRIPT_FILE = tmp.name
     try:
-        # ---- talk lane (middle, Gemini) ----
-        # 1. plain talk -> Gemini answers, Claude work client untouched
-        g.local_llm = fake = FakeLocal(up=True, reply="All quiet here.")
+        # ---- ONE BRAIN (2026-09-23, his order) ----
+        # The talking lane (Gemini / Sonnet) is gone. Every non-reflex turn
+        # reaches the one Claude brain, carrying a live desktop note, and the
+        # brain's own text is what GOAT says.
+        g.BACKCHANNEL_MODE = "off"      # no stray listening-noise tasks here
+        g.live_view = type("LV", (), {
+            "note": staticmethod(lambda: "[live desktop, test note]"),
+            "prime": staticmethod(lambda: None)})
+
+        # 1. small talk reaches the brain, with sight attached
         c = MockClient()
         app = make_app(c)
         await app._talk("how are you doing")
-        check("talk -> Gemini answers, work client untouched",
-              fake.chats == ["how are you doing"] and c.queries == []
-              and not app.busy and app._local_unseen
-              and has(app, "turn_done"),
-              f"chats={fake.chats} queries={c.queries}")
+        check("small talk reaches the one brain with the live desktop note",
+              c.queries == ["[live desktop, test note]\n\nhow are you doing"]
+              and app.busy, f"queries={c.queries}")
 
-        # 2. talk keeps working even while a WORK turn is running (rule 2:
-        #    Gemini talks while Fable works) — work client stays untouched
-        g.local_llm = fake = FakeLocal(up=True, reply="About two minutes out.")
+        # 2. the exact question the old talking brain refused
         c = MockClient()
         app = make_app(c)
-        app.busy = True  # a work turn is in flight
-        await app._talk("how's it going")
-        check("talk works concurrently with a running work turn",
-              fake.chats == ["how's it going"] and c.queries == []
-              and app.busy,  # work turn left running
-              f"chats={fake.chats} queries={c.queries} busy={app.busy}")
+        await app._talk("what's on my screen right now?")
+        check("a screen question is answered by the brain that can see",
+              c.queries and c.queries[0].startswith("[live desktop")
+              and c.queries[0].endswith("what's on my screen right now?"),
+              f"queries={c.queries}")
 
-        # ---- work lane (left, Claude) ----
-        # 3. work order -> working brain (work_model), tools, no Gemini
-        g.local_llm = fake = FakeLocal(up=True, reply="nope")
+        # 3. work_model / hard_model still pick the model
         c = MockClient()
         app = make_app(c)
         app.work_model = "opus 5"
         await app._work("fix the scroll bug in the app")
-        check("work -> working brain (work_model), Gemini skipped",
-              fake.chats == [] and c.queries == ["fix the scroll bug in the app"]
-              and c.models == [g.MODEL_FULL] and app.busy
-              and has(app, "work_start"),
-              f"chats={fake.chats} models={c.models} queries={c.queries}")
-
-        # 4. hard dispatch -> hard_model, not work_model
+        check("normal turn -> work_model",
+              c.models == [g.MODEL_FULL] and app.busy
+              and c.queries[0].endswith("fix the scroll bug in the app")
+              and has(app, "work_start"), f"models={c.models}")
         c = MockClient()
         app = make_app(c)
-        app.work_model = "opus 5"
         app.hard_model = "fable 5.1"
-        await app._work("do the heavy refactor", hard=True)
-        check("hard work -> hard_model",
-              c.models == [g.MODEL_FABLE]
-              and c.queries == ["do the heavy refactor"],
-              f"models={c.models} queries={c.queries}")
+        await app._talk("hard brain, run the heavy migration")
+        check("'hard brain' -> hard_model", c.models == [g.MODEL_FABLE],
+              f"models={c.models}")
 
-        # 5. ORDERS ARE OBEYED (2026-09-14 goal — supersedes the 2026-07-17
-        #    "manual dispatch only" rule): a plain imperative goes STRAIGHT to
-        #    the work lane, no name needed, and GOAT says so out loud at once.
-        g.local_llm = fake = FakeLocal(up=True, reply="should not be used")
+        # 4. Georgian goes to the same brain, told to answer in Georgian
         c = MockClient()
         app = make_app(c)
-        await app._talk("fix the scroll bug in the app")
-        check("a plain order goes straight to the work lane",
-              c.queries == ["fix the scroll bug in the app"]
-              and fake.chats == [] and app.busy,
-              f"chats={fake.chats} queries={c.queries}")
-        check("an order is acknowledged out loud immediately",
-              app.tts.spoken and app.tts.spoken[0] in g.ACK_ORDER["en"],
-              f"said={app.tts.spoken}")
+        app.turn_lang = "ka"
+        await app._talk("რა არის ჩემს ეკრანზე?")
+        check("georgian turn -> same brain, georgian note, sight attached",
+              c.queries and c.queries[0].startswith("[language:")
+              and "[live desktop" in c.queries[0]
+              and c.queries[0].endswith("რა არის ჩემს ეკრანზე?"),
+              f"queries={c.queries}")
 
-        # 5b. talking ABOUT work is still talk — a question, a statement, or
-        #     an opinion must never be mistaken for an order.
-        for line in ("how do I fix the scroll bug?", "i fixed the scroll bug",
-                     "should i deploy this?", "that build check was useful"):
-            g.local_llm = fake = FakeLocal(up=True, reply="talking.")
-            c = MockClient()
-            app = make_app(c)
-            await app._talk(line)
-            if c.queries:
-                break
-        check("questions and statements about work stay talk",
-              not c.queries and fake.chats, f"queries={c.queries}")
-
-        # 5c. quick actions AND trivial topics stay with the talking brain
-        #     (it has hands and answers in ~1s; the work brain at max effort
-        #     would spend twenty seconds telling him the time)
-        for line in ("open chrome", "turn the volume up", "what time is it",
-                     "check the time", "check the weather", "შეამოწმე ამინდი"):
-            g.local_llm = fake = FakeLocal(up=True, reply="done.")
-            c = MockClient()
-            app = make_app(c)
-            await app._talk(line)
-            if c.queries:
-                break
-        check("quick actions stay on the fast lane",
-              not c.queries, f"queries={c.queries}")
-
-        # 5c-bis. REFLEX LANE (2026-09-15): a recognised device command must
-        #     be executed directly and reach NEITHER brain. Before this lane,
-        #     "open google" cost two Gemini round trips on a model measured
-        #     that day at 8-19s to first token, and "open the file gg" fell
-        #     through to the work lane, which hunted the icon with
-        #     screenshots. The matcher is stubbed so the test never actually
-        #     opens anything; what's under test is the ROUTING.
+        # 5. REFLEX LANE: a device command runs directly, no brain at all
         class StubReflex:
             def __init__(self):
                 self.ran = []
-                self.asked = []
 
             def match(self, text, lang="en"):
-                self.asked.append(text)
                 if not text.lower().startswith("open "):
                     return None
-                rx = _reflex_mod.Reflex(
+                return _reflex_mod.Reflex(
                     "open_url", "example.com",
                     lambda t=text: self.ran.append(t) or "opened")
-                return rx
 
         real_reflex = g.reflex
         try:
             g.reflex = stub = StubReflex()
-            g.local_llm = fake = FakeLocal(up=True, reply="should not be used")
             c = MockClient()
             app = make_app(c)
             app._log_exchange = lambda *a: None   # keep his transcript clean
             await app._talk("open google")
-            check("a reflex runs the action and skips both brains",
-                  stub.ran == ["open google"] and not fake.chats
-                  and not c.queries,
-                  f"ran={stub.ran} chats={fake.chats} queries={c.queries}")
+            check("a reflex runs the action and skips the brain",
+                  stub.ran == ["open google"] and not c.queries,
+                  f"ran={stub.ran} queries={c.queries}")
             check("a reflex speaks a cached acknowledgement immediately",
                   app.tts.spoken and app.tts.spoken[0] in g.ACK_REFLEX["en"],
                   f"said={app.tts.spoken}")
-            check("a reflex is remembered, so 'did you open it?' has an answer",
-                  fake.noted and fake.noted[0][0] == "open google",
-                  f"noted={fake.noted}")
+            await app._talk("did you open it?")
+            check("the brain is told what the reflex did",
+                  c.queries and "[chat since your last turn" in c.queries[0]
+                  and "open google" in c.queries[0], f"queries={c.queries}")
 
-            # Anything the matcher declines must land on the brains unchanged.
-            g.local_llm = fake = FakeLocal(up=True, reply="talking.")
-            c = MockClient()
-            app = make_app(c)
-            await app._talk("what is the capital of Georgia")
-            check("a non-reflex still reaches the talking brain",
-                  fake.chats == ["what is the capital of Georgia"]
-                  and not c.queries, f"chats={fake.chats}")
-
-            # A reflex that FAILS must not claim success.
             g.reflex = stub = StubReflex()
             stub.match = lambda text, lang="en": (
                 _reflex_mod.Reflex("open_path", "nope",
-                                lambda: "ERROR: no such file")
+                                   lambda: "ERROR: no such file")
                 if text.startswith("open ") else None)
-            g.local_llm = FakeLocal(up=True, reply="unused")
             app = make_app(MockClient())
             app._log_exchange = lambda *a: None
             await app._talk("open nothing")
@@ -387,13 +296,9 @@ async def main():
                   g.REFLEX_FAIL["en"] in app.tts.spoken,
                   f"said={app.tts.spoken}")
 
-            # A spoken "stop" still brakes a work turn — the reflex check
-            # must sit BEHIND the brake, never in front of it.
             g.reflex = StubReflex()
-            g.local_llm = FakeLocal(up=True, reply="unused")
             app = make_app(MockClient())
             app.busy = True
-            app.client = MockClient()
             await app._talk("stop")
             check("the stop brake still wins over the reflex lane",
                   not app.busy and "Stopped." in app.tts.spoken,
@@ -401,130 +306,7 @@ async def main():
         finally:
             g.reflex = real_reflex
 
-        # 5d. Georgian imperatives dispatch exactly the same way
-        g.local_llm = fake = FakeLocal(up=True, reply="should not be used")
-        c = MockClient()
-        app = make_app(c)
-        app.turn_lang = "ka"
-        await app._talk("გაასწორე ბილდი")
-        check("georgian order dispatches and is acknowledged in georgian",
-              c.queries and c.queries[0].endswith("გაასწორე ბილდი")
-              and app.tts.spoken and app.tts.spoken[0] in g.ACK_ORDER["ka"],
-              f"queries={c.queries} said={app.tts.spoken}")
-
-        # 6. manual voice dispatch: addressing the working brain by name goes
-        #    straight to the work lane, Gemini skipped
-        g.local_llm = fake = FakeLocal(up=True, reply="should not be used")
-        c = MockClient()
-        app = make_app(c)
-        app.work_model = "opus 5"
-        await app._talk("working brain, build the parser")
-        check("addressing 'working brain' dispatches to the work lane",
-              fake.chats == [] and c.queries == ["working brain, build the parser"]
-              and c.models == [g.MODEL_FULL],
-              f"chats={fake.chats} queries={c.queries} models={c.models}")
-
-        # 7. addressing the HARD brain by name uses hard_model
-        c = MockClient()
-        app = make_app(c)
-        app.hard_model = "fable 5.1"
-        await app._talk("hard brain, run the heavy migration")
-        check("addressing 'hard brain' uses hard_model",
-              c.models == [g.MODEL_FABLE],
-              f"models={c.models}")
-
-        # 7b. mid-sentence address dispatches too (2026-07-18: his real
-        #     sentence got a stuck line instead of the work lane)
-        g.local_llm = fake = FakeLocal(up=True, reply="should not answer")
-        c = MockClient()
-        app = make_app(c)
-        app.hard_model = "fable 5.1"
-        await app._talk("okay, okay, thank you, how are you? please, ask "
-                        "the opus 4.8 to update goat's readme on github, "
-                        "okay?")
-        check("mid-sentence 'ask the opus' dispatches to the HARD brain",
-              fake.chats == [] and len(c.queries) == 1
-              and c.models == [g.MODEL_FABLE],
-              f"chats={fake.chats} models={c.models}")
-
-        # 7c. talking ABOUT the brains does not dispatch
-        g.local_llm = fake = FakeLocal(up=True, reply="They split the work.")
-        c = MockClient()
-        app = make_app(c)
-        await app._talk("tell me about the working brain and fable")
-        check("talking about the brains stays plain talk",
-              fake.chats and c.queries == [],
-              f"chats={fake.chats} queries={c.queries}")
-
-        # 7d. status QUESTION about the working brain stays TALK, and Gemini
-        #     receives the live status (2026-07-18: "hey what is working
-        #     brain doing" got ignored — no window into the work lane)
-        g.local_llm = fake = FakeLocal(up=True, reply="It's on the readme now.")
-        c = MockClient()
-        app = make_app(c)
-        app.busy = True
-        app._current_task = "update goat's readme on github"
-        app._work_started = time.monotonic() - 130
-        app._last_tool = "Edit"
-        await app._talk("hey what is working brain doing")
-        check("status question stays talk; live status reaches Gemini",
-              c.queries == [] and len(fake.chats) == 1
-              and "update goat's readme" in fake.statuses[0]
-              and "busy" in fake.statuses[0]
-              and "Edit" in fake.statuses[0],
-              f"queries={c.queries} statuses={fake.statuses}")
-
-        # 7e. Gemini punts ESCALATE on a status question -> deterministic
-        #     spoken status, never dispatching the QUESTION as a job
-        g.local_llm = fake = FakeLocal(up=True, reply="ESCALATE")
-        c = MockClient()
-        app = make_app(c)
-        app.busy = True
-        app._current_task = "refactor the parser"
-        app._work_started = time.monotonic()
-        await app._talk("what is the working brain doing right now?")
-        check("ESCALATE on a status question -> spoken status, no dispatch",
-              c.queries == []
-              and any("refactor the parser" in s for s in app.tts.spoken),
-              f"queries={c.queries} spoken={app.tts.spoken}")
-
-        # 7f. after the work turn ends, the status note carries the outcome
-        g.local_llm = fake = FakeLocal(up=True, reply="Yes — it wrapped up.")
-        c = MockClient()
-        app = make_app(c)
-        app._current_task = "run the test suite"
-        app._work_done_at = time.monotonic() - 30
-        app._last_work_summary = "all 58 tests green"
-        await app._talk("is fable done with the work?")
-        check("finished-job outcome reaches the talking brain",
-              c.queries == [] and "finished" in fake.statuses[0]
-              and "all 58 tests green" in fake.statuses[0],
-              f"queries={c.queries} statuses={fake.statuses}")
-
-        # 7g. the status regex never eats a real dispatch that happens to
-        #     contain an outcome verb ("…to finish the tests")
-        g.local_llm = fake = FakeLocal(up=True, reply="should not answer")
-        c = MockClient()
-        app = make_app(c)
-        app.hard_model = "fable 5.1"
-        await app._talk("how are you? please ask the opus to finish the tests")
-        check("dispatch containing an outcome verb still dispatches",
-              fake.chats == [] and len(c.queries) == 1
-              and c.models == [g.MODEL_FABLE],
-              f"chats={fake.chats} queries={c.queries}")
-
-        # 8. Gemini reply 'ESCALATE' (he literally asked) -> work lane
-        g.local_llm = fake = FakeLocal(up=True, reply="ESCALATE")
-        c = MockClient()
-        app = make_app(c)
-        app.work_model = "opus 5"
-        await app._talk("please just handle that for me")
-        check("Gemini ESCALATE hands the turn to the work lane",
-              c.queries == ["please just handle that for me"]
-              and c.models == [g.MODEL_FULL] and app.busy,
-              f"queries={c.queries} models={c.models}")
-
-        # 9. spoken 'stop' brakes a running work turn
+        # 6. spoken 'stop' brakes a running turn
         c = MockClient()
         app = make_app(c)
         app.busy = True
@@ -534,44 +316,34 @@ async def main():
             interrupted.append(True)
         app._safe_interrupt = fake_interrupt
         await app._talk("stop")
-        check("spoken stop brakes the work turn",
+        check("spoken stop brakes the running turn",
               interrupted and app.tts.spoken == ["Stopped."]
-              and not app.busy and c.queries == []
-              and has(app, "work_fail"),
-              f"interrupted={interrupted} spoken={app.tts.spoken} busy={app.busy}")
+              and not app.busy and c.queries == [] and has(app, "work_fail"),
+              f"interrupted={interrupted} spoken={app.tts.spoken}")
 
-        # 10. a second work order while busy folds into the running turn
+        # 7. something said mid-turn folds into the running turn
         c = MockClient()
         app = make_app(c)
         app.busy = True
         app.last_user_text = "original"
-        await app._work("also add tests")
-        check("second work order folds into the running turn",
+        await app._talk("also add tests")
+        check("speech mid-turn folds into the running turn",
               c.queries == ["also add tests"]
               and app.last_user_text == "original\nalso add tests"
-              and has(app, "work_add"),
-              f"queries={c.queries} last={app.last_user_text}")
+              and has(app, "work_add"), f"queries={c.queries}")
 
-        # ---- graceful Claude-out (rule 4) ----
-        # 11. dispatching work while Claude is spent -> no query to Claude;
-        #     Gemini covers in the middle (offline mode, own tools live) and
-        #     work_fail notes it on the left. The app never feels dead.
-        g.local_llm = fake = FakeLocal(
-            up=True, reply="Coding waits for Claude; here is what I can do.")
+        # 8. Claude out -> no query, an honest spoken line, reflexes still named
         c = MockClient()
         app = make_app(c)
         app.claude_out = True
         app.claude_reset = "14:30"
-        await app._work("build something")
-        check("work while Claude out -> work_fail + gemini offline cover",
+        await app._talk("build something")
+        check("claude out -> no query, spoken line with the reset time",
               c.queries == [] and not app.busy and has(app, "work_fail")
-              and fake.offline == [True]
-              and "build something" in fake.chats[0],
-              f"queries={c.queries} busy={app.busy} offline={fake.offline}")
+              and any("14:30" in s for s in app.tts.spoken),
+              f"queries={c.queries} spoken={app.tts.spoken}")
 
-        # 12. quota exhausted mid-work -> claude_out set, work_fail+work_done,
-        #     no crash (talk lane keeps working elsewhere)
-        g.local_llm = fake = FakeLocal(up=True, reply="x")
+        # 9. quota exhausted mid-turn
         quota = result_msg(is_error=True, result="usage limit reached|1893456000")
         c = MockClient(script=[quota])
         app = make_app(c)
@@ -585,10 +357,6 @@ async def main():
               and bool(_re.fullmatch(r"\d\d:\d\d", app.claude_reset)),
               f"claude_out={app.claude_out} reset={app.claude_reset}")
 
-        # 12b. the REAL CLI wording ("You've hit your session limit · resets
-        #      2:30am (Asia/Tbilisi)") -> caught, reset parsed to 02:30, and
-        #      the raw text NEVER reaches any UI event (his order 2026-07-17)
-        g.local_llm = fake = FakeLocal(up=True, reply="x")
         real = result_msg(
             is_error=True,
             result="You've hit your session limit · resets 2:30am "
@@ -605,7 +373,6 @@ async def main():
               and not leak and has(app, "work_fail") and has(app, "limit"),
               f"out={app.claude_out} reset={app.claude_reset} leak={leak}")
 
-        # 12c. pm reset wording parses to the 24h clock
         c = MockClient(script=[result_msg(
             is_error=True,
             result="You've hit your session limit · resets 6:05pm "
@@ -616,60 +383,52 @@ async def main():
         check("pm reset wording -> 18:05",
               app.claude_reset == "18:05", f"reset={app.claude_reset}")
 
-        # 12d. talk brain set to a Claude voice while Claude is out ->
-        #      Gemini covers the talk turn; no Claude client is touched
-        g.local_llm = fake = FakeLocal(up=True, reply="Covering for Claude.")
-        c = MockClient()
-        app = make_app(c)
-        app.talk_brain = "sonnet 5"
-        app.claude_out = True
-        await app._talk("how are you")
-        check("claude-out talk on a claude voice -> gemini covers",
-              fake.chats == ["how are you"] and app.talk_client is None
-              and c.queries == [],
-              f"chats={fake.chats} talk_client={app.talk_client}")
-
-        # 12e. Gemini replies ESCALATE while Claude is out -> friendly line
-        #      spoken inline (no deadlock on the talk lock), no Claude query
-        g.local_llm = fake = FakeLocal(up=True, reply="ESCALATE")
-        c = MockClient()
-        app = make_app(c)
-        app.claude_out = True
-        app.claude_reset = "02:30"
-        await app._talk("please escalate that")
-        check("ESCALATE while out -> friendly line, no deadlock, no query",
-              c.queries == [] and not app.busy and has(app, "work_fail")
-              and any("rate-limited" in s for s in app.tts.spoken),
-              f"queries={c.queries} spoken={app.tts.spoken}")
-
-        # 13. work success -> work_done, exchange logged, reply cleared, and
-        #     quota flag cleared if it had been set
-        g.local_llm = fake = FakeLocal(up=True, reply="x")
-        c = MockClient(script=[result_msg(ctx=5000)])
+        # 10. THE BRAIN SPEAKS: its streamed text is what GOAT says, in the
+        #     middle, and the turn closes cleanly
+        def _ev(delta):
+            return StreamEvent(uuid="u", session_id="s",
+                               event={"type": "content_block_delta",
+                                      "delta": delta})
+        think_ev = _ev({"type": "thinking_delta",
+                        "thinking": "checking the config first"})
+        c = MockClient(script=[
+            think_ev,
+            _ev({"type": "text_delta", "text": "Steam is closed. "}),
+            _ev({"type": "text_delta", "text": "Ubisoft too"}),
+            result_msg(ctx=5000)])
         app = make_app(c)
         app.busy = True
-        app.claude_out = True  # was out; a landing turn clears it
-        app.last_user_text = "task"
-        app._reply_acc = "did the thing "
+        app.claude_out = True           # a landing turn clears it
+        app.last_user_text = "close steam and ubisoft"
+        logged = []
+        app._log_exchange = lambda u, r: logged.append((u, r))
         await app._consume()
-        check("work success -> work_done, logged, quota flag cleared",
+        kinds = [e[0] for e in app.events]
+        check("the brain's reply is spoken as it streams, tail included",
+              "Steam is closed." in app.tts.spoken
+              and any("Ubisoft too" in s for s in app.tts.spoken)
+              and "delta" in kinds and "work_text" not in kinds,
+              f"spoken={app.tts.spoken} events={kinds}")
+        check("turn closes: work_done, quota flag cleared, exchange kept",
               has(app, "work_done") and app._reply_acc == ""
-              and app._last_ctx == 5000 and app.claude_out is False
-              and fake.noted and fake.noted[0][0] == "task",
-              f"reply_acc={app._reply_acc!r} ctx={app._last_ctx} out={app.claude_out}")
+              and app._last_ctx == 5000 and app.claude_out is False,
+              f"ctx={app._last_ctx} out={app.claude_out}")
+        check("thinking still reaches the side panel, not the voice",
+              "work_think" in kinds
+              and not any("checking the config" in s for s in app.tts.spoken),
+              f"events={kinds}")
 
-        # 14. work error with nothing produced -> work_fail, no crash
+        # 11. error with nothing produced -> work_fail, no crash
         c = MockClient(script=[result_msg(is_error=True, result="boom")])
         app = make_app(c)
         app.busy = True
         app.last_user_text = "task"
         await app._consume()
-        check("work error -> work_fail on the left, no crash",
+        check("brain error -> work_fail, no crash",
               has(app, "work_fail") and has(app, "work_done") and not app.busy,
               f"events={[e[0] for e in app.events]}")
 
         # ---- context economy (unchanged machinery) ----
-        # 15. /compact fires past ROTATE_CTX and success keeps the session
         big = result_msg(ctx=g.ROTATE_CTX + 5000)
         small_after = result_msg(ctx=100)
         c = MockClient(script=[big, small_after], ctx_after=9000)
@@ -682,7 +441,6 @@ async def main():
               and app._last_ctx == 9000 and not app._compacting,
               f"queries={c.queries} wants_fresh={wants_fresh} ctx={app._last_ctx}")
 
-        # 16. compact that doesn't shrink -> hard rotation with handoff
         tmp2 = tempfile.NamedTemporaryFile(delete=False)
         tmp2.write(b"sid")
         tmp2.close()
@@ -706,7 +464,6 @@ async def main():
             if os.path.exists(tmp2.name):
                 os.unlink(tmp2.name)
 
-        # 17. small session never compacts or rotates
         c = MockClient(script=[result_msg(ctx=5000)])
         app = make_app(c)
         app.busy = True
@@ -714,17 +471,12 @@ async def main():
         wants_fresh = await app._consume()
         check("small session untouched",
               wants_fresh is False and "/compact" not in c.queries
-              and app._last_ctx == 5000,
-              f"queries={c.queries}")
-
-        # 17a. …and the panel is told how full the session is (the meter)
+              and app._last_ctx == 5000, f"queries={c.queries}")
         ctx_ev = [e for e in app.events if e[0] == "work_ctx"]
         check("session fill reaches the work panel meter",
               ctx_ev and ctx_ev[-1][1] == f"5000|{g.ROTATE_CTX}",
               f"work_ctx={ctx_ev}")
 
-        # 17b. thinking depth (2026-09-14): the dial moves, the session is
-        #      kept, and _consume asks run() for a rebuild instead of exiting.
         c = MockClient(script=[])
         app = make_app(c)
         app.set_effort("low")
@@ -734,38 +486,13 @@ async def main():
         wants_fresh = await app._consume()
         check("effort change asks for a session-keeping reopen",
               moved and wants_fresh is True,
-              f"effort={app.effort} dirty={app._effort_dirty} "
-              f"wants_fresh={wants_fresh}")
-
-        # 17c. an unknown level is ignored (no reopen on a typo / bad voice
-        #      transcription — that would drop the session for nothing).
+              f"effort={app.effort} dirty={app._effort_dirty}")
         app = make_app(c)
         app.set_effort("maximum")
         check("unknown thinking level is refused",
               app.effort == g.DEFAULT_EFFORT and not app._effort_dirty,
               f"effort={app.effort} dirty={app._effort_dirty}")
 
-        # 17d. summarized thinking reaches the left panel as work_think
-        def _ev(delta):
-            return StreamEvent(uuid="u", session_id="s",
-                               event={"type": "content_block_delta",
-                                      "delta": delta})
-        think_ev = _ev({"type": "thinking_delta",
-                        "thinking": "checking the config first"})
-        text_ev = _ev({"type": "text_delta", "text": "done"})
-        c = MockClient(script=[think_ev, text_ev, result_msg()])
-        app = make_app(c)
-        app.busy = True
-        app.last_user_text = "task"
-        await app._consume()
-        kinds = [e[0] for e in app.events]
-        check("thinking summaries stream to the work panel",
-              "work_think" in kinds and "work_text" in kinds
-              and kinds.index("work_think") < kinds.index("work_text"),
-              f"events={kinds}")
-
-        # 17e. thinking is muted while a /compact turn runs (it is not his
-        #      work and must not litter the ledger)
         c = MockClient(script=[think_ev, result_msg()])
         app = make_app(c)
         app.busy = True
@@ -856,36 +583,6 @@ async def main():
         finally:
             g.stt_gladia, g.stt_whisper, g.tts_edge = real_ear, real_whisper, real_tts
 
-        # 17j. a Georgian turn tells the WORK lane to answer in Georgian
-        c = MockClient()
-        app = make_app(c)
-        app.turn_lang = "ka"
-        await app._work("ფასმეტრი შეამოწმე")
-        check("georgian turn carries the language into the work lane",
-              c.queries and c.queries[0].startswith("[language:")
-              and "ქართული" in c.queries[0]
-              and c.queries[0].endswith("ფასმეტრი შეამოწმე"),
-              f"queries={c.queries}")
-
-        # 17k. english turn adds nothing
-        c = MockClient()
-        app = make_app(c)
-        await app._work("check fasmetri")
-        check("english turn leaves the work order untouched",
-              c.queries == ["check fasmetri"], f"queries={c.queries}")
-
-        # 18. work bridges recent talk-lane chat as context
-        g.local_llm = fake = FakeLocal(up=True, reply="Sounds fun.")
-        c = MockClient()
-        app = make_app(c)
-        app.work_model = "opus 5"
-        await app._talk("thinking about a beach day")
-        await app._work("build the beach-day planner")
-        check("work turn bridges unseen talk-lane chat",
-              c.queries and c.queries[0].startswith("[chat since your last turn")
-              and c.queries[0].endswith("build the beach-day planner")
-              and app._local_unseen == [],
-              f"queries={c.queries}")
     finally:
         g.TRANSCRIPT_FILE = old_tr
         os.unlink(tmp.name)
@@ -1010,78 +707,25 @@ async def main():
           colhits == [("text", "blue")] and "blue" in rc, f"hits={colhits}")
     check("set_ui_color: bad part -> ERROR, no callback", rbad.startswith("ERROR"))
 
-    # ---- refusal net regex (unchanged local_llm safety) ----
-    import local_llm as ll
-    check("refusal regex catches refusal openers",
-          all(ll.REFUSAL_RE.match(s.lower()) for s in (
-              "I can't open files here",
-              "Sorry, I cannot do that",
-              "I'm unable to access your files",
-              "That requires tools I don't have")))
-    check("refusal regex spares normal answers",
-          not any(ll.REFUSAL_RE.match(s.lower()) for s in (
-              "I can't wait to see it", "Sure — here's the plan",
-              "The answer is 42")))
-
-    # ---- gemini model fallback chain (2026-07-17): primary 429/503 ->
-    #      same request on the stable fallback, then sticky for a while ----
-    import io as _io
-    import urllib.error as _ue
-
-    def _fallback_probe(fail_code):
-        seen = []
-
-        def fake_do(payload, key, on_delta):
-            seen.append(payload["model"])
-            if payload["model"] == ll.GEMINI_MODEL:
-                raise _ue.HTTPError("u", fail_code, "x", None,
-                                    _io.BytesIO(b""))
-            return "ok", []
-        old_do, old_key = ll._do_stream, ll._api_key
-        ll._do_stream, ll._api_key = fake_do, lambda: "k"
-        try:
-            reply, _ = ll._post_stream(
-                [{"role": "user", "content": "hi"}], None, None)
-            reply2, _ = ll._post_stream(
-                [{"role": "user", "content": "hi again"}], None, None)
-        finally:
-            ll._do_stream, ll._api_key = old_do, old_key
-            ll._primary_down[0] = 0.0
-        return reply, reply2, seen
-
-    r1, r2, seen = _fallback_probe(429)
-    check("primary 429 -> same request lands on the fallback model",
-          r1 == "ok" and seen[:2] == [ll.GEMINI_MODEL, ll.GEMINI_FALLBACK],
-          f"seen={seen}")
-    check("outage is sticky -> next turn skips the doomed primary",
-          r2 == "ok" and seen[2:] == [ll.GEMINI_FALLBACK], f"seen={seen}")
-    r1, _, seen = _fallback_probe(503)
-    check("primary 503 (preview jammed) -> fallback too",
-          r1 == "ok" and seen[:2] == [ll.GEMINI_MODEL, ll.GEMINI_FALLBACK],
-          f"seen={seen}")
-
     # ---- UI config: three brain roles + scale clamp ----
     import ui_qt
-    check("UI default roles present",
-          ui_qt.DEFAULT_CFG["talk_brain"] == "gemini flash"
+    check("UI default roles present (no talking brain)",
+          "talk_brain" not in ui_qt.DEFAULT_CFG
           and ui_qt.DEFAULT_CFG["work_model"] == "opus 5"
           and ui_qt.LANGS.get("ორივე") == "auto"
           and ui_qt.EFFORT_OPTS[-1] == "max"
-          and ui_qt.DEFAULT_CFG["effort"] == "max"
+          and ui_qt.DEFAULT_CFG["effort"] == "high"
           and ui_qt.DEFAULT_CFG["hard_model"] == "opus 5")
     check("UI brain option lists",
-          ui_qt.TALK_OPTS == ["gemini flash", "sonnet 5"]
+          not hasattr(ui_qt, "TALK_OPTS")
           and ui_qt.WORK_OPTS == ["opus 5", "fable 5.1"])
     # Every name the drawer offers must resolve in the engine, or picking it
     # silently lands on a default and the footer starts lying again.
     check("UI rosters resolve in the engine",
-          all(n in g.TALK_BRAINS for n in ui_qt.TALK_OPTS)
-          and all(n in g.WORK_BRAINS for n in ui_qt.WORK_OPTS)
+          all(n in g.WORK_BRAINS for n in ui_qt.WORK_OPTS)
           and all(n in ui_qt.EFFORT_OPTS for n in g.EFFORT_LEVELS))
-    check("every talk/work model id has a speakable footer name",
-          all(m == "gemini" or m in g.MODEL_NAMES
-              for m in g.TALK_BRAINS.values())
-          and all(m in g.MODEL_NAMES for m in g.WORK_BRAINS.values()))
+    check("every model id has a speakable footer name",
+          all(m in g.MODEL_NAMES for m in g.WORK_BRAINS.values()))
 
     # ---- ESCALATE recognition (the talking brain punting to the work lane) ----
     # Exact-match used to be the rule, so a garnished signal was SPOKEN to him

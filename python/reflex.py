@@ -131,8 +131,9 @@ _WHERE = [
 _NOUN_RE = re.compile(
     r"(?:the\s+|a\s+|an\s+|my\s+)?"
     r"(?P<kind>files?|folders?|director(?:y|ies)|documents?|apps?|"
-    r"applications?|programs?|"
-    r"ფაილ\w*|საქაღალდ\w*|აპლიკაცი\w*|პროგრამ\w*|დოკუმენტ\w*)"
+    r"applications?|programs?|pictures?|photos?|images?|pics?|videos?|"
+    r"ფაილ\w*|საქაღალდ\w*|აპლიკაცი\w*|პროგრამ\w*|დოკუმენტ\w*|სურათ\w*|"
+    r"ფოტო\w*|ვიდეო\w*)"
     # A comma can sit on EITHER side of "called" — "ფაილი, სახელად GG" is how
     # he actually says it, and the name is whatever follows all of that.
     r"\s*[:,]?\s*(?:called|named|სახელად|სახელით)?\s*[:,]?\s*",
@@ -141,6 +142,15 @@ _NOUN_TAIL_RE = re.compile(
     r"\s*(?:,?\s*(?:which\s+is|it\s+is|it's|is)\s*)?$", re.IGNORECASE)
 
 _URLISH_RE = re.compile(r"^[\w\-]+(?:\.[\w\-]+)+(?:/\S*)?$")
+
+# Spoken sentences run on past the name: "open the PFP picture? For me. That
+# I have on my desktop." (2026-09-18 — fell through, and the brain then said
+# no such picture existed). The name lives in the first sentence; a relative
+# clause about where he keeps it is description, not name.
+_SENTENCE_END_RE = re.compile(r"[.?!]+\s+")
+_KEEP_CLAUSE_RE = re.compile(
+    r"\s*,?\s*\b(?:that|which)\s+i\s+(?:have|had|got|saved|put|keep|"
+    r"downloaded)\b.*$", re.IGNORECASE)
 
 # Targets that mean WORK even behind an opening verb: "start the server",
 # "open a pull request". The disk index would happily match a folder called
@@ -219,12 +229,16 @@ def _window(action: str, target: str = "") -> str:
     u = ctypes.windll.user32
     hwnd = 0
     if target:
+        # A NAMED window that isn't there is a failure, never "use the front
+        # one": "დახურე სტიმი" found no window titled სტიმი, closed whatever
+        # was in front (his terminal, or GOAT itself), then said it closed
+        # Steam. Seen 2026-09-18.
         try:
             import screen_hands
             hwnd = screen_hands._match(target)["hwnd"]
             screen_hands.focus_window(str(hwnd))
-        except Exception:  # noqa: BLE001 — unknown title: use what's in front
-            hwnd = 0
+        except Exception as e:  # noqa: BLE001
+            return f"ERROR: no window matching {target!r} ({e})"
     if not hwnd:
         hwnd = u.GetForegroundWindow()
     if not hwnd:
@@ -235,6 +249,150 @@ def _window(action: str, target: str = "") -> str:
         return f"closed {what}"
     u.ShowWindow(hwnd, _SW[action])
     return f"{action}d {what}"
+
+
+def _has_window(target: str) -> bool:
+    try:
+        import screen_hands
+        screen_hands._match(target)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# ---- quitting apps (process level, verified) -------------------------------
+# "Turn off the Ubisoft and the Roblox and the Steam" (2026-09-18) went to a
+# brain, which killed two, missed Ubisoft (its process is `upc`, not
+# "ubisoft"), and said all three were closed. Launchers live in the tray with
+# no window to WM_CLOSE, so this works on processes — and checks afterwards
+# that they are really gone before anything is reported.
+# Name he says -> process names (psutil .name() without .exe, lowercased).
+QUIT_APPS = {
+    "steam": ("steam", "steamwebhelper", "steamservice"),
+    "ubisoft": ("upc", "uplaywebcore", "ubisoftconnect",
+                "ubisoftgamelauncher", "ubisoftgamelauncher64"),
+    "roblox": ("robloxplayerbeta", "robloxstudiobeta"),
+    "discord": ("discord",),
+    "spotify": ("spotify",),
+    "chrome": ("chrome",),
+    "brave": ("brave",),
+    "opera": ("opera",),
+    "edge": ("msedge",),
+    "telegram": ("telegram",),
+    "whatsapp": ("whatsapp",),
+    "epic": ("epicgameslauncher",),
+    "riot": ("riotclientservices", "riotclientux", "riotclientuxrender"),
+    "valorant": ("valorant-win64-shipping", "valorant"),
+    "ollama": ("ollama", "ollama app"),
+    "zoom": ("zoom",),
+    "obs": ("obs64",),
+    "teams": ("ms-teams", "teams"),
+}
+# Every way he (or the STT) names them -> QUIT_APPS key. Georgian by stem,
+# because the case ending moves: სტიმი / სტიმს / სტიმიც.
+_QUIT_ALIASES = {
+    "steam": "steam", "uplay": "ubisoft", "ubisoft connect": "ubisoft",
+    "ubisoft": "ubisoft", "roblox": "roblox", "discord": "discord",
+    "spotify": "spotify", "chrome": "chrome", "google chrome": "chrome",
+    "brave": "brave", "opera": "opera", "opera gx": "opera",
+    "edge": "edge", "microsoft edge": "edge", "telegram": "telegram",
+    "whatsapp": "whatsapp", "epic": "epic", "epic games": "epic",
+    "riot": "riot", "riot client": "riot", "valorant": "valorant",
+    "ollama": "ollama", "zoom": "zoom", "obs": "obs", "teams": "teams",
+}
+_QUIT_KA_STEMS = (
+    ("სტიმ", "steam"), ("იუბისოფ", "ubisoft"), ("უბისოფ", "ubisoft"),
+    ("იუბისოფტ", "ubisoft"), ("რობლოქს", "roblox"), ("რობლოკს", "roblox"),
+    ("დისქორდ", "discord"), ("დისკორდ", "discord"), ("სპოტიფა", "spotify"),
+    # The ear moves the ს across the word gap: "დახურე სტიმი" is heard as
+    # "დახურეს ტიმი" (measured 2026-09-23), and he says "ტიმი" for Steam.
+    ("ტიმ", "steam"),
+    ("ქრომ", "chrome"), ("ბრეივ", "brave"), ("ოპერ", "opera"),
+    ("ტელეგრამ", "telegram"), ("ვოცაპ", "whatsapp"), ("ვაცაპ", "whatsapp"),
+    ("ვალორანტ", "valorant"), ("ოლამა", "ollama"), ("ზუმ", "zoom"),
+)
+_QUIT_NOISE_RE = re.compile(
+    r"\b(?:the|my|app|application|program|launcher|client|game|games|too|"
+    r"also|as\s+well|for\s+me|please|now|process(?:es)?|აპლიკაცი\w*|"
+    r"პროგრამ\w*|თამაშ\w*|ჩემთვის|გთხოვ|ახლა|ასევე|კიდევ)\b",
+    re.IGNORECASE)
+_QUIT_SPLIT_RE = re.compile(r"\s*(?:,|&|\band\b|\bდა\b|\bplus\b)\s*",
+                            re.IGNORECASE)
+
+
+def _quit_key(word: str) -> str | None:
+    w = " ".join(_QUIT_NOISE_RE.sub(" ", word).split()).strip(" .,!?:;\"'")
+    if not w:
+        return None
+    low = w.lower()
+    if low in _QUIT_ALIASES:
+        return _QUIT_ALIASES[low]
+    for stem, key in _QUIT_KA_STEMS:
+        if low.startswith(stem):
+            return key
+    return None
+
+
+def _quit_targets(raw: str) -> list | None:
+    """Every named thing must be a known app, or None (a brain decides)."""
+    parts = [p for p in _QUIT_SPLIT_RE.split(raw or "") if p.strip(" .,!?")]
+    keys = []
+    for p in parts:
+        k = _quit_key(p)
+        if k is None:
+            # "the Ubisoft and the Roblox" leaves "the" pieces — noise-only
+            # parts are fine, a real unknown word is not.
+            if _QUIT_NOISE_RE.sub("", p).strip(" .,!?:;\"'"):
+                return None
+            continue
+        if k not in keys:
+            keys.append(k)
+    return keys or None
+
+
+def _quit_apps(keys: list, grace: float = 2.0) -> str:
+    """Ask each app to close, force the stragglers, then CHECK. The result
+    names exactly what is still running, so the voice can't say "closed"
+    about something that isn't."""
+    import time
+    import psutil
+    want = {n for k in keys for n in QUIT_APPS[k]}
+
+    def alive():
+        out = []
+        for p in psutil.process_iter(["name"]):
+            n = (p.info.get("name") or "").lower().removesuffix(".exe")
+            if n in want:
+                out.append(p)
+        return out
+
+    procs = alive()
+    running = {k for k in keys
+               if any((p.info.get("name") or "").lower().removesuffix(".exe")
+                      in QUIT_APPS[k] for p in procs)}
+    for p in procs:
+        try:
+            p.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    _gone, left = psutil.wait_procs(procs, timeout=grace)
+    for p in left:
+        try:
+            p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    psutil.wait_procs(left, timeout=1.5)
+    still = sorted({k for k in keys
+                    for p in alive()
+                    if (p.info.get("name") or "").lower().removesuffix(".exe")
+                    in QUIT_APPS[k]})
+    if still:
+        return "ERROR: still running: " + ", ".join(still)
+    not_running = [k for k in keys if k not in running]
+    msg = "closed " + (", ".join(sorted(running)) if running else "nothing")
+    if not_running:
+        msg += " (was not running: " + ", ".join(not_running) + ")"
+    return msg
 
 
 def _screenshot() -> str:
@@ -261,6 +419,12 @@ def _clean_target(raw: str) -> tuple:
         if rx.search(t):
             where = place
             t = rx.sub(" ", t)
+    # The ear writes a Latin name with a Georgian case ending: "Google-ი".
+    t = re.sub(r"(\w)-[ა-ჿ]+", r"\1", t)
+    t = _KEEP_CLAUSE_RE.sub("", t)
+    first = next((s for s in _SENTENCE_END_RE.split(t) if s.strip(" .,!?")),
+                 t)
+    t = first
     want_dir = None
     for _ in range(3):      # his corrections stack: "app, or rather, file, …"
         t = _TAIL_RE.sub("", t.strip()).strip(" .,!?:;\"'")
@@ -271,7 +435,9 @@ def _clean_target(raw: str) -> tuple:
         kind = m.group("kind").lower()
         if kind.startswith(("folder", "director", "საქაღალდ")):
             want_dir = True
-        elif kind.startswith(("file", "document", "ფაილ", "დოკუმენტ")):
+        elif kind.startswith(("file", "document", "ფაილ", "დოკუმენტ", "pic",
+                              "photo", "image", "video", "სურათ", "ფოტო",
+                              "ვიდეო")):
             want_dir = False
         else:
             want_dir = None     # "app" says nothing about file vs folder
@@ -368,8 +534,22 @@ _VOL_DOWN_RE = re.compile(
     r"(?:დაუწი\w*|დააკელ\w*)\s+ხმა\w*)\s*[.!?]*$", re.IGNORECASE)
 _MUTE_RE = re.compile(
     r"^" + _LEAD + r"(?:mute|unmute|silence|shut\s+up\s+the\s+sound|"
-    r"დადუმ\w*|ხმა\s+გათიშ\w*|გაჩუმ\w*|ხმა\s+ჩაკეტ\w*)\s*[.!?]*$",
+    r"დადუმ\w*|ხმა\s+გათიშ\w*|გაჩუმ\w*|ხმა\s+ჩაკეტ\w*|ხმა\s+გამორთ\w*|"
+    r"(?:გათიშ|გამორთ)\w*\s+ხმა\w*)\s*[.!?]*$",
     re.IGNORECASE)
+
+# Quit an app: "close steam", "turn off the Ubisoft and the Roblox",
+# "დახურე სტიმი", "სტიმი გათიშე". Only fires when EVERY target is in
+# QUIT_APPS; anything else falls to the window rule or a brain.
+_QUIT_VERB = (r"(?:close|quit|exit|kill|turn\s+off|shut\s+off|switch\s+off|"
+              r"end|stop)")
+_QUIT_VERB_KA = r"(?:დახურ\w*|დახუე?ვ\w*|გათიშ\w*|გამორთ\w*|მოკალ\w*|გააჩერ\w*)"
+_QUIT_RE = re.compile(r"^" + _LEAD + _QUIT_VERB + r"\s+(?P<t>.+?)\s*[.!?]*$",
+                      re.IGNORECASE)
+_QUIT_KA_RE = re.compile(r"^" + _LEAD + _QUIT_VERB_KA + r"\s+(?P<t>.+?)\s*[.!?]*$",
+                         re.IGNORECASE)
+_QUIT_KA_END_RE = re.compile(r"^" + _LEAD + r"(?P<t>.+?)\s+" + _QUIT_VERB_KA
+                             + r"\s*[.!?]*$", re.IGNORECASE)
 _VOL_SET_RE = re.compile(
     r"^" + _LEAD + r"(?:set\s+)?(?:the\s+)?(?:volume|sound|ხმა\w*)\s*"
     r"(?:to|at|=|-?ზე)?\s*(?P<p>\d{1,3})\s*%?\s*[.!?]*$", re.IGNORECASE)
@@ -525,6 +705,12 @@ def match(text: str, lang: str = "en") -> Reflex | None:
     if _QUESTION_RE.match(t):
         return None
 
+    # The realtime ear punctuates speech — "გამორთე, ხმა." — and a comma must
+    # not break a fixed command. The open patterns below keep the original,
+    # where a comma can separate a noun from its name ("ფაილი, სახელად GG").
+    full = t
+    t = re.sub(r"\s*,\s*", " ", t)
+
     if _MUTE_RE.match(t):
         return Reflex("volume", "mute", _vol("mute", 1))
     if _VOL_UP_RE.match(t):
@@ -558,6 +744,17 @@ def match(text: str, lang: str = "en") -> Reflex | None:
     if _SHOT_RE.match(t):
         return Reflex("screenshot", "region capture", _screenshot)
 
+    for rx in (_QUIT_RE, _QUIT_KA_RE, _QUIT_KA_END_RE):
+        m = rx.match(t)
+        if m:
+            keys = _quit_targets(m.group("t"))
+            if not keys and rx is _QUIT_KA_RE and t[m.start("t") - 2] == "ს":
+                # Word gap misheard: "დახურეს ტიმი" = "დახურე სტიმი".
+                keys = _quit_targets("ს" + m.group("t"))
+            if keys:
+                return Reflex("quit", ", ".join(keys),
+                              lambda k=keys: _quit_apps(k))
+
     m = _WIN_RE.match(t)
     if m:
         a = m.group("a").lower()
@@ -572,13 +769,20 @@ def match(text: str, lang: str = "en") -> Reflex | None:
         target = (m.group("t") or "").strip(" .,!?:;\"'")
         # Georgian marks the possessor: "გუგლის ფანჯარა" = "Google's window".
         target = re.sub(r"(\w)ის$", r"\1", target).strip()
+        # "close the Zebra window" names "Zebra", not "the Zebra".
+        target = re.sub(r"^(?:the|my|this|that)\s+", "", target,
+                        flags=re.IGNORECASE)
         if target and not _NOT_A_TARGET.match(target):
+            # Closing is the one that can hurt: resolve the window NOW, and if
+            # nothing by that name is open, a brain looks for it instead.
+            if act == "close" and not _has_window(target):
+                return None
             return Reflex("window", f"{act} {target}",
                           lambda x=act, n=target: _window(x, n))
         return Reflex("window", act, lambda x=act: _window(x))
 
     for rx in (_OPEN_RE, _OPEN_KA_RE, _OPEN_KA_END_RE):
-        m = rx.match(t)
+        m = rx.match(full)
         if m:
             got = resolve_target(m.group("t"), lang)
             if got:
