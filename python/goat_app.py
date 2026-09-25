@@ -1137,6 +1137,7 @@ class GoatApp:
         # token economy: last work-turn context size, rolling exchange log for
         # rotation handoffs, and the rotation flags.
         self._last_ctx = 0
+        self._step_ctx = 0   # last API step's prompt size this turn
         self._exchanges = deque(maxlen=HANDOFF_KEEP)
         self._reply_acc = ""
         self._rotate_only = False
@@ -1972,6 +1973,15 @@ class GoatApp:
                         if t:
                             self.emit("work_think", t)
             elif isinstance(msg, AssistantMessage):
+                # Each API step's own prompt size — the real context fill.
+                # (ResultMessage.usage is SUMMED over every tool step, so a
+                # 5-tool turn read ~5x too big and trimmed far too early.)
+                su = getattr(msg, "usage", None) or {}
+                step = ((su.get("input_tokens") or 0)
+                        + (su.get("cache_read_input_tokens") or 0)
+                        + (su.get("cache_creation_input_tokens") or 0))
+                if step:
+                    self._step_ctx = step
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         t = (block.text or "").strip()
@@ -2085,9 +2095,11 @@ class GoatApp:
                         self._reply_acc = ""
                     self.emit("work_done", "")
                     u = msg.usage or {}
-                    self._last_ctx = ((u.get("input_tokens") or 0)
-                                      + (u.get("cache_read_input_tokens") or 0)
-                                      + (u.get("cache_creation_input_tokens") or 0))
+                    self._last_ctx = self._step_ctx or (
+                        (u.get("input_tokens") or 0)
+                        + (u.get("cache_read_input_tokens") or 0)
+                        + (u.get("cache_creation_input_tokens") or 0))
+                    self._step_ctx = 0
                     # How full this session is, and how close to the trim.
                     # The number drives every rotation decision below, so the
                     # left panel shows it instead of keeping it a secret.

@@ -81,6 +81,30 @@ try:
 except (OSError, json.JSONDecodeError) as e:
     check("stt fixes", False, type(e).__name__)
 
+# 7. Self-knowledge: memory and skills must not describe removed parts of GOAT.
+STALE_TERMS = ("front desk", "front-desk", "fast brain", "talking brain",
+               "talk lane", "two brains", "gemini")
+WS = "C:/Users/user/goat-standalone/workspace"
+notes = [os.path.join(WS, "memory.md")]
+skills = os.path.join(WS, ".claude", "skills")
+if os.path.isdir(skills):
+    notes += [os.path.join(skills, d, "SKILL.md") for d in os.listdir(skills)]
+stale = []
+for path in notes:
+    try:
+        with open(path, encoding="utf-8") as f:
+            for ln in f:
+                low = ln.lower()
+                # A note that says a thing was removed is current, not stale.
+                if any(t in low for t in STALE_TERMS) and "deleted" not in low \
+                        and "removed" not in low:
+                    stale.append(os.path.relpath(path, WS))
+                    break
+    except OSError:
+        pass
+check("self-knowledge", not stale,
+      "current" if not stale else "stale notes: " + ", ".join(stale))
+
 fails = [c for c in checks if not c[1]]
 print()
 if fails:
