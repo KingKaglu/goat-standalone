@@ -1127,6 +1127,7 @@ class Bubble(QWidget):
 
     clicked = Signal()
     moved = Signal()
+    relocated = Signal()   # every move, drag included — the message card follows
 
     # How loudly the ring burns per state. Idle is nearly dark on purpose: the
     # bubble should read as "present, not demanding" until something happens.
@@ -1312,6 +1313,10 @@ class Bubble(QWidget):
                       area.bottom() - self.height() - inset)
         self.clamp_to_screen()
 
+    def moveEvent(self, ev):
+        super().moveEvent(ev)
+        self.relocated.emit()
+
     def showEvent(self, ev):
         super().showEvent(ev)
         self._sync_beat()
@@ -1319,6 +1324,134 @@ class Bubble(QWidget):
     def hideEvent(self, ev):
         super().hideEvent(ev)
         self._beat_timer.stop()
+
+
+class MessagePop(QWidget):
+    """What GOAT is saying, popped out beside the collapsed dot — the way a
+    Messenger chat head shows the incoming message (his order, 2026-09-25).
+
+    The dot alone only says "a reply arrived"; this says what it was, without
+    opening the window. It follows the voice word for word (fed from
+    update_spoken), fades out a few seconds after the last word, and a click
+    opens GOAT. It never takes focus — it must not steal the caret from
+    whatever he is typing in.
+    """
+
+    clicked = Signal()
+
+    HOLD_MS = 9000      # how long the last words stay up after the voice stops
+    TAIL = 240          # longest stretch shown; older words scroll off the top
+
+    def __init__(self, theme: dict, scale: float = 1.0):
+        super().__init__(None, Qt.FramelessWindowHint
+                         | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("click to open GOAT — right-click to dismiss")
+        self._t = dict(theme)
+        self._anchor = QRect()
+        self.label = QLabel(self)
+        self.label.setWordWrap(True)
+        self.label.setTextFormat(Qt.PlainText)
+        self.label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._fade = QTimer(self)
+        self._fade.setSingleShot(True)
+        self._fade.timeout.connect(self.hide)
+        self.set_scale(scale)
+
+    def set_scale(self, scale: float):
+        s = max(0.8, float(scale or 1.0))
+        self._w = int(round(300 * s))
+        self._pad = int(round(14 * s))
+        f = self.label.font()
+        f.setFamilies(["Segoe UI Variable Text", "Segoe UI"])
+        f.setPixelSize(max(12, int(round(14 * s))))
+        self.label.setFont(f)
+        self._restyle()
+        self._relayout()
+
+    def set_theme(self, t: dict):
+        self._t = dict(t)
+        self._restyle()
+        self.update()
+
+    def _restyle(self):
+        self.label.setStyleSheet(
+            f"color: {self._t.get('paper', '#f4ede0')}; background: transparent;")
+
+    def show_text(self, text: str, anchor: QRect):
+        text = " ".join((text or "").split())
+        if not text:
+            return
+        if len(text) > self.TAIL:
+            cut = text[-self.TAIL:]
+            text = "…" + cut[cut.find(" ") + 1:] if " " in cut else "…" + cut
+        self._anchor = QRect(anchor)
+        if text != self.label.text():
+            self.label.setText(text)
+        self._relayout()
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self._fade.start(self.HOLD_MS)
+
+    def follow(self, anchor: QRect):
+        """The dot moved — keep the card glued to it."""
+        self._anchor = QRect(anchor)
+        if self.isVisible():
+            self._relayout()
+
+    def _relayout(self):
+        inner = self._w - 2 * self._pad
+        self.label.setFixedWidth(inner)
+        # Measured from the font, not heightForWidth(): before the label has
+        # been polished that answers with a stale, far too tall guess.
+        h = self.label.fontMetrics().boundingRect(
+            QRect(0, 0, inner, 100000), Qt.TextWordWrap,
+            self.label.text() or " ").height() + 2
+        self.label.setFixedHeight(h)
+        self.label.move(self._pad, self._pad)
+        self.setFixedSize(self._w, h + 2 * self._pad)
+        if self._anchor.isNull():
+            return
+        scr = (QApplication.screenAt(self._anchor.center())
+               or QApplication.primaryScreen())
+        area = scr.availableGeometry()
+        gap = max(8, self._pad // 2 + 4)
+        a = self._anchor
+        # Open toward the middle of the screen, like a chat head does — a dot
+        # parked on the right edge talks to its left.
+        if a.center().x() >= area.center().x():
+            x = a.left() - gap - self.width()
+        else:
+            x = a.right() + 1 + gap
+        y = a.center().y() - self.height() // 2
+        x = min(max(x, area.left()), area.right() - self.width() + 1)
+        y = min(max(y, area.top()), area.bottom() - self.height() + 1)
+        self.move(x, y)
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        t = self._t
+        r = QRect(0, 0, self.width(), self.height()).adjusted(1, 1, -1, -1)
+        g = QLinearGradient(0, r.top(), 0, r.bottom())
+        g.setColorAt(0.0, QColor(t.get("bg_top", "#1a1713")))
+        g.setColorAt(1.0, QColor(t.get("bg_bot", "#14110e")))
+        edge = QColor(t.get("accent", "#ffb35e"))
+        edge.setAlpha(170)
+        p.setPen(QPen(edge, 1.2))
+        p.setBrush(g)
+        rad = max(10, self._pad)
+        p.drawRoundedRect(r, rad, rad)
+
+    def mouseReleaseEvent(self, ev):
+        self._fade.stop()
+        self.hide()
+        if ev.button() == Qt.LeftButton:
+            self.clicked.emit()
+        ev.accept()
 
 
 class GoatWindow(QWidget):
@@ -1578,6 +1711,12 @@ class GoatWindow(QWidget):
                              float(self.cfg.get("scale", 1.0)))
         self.bubble.clicked.connect(self.expand)
         self.bubble.moved.connect(self._save_bubble_pos)
+        self.pop = MessagePop({**THEMES.get(self._theme_name, THEMES["ember"]),
+                               **(self.cfg.get("colors") or {})},
+                              float(self.cfg.get("scale", 1.0)))
+        self.pop.clicked.connect(self.expand)
+        self.bubble.relocated.connect(
+            lambda: self.pop.follow(self.bubble.frameGeometry()))
         self.apply_theme(self._theme_name)
 
     # ---- window controls ----
@@ -1603,6 +1742,7 @@ class GoatWindow(QWidget):
     def expand(self):
         """Back to the full window, exactly where it was."""
         self.bubble.set_unread(False)
+        self.pop.hide()
         self.bubble.hide()
         self._collapsing = True
         try:
@@ -1690,6 +1830,9 @@ class GoatWindow(QWidget):
         if hasattr(self, "bubble"):
             self.bubble.set_theme(t)
             self.bubble.set_scale(float(self.cfg.get("scale", 1.0)))
+        if hasattr(self, "pop"):
+            self.pop.set_theme(t)
+            self.pop.set_scale(float(self.cfg.get("scale", 1.0)))
         self.panel.set_theme(t)
         self.panel.refresh()
         self._apply_metrics()
@@ -2163,6 +2306,9 @@ class GoatWindow(QWidget):
         if self._reply_label is not None and text and self._reply_label.text() != text:
             self._reply_label.setText(text)
             self._scroll_down()
+            if self.bubble.isVisible():
+                # Collapsed: say it beside the dot, word for word with the voice.
+                self.pop.show_text(text, self.bubble.frameGeometry())
 
     def hud_tick(self, mic_level: float, state: str, _listening: bool):
         self.string.tick(mic_level, state)
@@ -2388,6 +2534,7 @@ class GoatWindow(QWidget):
             self._reply_label = None
             self._follow = True  # he spoke — bring him to the reply
             self._you_label = self._add_line(data.lower(), "youNow")
+            self.pop.hide()  # last reply's card must not stand in for the next one
             spacer = self._add_line("", "replyNow")
             spacer.setFixedHeight(2)
         elif kind == "files":

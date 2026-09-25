@@ -357,6 +357,21 @@ theme for the eye. `test_engine_router.py` 100/100, `test_screen.py` 65/65,
 preflight PASS. Driven live afterwards with GOAT's own new hands: collapse
 button, Ctrl+B, drag, and click-to-open all confirmed on the running app.
 
+## Message card beside the bubble (2026-09-25, his order: Messenger-style pop-up)
+Collapsed, the dot only said "a reply arrived". Now `MessagePop` in `ui_qt.py`
+shows the reply itself in a rounded card beside the dot, like a chat head's
+message. Fed from `update_spoken()` so it follows the VOICE word for word, not
+the model stream. Opens toward screen centre, follows the dot on drag
+(`Bubble.relocated`), fades 9s after the last word, left-click opens GOAT,
+right-click dismisses, a new "you" turn clears it, expand() hides it.
+WA_ShowWithoutActivating: it must never steal his caret.
+TRAPS: QLabel.heightForWidth() before polish returns a far-too-tall guess —
+height is measured with fontMetrics().boundingRect instead. Run tests and
+preflight with `py -3.13` (plain `python` lacks numpy → false PREFLIGHT FAIL).
+Not covered by `stand_aside` (neither is the bubble) — it sits in the corner
+and fades on its own.
+VERIFIED: test_message_pop.py 19/19, test_bubble.py 40/40, preflight PASS.
+
 ## Screen control (2026-09-14 evening, his goal, in his words: computer-use /
 ## screen-automation — "ხედავს ეკრანს და მართავს მაუს/კლავიატურას პირდაპირ")
 GOAT could drive anything with a CLI and nothing else; it had to tell him so.
