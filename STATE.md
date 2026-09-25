@@ -1763,3 +1763,18 @@ noticed it in Georgian.
 - Still open: three captures at 21:55 stay empty even levelled — those were
   taken while GOAT's own voice / YouTube was playing, i.e. the VAD opened a
   turn on echo, not on him. Separate bug from the Georgian one.
+
+## 2026-09-26 — no hum-words in the voice
+- He said GOAT "still sounds like AI"; the culprit was the spoken "Mm-hm." / "ჰმ." backchannel. Removed from BACKCHANNEL pools; new HUM_RE in goat_app.py strips leading hmm/mm-hm/uh/um/erm/ah from every line in TtsQueue.say(). Voice stays Edge Ava (he rejected Kokoro — keep his existing voice/system).
+- Trap: run preflight with `py -3.13 self_check.py preflight` — bare `python` is 3.12 and fails on missing scipy.
+
+## Bubble keeper (2026-09-26, his report: card in bottom-left, dot buried behind apps)
+Root cause: WindowStaysOnTopHint is applied once; Windows drops floating
+windows out of the topmost band (full-screen apps, other on-top tools) and
+shoves them on display changes, and Qt never restores either. A knocked dot
+drags the card with it (`relocated` → `follow`) — hence "card in the corner".
+Fix: `pin_topmost()` (SetWindowPos HWND_TOPMOST, NOACTIVATE) + `GoatWindow._keeper`,
+a 1.5s timer that runs ONLY while collapsed: re-places the dot at cfg["bubble"]
+(skips mid-drag), re-pins it, re-glues and re-pins the card.
+VERIFIED: native knock repro (NOTOPMOST + move to 10,900) restored by one keeper
+tick; test_bubble 40/40, test_message_pop 19/19, preflight PASS.

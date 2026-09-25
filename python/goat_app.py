@@ -613,9 +613,14 @@ REFLEX_FAIL = {"en": "That didn't open.", "ka": "ვერ გავხსენ
 # enables that version for anyone who wants to judge it themselves; the
 # default fills the silence where there is nothing to corrupt.
 BACKCHANNEL = {
-    "en": ("Mm-hm.", "Okay.", "Right.", "Got it."),
-    "ka": ("ჰმ.", "კარგი.", "ჰო.", "გასაგებია."),
+    "en": ("Okay.", "Right.", "Got it."),
+    "ka": ("კარგი.", "ჰო.", "გასაგებია."),
 }
+# Hum-words read aloud by a synthetic voice ("Hmm", "Mm-hm", "Uh") are what
+# made him say GOAT "still sounds like AI" (2026-09-26) — they never reach
+# the voice, whether a backchannel or the model's own writing.
+HUM_RE = re.compile(r"^\s*(?:(?:h?m+-?h?m+|hm+|um+|uh+|erm*|ah+|ჰმ+)(?!\w)[\s,.…!?—–-]*)+",
+                    re.IGNORECASE)
 # How long GOAT stays silent after he stops before making a listening noise.
 # Below this the reply usually arrives on its own and a filler would talk over
 # GOAT's own opening word; past it the silence starts reading as "ignored".
@@ -920,7 +925,7 @@ class TtsPipeline:
         """filler=True marks a backchannel noise: it plays, but it is not
         the answer, so it must not stop the ledger's clock (2026-09-25: the
         log's "think/voice ~900ms" was the Mm-hm, the answer went unmeasured)."""
-        text = text.strip()
+        text = HUM_RE.sub("", text).strip()
         if not text:
             return
         with self._lock:
