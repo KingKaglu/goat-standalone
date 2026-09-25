@@ -311,6 +311,14 @@ class Session:
         print(f"[stt-rt] committed in {ms:.0f}ms: {text[:60]!r}")
         return text
 
+    def why(self) -> str:
+        """Why this ear gave nothing, in one line — for the log, not for him."""
+        if self.error:
+            return f"{self.lang}: {self.error}"
+        if not self._done.is_set():
+            return f"{self.lang}: no answer in {COMMIT_WAIT_S + 2.0:.1f}s"
+        return f"{self.lang}: {'empty' if not self.committed else 'blank text'}"
+
 
 def start(lang: str, loop, sample_rate: int = 16000) -> Session | None:
     if not available(lang):
@@ -384,6 +392,9 @@ class Pair:
             self.lang = "ka"
             return ka
         return None
+
+    def why(self) -> str:
+        return "; ".join(s.why() for s in self._both())
 
 
 def start_threadsafe(lang: str, loop, sample_rate: int = 16000):

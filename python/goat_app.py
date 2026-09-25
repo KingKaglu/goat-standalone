@@ -1470,7 +1470,15 @@ class GoatApp:
                                     else self.turn_lang)
                 await self._heard(text)
                 return
+            # The 2026-09-23 first turn fell to the batch ear (1812ms) and the
+            # log could not say why — the reason only ever reached the status
+            # line. Log it so the next miss names itself.
+            why = getattr(rt, "why", None)
+            print(f"[stt-rt] missed -> batch ear ({why() if why else '?'})")
             self.emit("status", "streaming ear missed — using the full one")
+        elif stt_realtime.ENABLED:
+            print("[stt-rt] no stream opened -> batch ear "
+                  "(realtime down after a failure, no key, or loop not ready)")
         if self.language != "en" and stt_gladia.available():
             # Georgian or bilingual mode: cloud ear (local whisper can't do
             # ka at all — it romanizes it into English-looking nonsense,
