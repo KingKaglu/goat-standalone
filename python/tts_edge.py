@@ -29,6 +29,13 @@ CHARACTERS = {
     "goat": {
         "voices": {"en": "en-US-AvaMultilingualNeural",
                    "ka": "ka-GE-EkaNeural"},  # Microsoft's Georgian neural voice
+        # English accents, picked by set_accent(); "us" is the multilingual
+        # Ava above, the rest are regional neurals of the same character.
+        "accents": {"us": "en-US-AvaMultilingualNeural",
+                    "uk": "en-GB-SoniaNeural",
+                    "au": "en-AU-NatashaNeural",
+                    "ie": "en-IE-EmilyNeural",
+                    "in": "en-IN-NeerjaNeural"},
         "rate": "+10%",   # same slightly-brisk pace as piper's length_scale 0.85
         "pitch": "+0Hz",
         "fx": None,
@@ -38,6 +45,11 @@ CHARACTERS = {
         # is the only male Georgian neural voice Microsoft ships.
         "voices": {"en": "en-US-AndrewMultilingualNeural",
                    "ka": "ka-GE-GiorgiNeural"},
+        "accents": {"us": "en-US-AndrewMultilingualNeural",
+                    "uk": "en-GB-RyanNeural",
+                    "au": "en-AU-WilliamMultilingualNeural",
+                    "ie": "en-IE-ConnorNeural",
+                    "in": "en-IN-PrabhatNeural"},
         "rate": "-4%",     # unhurried — he has all the time in the world
         "pitch": "-28Hz",  # at the source, so formants stay believable
         "fx": "ultron",
@@ -46,8 +58,9 @@ CHARACTERS = {
 
 LANG = "en"
 CHARACTER = "goat"
+ACCENT = "uk"  # which English he hears; ignored for other languages
 VOICES = CHARACTERS["goat"]["voices"]  # kept for callers reading the old table
-VOICE = VOICES["en"]
+VOICE = CHARACTERS["goat"]["accents"]["uk"]
 RATE = CHARACTERS["goat"]["rate"]
 PITCH = CHARACTERS["goat"]["pitch"]
 
@@ -56,7 +69,20 @@ def _apply():
     global VOICE, RATE, PITCH
     c = CHARACTERS.get(CHARACTER, CHARACTERS["goat"])
     VOICE = c["voices"].get(LANG, VOICE)
+    if LANG == "en":
+        VOICE = c.get("accents", {}).get(ACCENT, VOICE)
     RATE, PITCH = c["rate"], c["pitch"]
+
+
+def set_accent(name: str) -> bool:
+    """Which English accent GOAT speaks in. Unknown names change nothing."""
+    global ACCENT
+    name = (name or "").strip().lower()
+    if name not in CHARACTERS[CHARACTER].get("accents", {}):
+        return False
+    ACCENT = name
+    _apply()
+    return True
 
 
 def set_language(lang: str):

@@ -61,10 +61,29 @@ UTT_MAX_MS = 30000           # hard cap so a stuck-open capture can't grow forev
 # gate. The gate and the VAD keep seeing the raw signal; only the copy handed
 # to the STT ears is scaled, so a quiet mic costs nothing and can never again
 # turn into words he did not say.
+# 2026-09-25: "sometimes it hears my Georgian, sometimes it cannot." Measured
+# on 20 of his own saved utterances, re-run through scribe four ways. The
+# settings made no difference; the LEVEL did. Every transcript that came back
+# right sat at RMS 0.20-0.33. Everything outside that band failed, in both
+# directions: RMS 0.09-0.14 came back mangled or empty, and RMS 0.47 with the
+# samples railed (peak 1.000, up to 3.5% of samples at full scale — his mic
+# endpoint was at 100%, clipping loud speech at the source) came back EMPTY
+# under all four configs. English survives that distortion because the model
+# can guess it back; Georgian has no such safety net, which is exactly why he
+# only ever noticed this in Georgian.
+#
+# So the ear is levelled by RMS into that measured band, and — unlike the
+# first version of this code — it is allowed to turn DOWN. "Only ever louder"
+# was the bug: a shout after a whisper went to the models railed.
+EAR_TARGET_RMS = 0.25        # middle of the band his good transcripts sat in
+EAR_PEAK_CEILING = 0.95      # never let makeup gain drive a sample into the rail
 EAR_TARGET_PEAK = 0.5        # where his good captures sat (-6 dBFS)
 EAR_GAIN_MAX = 12.0
+EAR_GAIN_MIN = 0.2           # can attenuate a hot mic, not just lift a quiet one
 EAR_QUIET_PEAK = 0.12        # below this, say so on the status line: a GOAT
                              # that cannot hear must look like one
+EAR_CLIP_FRACTION = 0.005    # >0.5% of samples at full scale = clipped at the
+                             # source, which no amount of gain can undo
 NOISE_FLOOR_MARGIN = 3.0     # cleaned-block RMS must clear floor*margin to count as
                              # real speech — Silero alone judges speech SHAPE, not
                              # loudness, so quiet but speech-shaped residual echo
@@ -414,7 +433,7 @@ class DuplexAudio:
         there is no gain to apply (the normal case on a healthy mic) the same
         array goes straight through, uncopied."""
         g = self.ear_gain
-        if g <= 1.0:
+        if 0.999 <= g <= 1.001:
             return chunk
         return np.clip(chunk * g, -1.0, 1.0)
 
@@ -422,20 +441,30 @@ class DuplexAudio:
         """Scale one finished utterance for the ears, and remember the gain so
         the NEXT utterance's live blocks go out already corrected.
 
-        Only ever louder, never quieter — a loud speaker is not a problem the
-        STT models have. Smoothed, so one shouted word cannot slam the level
-        of the following turn."""
+        Levelled by RMS into the band his good transcripts came from, in both
+        directions, with the peak kept off the rail. Smoothed, so one shouted
+        word cannot slam the level of the following turn."""
         peak = float(np.abs(audio).max()) if len(audio) else 0.0
         self.last_peak = peak
         if peak <= 1e-6:
             return audio
-        gain = max(1.0, min(EAR_TARGET_PEAK / peak, EAR_GAIN_MAX))
-        self.ear_gain = max(1.0, min(EAR_GAIN_MAX,
-                                     0.5 * self.ear_gain + 0.5 * gain))
-        if peak < EAR_QUIET_PEAK:
+        rms = float(np.sqrt(np.mean(np.square(audio))))
+        gain = EAR_TARGET_RMS / max(rms, 1e-6)
+        # never push a sample into the rail: distortion costs more than volume
+        gain = min(gain, EAR_PEAK_CEILING / peak)
+        gain = max(EAR_GAIN_MIN, min(EAR_GAIN_MAX, gain))
+        self.ear_gain = max(EAR_GAIN_MIN, min(EAR_GAIN_MAX,
+                                              0.5 * self.ear_gain + 0.5 * gain))
+        clipped = float(np.mean(np.abs(audio) >= 0.99))
+        if clipped > EAR_CLIP_FRACTION:
+            # clipped BEFORE GOAT ever saw it — the only cure is a lower
+            # Windows mic level, so say so instead of pretending gain helps
+            self._status(f"mic is too hot — {clipped * 100:.1f}% of that "
+                         f"clipped; lower the input level")
+        elif peak < EAR_QUIET_PEAK:
             self._status(f"mic is very quiet ({20 * np.log10(peak):.0f} dBFS) "
                          f"— lifting it x{gain:.1f} for the ear")
-        return np.clip(audio * gain, -1.0, 1.0) if gain > 1.0 else audio
+        return np.clip(audio * gain, -1.0, 1.0) if abs(gain - 1.0) > 0.001 else audio
 
     def _append_utt(self, chunk: np.ndarray, voiced: bool, chunk_ms: float):
         self._utt_chunks.append(chunk)

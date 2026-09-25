@@ -1728,3 +1728,23 @@ maximize` if the rect looks minimized -> then KEYBOARD: `ctrl+N` selects tab N
 (ctrl+9 = last), `ctrl+w` closes it. Close right-to-left so indexes below stay
 valid. No pixels, immune to the panel popping back. Verify with one narrow
 screenshot of the strip.
+
+## 2026-09-25 — Georgian hearing: it was the LEVEL, not the model
+Measured, not guessed: 20 saved utterances re-run through scribe four ways
+(ka / kat / auto-detect / no-keyterms). The settings changed nothing. The
+level changed everything — every correct transcript sat at RMS 0.20-0.33;
+RMS 0.09-0.14 came back mangled, RMS 0.47 with samples railed (peak 1.000,
+up to 3.5% at full scale) came back EMPTY under all four configs. English
+survives that distortion, Georgian does not — which is why he only ever
+noticed it in Georgian.
+- Cause: his mic endpoint was at 100% (clipping loud speech at the source),
+  and `_learn_ear_gain` was "only ever louder, never quieter", so a shout
+  after a whisper reached the models railed.
+- Fixed in audio_io.py: ear level is now normalised by RMS to 0.25 in BOTH
+  directions, gain capped so no sample is driven into the rail, and a
+  "mic is too hot" status when the audio arrived already clipped.
+- Windows recording level set 100% -> 80%. Safe now that the ear can lift
+  a quiet mic up to x12 — the pipeline can amplify, it can never un-clip.
+- Still open: three captures at 21:55 stay empty even levelled — those were
+  taken while GOAT's own voice / YouTube was playing, i.e. the VAD opened a
+  turn on echo, not on him. Separate bug from the Georgian one.

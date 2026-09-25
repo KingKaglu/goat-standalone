@@ -338,28 +338,35 @@ def utterance(peak, ms=1500):
     return (np.sin(2 * np.pi * 220 * t) * peak).astype(np.float32)
 
 
+def rms(x):
+    return float(np.sqrt(np.mean(np.square(x))))
+
+
+# 2026-09-25: levelled by RMS into the band his GOOD Georgian transcripts sat
+# in (0.20-0.33), in both directions — see EAR_TARGET_RMS in audio_io.
 a = make_audio()
 quiet = utterance(0.05)                      # what tonight's mic delivered
 lifted = a._learn_ear_gain(quiet)
-check(f"a -26 dBFS utterance is lifted for the ear "
-      f"(peak {float(np.abs(quiet).max()):.2f} -> "
-      f"{float(np.abs(lifted).max()):.2f})",
-      float(np.abs(lifted).max()) > 0.4,
-      f"peak={float(np.abs(lifted).max())}")
+check(f"a -26 dBFS utterance is lifted into the ear's band "
+      f"(rms {rms(quiet):.3f} -> {rms(lifted):.3f})",
+      0.20 <= rms(lifted) <= 0.33, f"rms={rms(lifted)}")
 check("the lift is remembered for the next turn's live blocks",
       a.ear_gain > 2.0, f"ear_gain={a.ear_gain}")
 
 a = make_audio()
-healthy = utterance(0.5)                     # what his good captures looked like
+healthy = utterance(0.25 * np.sqrt(2))       # already at the target RMS
 same = a._learn_ear_gain(healthy)
-check("a healthy utterance is handed over untouched, not copied",
-      same is healthy and a.ear_gain == 1.0, f"ear_gain={a.ear_gain}")
+check("an in-band utterance is handed over untouched, not copied",
+      same is healthy and abs(a.ear_gain - 1.0) < 0.01,
+      f"ear_gain={a.ear_gain}")
 
 a = make_audio()
-loud = utterance(0.95)
-a._learn_ear_gain(loud)
-check("a loud speaker is never turned DOWN — that is not an STT problem",
-      a.ear_gain == 1.0, f"ear_gain={a.ear_gain}")
+loud = utterance(0.95)                       # RMS 0.67 — came back EMPTY
+levelled = a._learn_ear_gain(loud)
+check("a hot capture is turned DOWN into the band, never railed",
+      a.ear_gain < 1.0 and 0.20 <= rms(levelled) <= 0.33
+      and float(np.abs(levelled).max()) <= 0.95,
+      f"ear_gain={a.ear_gain} rms={rms(levelled)}")
 
 # The remembered gain has to reach the streaming ear, which is fed block by
 # block while he is still talking — boosting only the batch copy would leave
