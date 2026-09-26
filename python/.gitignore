@@ -2,3 +2,5 @@
 .update-pending.json
 .update-last.json
 update-notice.txt
+.engine-up
+restart-goat.log

@@ -44,6 +44,7 @@ CORE = [
     "ui_qt.py",
     "goat_doctor.py",
     "self_check.py",
+    "self_update.py",
 ]
 
 # goat_doctor runs its probes at import time (it's a script), so it is

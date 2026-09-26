@@ -10,7 +10,9 @@
 #                   last-good snapshot (pure PowerShell — the broken thing
 #                   might be self_check itself) and relaunch that.
 $py = "C:\Users\user\goat-standalone\python"
-$log = Join-Path $py "goat-app.log"
+# Own file: goat-app.log is held open by the app's `>>` redirect, so every
+# Add-Content to it failed and the watchdog's verdicts were never recorded.
+$log = Join-Path $py "restart-goat.log"
 function Log($m) { Add-Content -Path $log -Value "[restart] $(Get-Date -Format s) $m" }
 
 function GoatAlive {
@@ -57,21 +59,33 @@ if (Test-Path (Join-Path $py ".update-pending.json")) {
             -WorkingDirectory $py -WindowStyle Hidden -Wait -PassThru
     Log "self-update install exit $($up.ExitCode)"
 }
+$engineUp = Join-Path $py ".engine-up"
+Remove-Item $engineUp -Force -ErrorAction SilentlyContinue
+$launchedAt = Get-Date
 LaunchGoat
 
 # 3. WATCHDOG — preflight can't catch everything (a bug that only fires on
-# real boot: audio devices, SDK connect, Qt event loop). Give the fresh
-# instance 45s; if it's gone, put the last provably-booting code back.
-Start-Sleep -Seconds 10
-$alive = GoatAlive
-if ($alive) {
-    Start-Sleep -Seconds 35
-    $alive = GoatAlive
+# real boot: audio devices, SDK connect, Qt event loop). The fresh instance
+# must prove its ENGINE connected (goat_app writes .engine-up), not just
+# that a window exists: on 2026-09-27 an engine update died on connect, the
+# window stayed up, this check said "restart OK", and GOAT was deaf.
+function EngineUp {
+    (Test-Path $engineUp) -and ((Get-Item $engineUp).LastWriteTime -gt $launchedAt)
 }
-if (-not $alive) {
-    Log "BOOT CRASH after restart - rolling back to last-good snapshot"
+$deadline = $launchedAt.AddSeconds(120)
+$alive = $true
+while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 3
+    $alive = GoatAlive
+    if (-not $alive -or (EngineUp)) { break }
+}
+$ok = $alive -and (EngineUp)
+if (-not $ok) {
+    if ($alive) { Log "ENGINE NEVER CAME UP after restart (window alive, brain dead) - rolling back" }
+    else { Log "BOOT CRASH after restart - rolling back to last-good snapshot" }
     $backup = Join-Path $py ".self-backup\last-good"
     if (Test-Path $backup) {
+        KillGoat
         Copy-Item (Join-Path $backup '*.py') $py -Force
         # A just-installed engine may be the thing that broke boot.
         Start-Process py -ArgumentList '-3.13', 'self_update.py', 'revert' `

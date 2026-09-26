@@ -31,6 +31,7 @@ STATE = os.path.join(HERE, ".update-state.json")      # last check time
 PENDING = os.path.join(HERE, ".update-pending.json")  # engine update to install
 LAST = os.path.join(HERE, ".update-last.json")        # what install changed
 NOTICE = os.path.join(HERE, "update-notice.txt")      # told on his next turn
+ENGINE_UP = os.path.join(HERE, ".engine-up")           # brain connected (watchdog)
 
 PY313 = r"C:\Users\user\AppData\Local\Programs\Python\Python313\python.exe"
 SDK = "claude-agent-sdk"
@@ -99,6 +100,47 @@ def sdk_latest():
     with urllib.request.urlopen(f"https://pypi.org/pypi/{SDK}/json",
                                 timeout=20) as r:
         return json.load(r)["info"]["version"]
+
+
+def has_windows_wheel(version):
+    """Is there a win_amd64 wheel for this version on PyPI? 2026-09-27:
+    0.2.160 shipped with mac/linux wheels only, so pip built it from the
+    sdist — a pure-Python build with NO bundled claude.exe. The SDK then fell
+    back to npm's claude.CMD, which 0.2.160 refuses to run, the engine died on
+    connect and GOAT went deaf. No Windows wheel = not an update for this PC."""
+    with urllib.request.urlopen(f"https://pypi.org/pypi/{SDK}/{version}/json",
+                                timeout=20) as r:
+        files = json.load(r)["urls"]
+    return any(f["filename"].endswith("win_amd64.whl") for f in files)
+
+
+def bundled_exe():
+    """Path of the claude.exe inside the installed SDK (a fresh subprocess,
+    so it reflects what pip just put on disk, not what this process imported)."""
+    code, out = _run([PY313, "-c", "import claude_agent_sdk, os; print(os.path."
+                      "join(os.path.dirname(claude_agent_sdk.__file__), "
+                      "'_bundled', 'claude.exe'))"], 60)
+    return out.strip().splitlines()[-1] if code == 0 and out.strip() else None
+
+
+def engine_works():
+    """The installed engine can actually run: its bundled claude.exe exists
+    and answers --version. This is exactly what broke on 2026-09-27."""
+    exe = bundled_exe()
+    if not exe or not os.path.isfile(exe):
+        return False
+    try:
+        code, out = _run([exe, "--version"], 60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return code == 0 and re.search(r"\d+\.\d+\.\d+", out) is not None
+
+
+def _pip_install(version):
+    # --only-binary: never build from the sdist. A source build has no
+    # bundled claude.exe, and a GOAT without it cannot think or hear.
+    return _run([PY313, "-m", "pip", "install", "--disable-pip-version-check",
+                 "--only-binary=:all:", f"{SDK}=={version}"], 600)
 
 
 def _cli_version():
@@ -172,8 +214,12 @@ def check():
     try:
         have, latest = sdk_installed(), sdk_latest()
         if have and latest and _vtuple(latest) > _vtuple(have):
-            _save(PENDING, {"from": have, "to": latest})
-            log.append(f"engine {have} -> {latest} pending")
+            if has_windows_wheel(latest):
+                _save(PENDING, {"from": have, "to": latest})
+                log.append(f"engine {have} -> {latest} pending")
+            else:
+                # Not queued; tomorrow's check picks it up once it ships.
+                log.append(f"engine {latest} skipped: no Windows build yet")
     except Exception as e:  # noqa: BLE001
         log.append(f"engine check failed: {e}")
     try:
@@ -202,17 +248,33 @@ def install():
     p = pending()
     if not p:
         return 0
-    code, out = _run([PY313, "-m", "pip", "install", "--disable-pip-version-check",
-                      f"{SDK}=={p['to']}"], 600)
+    code, out = _pip_install(p["to"])
     os.remove(PENDING)
     now = sdk_installed()
-    if code == 0 and now == p["to"]:
+    if code == 0 and now == p["to"] and engine_works():
         _save(LAST, p)
         notify(f"Updated my engine ({SDK}) {p['from']} -> {p['to']}.")
         return 0
-    notify(f"Tried to update my engine to {p['to']} but pip failed; "
-           f"still on {now}.")
+    if now != p["from"] or not engine_works():
+        # Installed but can't run (or half-installed): put the old one back
+        # before GOAT relaunches on it.
+        _pip_install(p["from"])
+        now = sdk_installed()
+    notify(f"Tried to update my engine to {p['to']} but it failed a "
+           f"self-test; kept {now}.")
     return 1
+
+
+def mark_engine_up():
+    """Brain connected. restart-goat.ps1's watchdog waits for this file to be
+    newer than its relaunch: a live window alone proves nothing — on
+    2026-09-27 the window stayed up while the engine was dead and every word
+    he said went nowhere, and the old alive-check called that 'restart OK'."""
+    try:
+        with open(ENGINE_UP, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
 
 
 def boot_ok():
@@ -228,8 +290,7 @@ def revert():
     last = _load(LAST)
     if not last:
         return 0
-    _run([PY313, "-m", "pip", "install", "--disable-pip-version-check",
-          f"{SDK}=={last['from']}"], 600)
+    _pip_install(last["from"])
     os.remove(LAST)
     notify(f"Engine {last['to']} wouldn't boot, so I rolled back to "
            f"{last['from']}.")

@@ -105,6 +105,17 @@ for path in notes:
 check("self-knowledge", not stale,
       "current" if not stale else "stale notes: " + ", ".join(stale))
 
+# 8. Engine: the SDK's bundled claude.exe must exist and run. Without it the
+# SDK falls back to npm's claude.CMD, which it refuses — the brain dies on
+# connect and nothing he says is heard (2026-09-27, SDK 0.2.160).
+try:
+    import self_update
+    ver = self_update.sdk_installed()
+    check("engine (bundled claude.exe)", self_update.engine_works(),
+          f"claude-agent-sdk {ver}")
+except Exception as e:  # noqa: BLE001
+    check("engine (bundled claude.exe)", False, repr(e))
+
 fails = [c for c in checks if not c[1]]
 print()
 if fails:

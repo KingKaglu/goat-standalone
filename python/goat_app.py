@@ -2379,6 +2379,7 @@ class GoatApp:
         await self._warm_up()
         stt_ok = await stt_task
         await connect_task
+        self_update.mark_engine_up()
         if not stt_ok:
             # Boot self-check, spoken: without this the window looks alive
             # while every word he says silently goes nowhere.
