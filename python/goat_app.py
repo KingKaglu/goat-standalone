@@ -36,6 +36,7 @@ import reflex
 import screen_policy
 import screen_tools
 import self_check
+import self_update
 import stt_gladia
 import stt_realtime
 import stt_whisper
@@ -552,6 +553,7 @@ WAKE_RE = re.compile(r"\b(goat|goats|goad|goot|gote|ghost|god|coat|goa|go at"
 WAKE_WINDOW_S = 120.0
 # Away this long → GOAT opens the conversation itself at boot (Phase 3).
 BRIEFING_AFTER_H = 6.0
+UPDATE_IDLE_S = 20 * 60   # quiet this long before a self-update restart
 
 # Georgian script (Mkhedruli) anywhere in a message — routes it past the
 # local brain regardless of the UI language toggle.
@@ -1896,6 +1898,12 @@ class GoatApp:
         except Exception as e:  # noqa: BLE001
             view = f"[live desktop unavailable: {e}]"
         send = view + "\n\n" + text
+        # Daily self-update results: he asked to hear only when something
+        # actually changed — so it rides along on his next turn, once.
+        news = self_update.take_notice()
+        if news:
+            send = ("[self-update since you last spoke — tell Giorgi in one "
+                    "short line, then answer him]\n" + news + "\n\n" + send)
         if self._local_unseen:
             lines = "\n".join(f"him: {u}\nyou: {a}"
                               for u, a in self._local_unseen[-6:])
@@ -2248,6 +2256,39 @@ class GoatApp:
                     self.tts.mark_reply()
                     self.tts.say(warn)
 
+    async def _update_watch(self):
+        """Once per 24h: check engine / CLI / models (self_update.py). A
+        pending engine update needs a restart (the bundled CLI is locked while
+        I run), so it waits until he's been quiet for UPDATE_IDLE_S and then
+        restarts through restart-goat.ps1 — preflight, install, watchdog."""
+        await asyncio.sleep(60)
+        self_update.boot_ok()   # survived a minute: this engine is keeper
+        while True:
+            try:
+                if self_update.due():
+                    await asyncio.to_thread(self_update.check)
+                if (self_update.pending() and not self.busy
+                        and not self.audio.is_tts_playing
+                        and time.monotonic() - self._work_started
+                        > UPDATE_IDLE_S):
+                    self.emit("status", "updating my engine — back in a moment")
+                    # WMI-spawned, same as the restart protocol: the helper
+                    # must outlive the process it is about to kill.
+                    helper = os.path.join(os.path.dirname(
+                        os.path.abspath(__file__)), "restart-goat.ps1")
+                    await asyncio.to_thread(subprocess.run, [
+                        "powershell", "-NoProfile", "-Command",
+                        "Invoke-CimMethod -ClassName Win32_Process -MethodName "
+                        "Create -Arguments @{ CommandLine = 'powershell "
+                        "-NoProfile -ExecutionPolicy Bypass -File "
+                        f"{helper}' }}"],
+                        capture_output=True, timeout=60,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    return
+            except Exception as e:  # noqa: BLE001 — never let this hurt me
+                self.emit("status", f"update check failed: {e}"[:80])
+            await asyncio.sleep(1800)
+
     async def _warm_up(self):
         """Cold-start guard (bug #3): the canceller has never seen this room
         at process start — play a scripted line with interrupt decisions
@@ -2368,6 +2409,7 @@ class GoatApp:
 
         if POWER_WATCH:
             asyncio.create_task(self._power_watch())
+        asyncio.create_task(self._update_watch())
 
         # Boot briefing (Phase 3, ported from the Node app 2026-07-10):
         # back after 6+ hours away → GOAT speaks first, JARVIS-style.

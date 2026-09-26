@@ -429,3 +429,9 @@ wheel all arrive), `test_engine_router.py` still 100/100, preflight PASS.
 End-to-end through the real SDK: the model called `computer`, got the image
 back, and read his screen correctly.
 
+
+## 2026-09-27 — daily self-update (his order: autonomous, tell me only when updated)
+- python/self_update.py: 24h check of claude-agent-sdk (engine, py3.13), global Claude Code CLI (`claude update`), and new Opus/Sonnet/Fable ids on docs.claude.com (probed via bundled CLI; announced, NOT auto-switched).
+- goat_app._update_watch: every 30 min; pending engine update → restarts via restart-goat.ps1 after 20 min idle. restart-goat installs between kill and relaunch; watchdog reverts engine on boot crash.
+- Results queued in python/update-notice.txt → prepended to his next turn once.
+- Lesson: Python urllib rejected docs.claude.com cert (expired chain) — use curl.exe there.

@@ -113,6 +113,7 @@ def make_app(client):
     app._work_failed = False
     app._last_work_summary = ""
     app._last_ctx = 0
+    app._step_ctx = 0
     app._exchanges = deque(maxlen=g.HANDOFF_KEEP)
     app._reply_acc = ""
     app._rotate_only = False

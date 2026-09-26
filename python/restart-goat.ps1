@@ -50,6 +50,13 @@ Start-Sleep -Seconds 8
 KillGoat
 # Let the mic/audio handles fully release before the fresh instance grabs them.
 Start-Sleep -Seconds 2
+# Daily self-update: a pending engine update installs HERE, the only moment
+# the bundled claude.exe isn't locked by a running GOAT.
+if (Test-Path (Join-Path $py ".update-pending.json")) {
+    $up = Start-Process py -ArgumentList '-3.13', 'self_update.py', 'install' `
+            -WorkingDirectory $py -WindowStyle Hidden -Wait -PassThru
+    Log "self-update install exit $($up.ExitCode)"
+}
 LaunchGoat
 
 # 3. WATCHDOG — preflight can't catch everything (a bug that only fires on
@@ -66,6 +73,9 @@ if (-not $alive) {
     $backup = Join-Path $py ".self-backup\last-good"
     if (Test-Path $backup) {
         Copy-Item (Join-Path $backup '*.py') $py -Force
+        # A just-installed engine may be the thing that broke boot.
+        Start-Process py -ArgumentList '-3.13', 'self_update.py', 'revert' `
+            -WorkingDirectory $py -WindowStyle Hidden -Wait | Out-Null
         Start-Sleep -Seconds 2
         LaunchGoat
         Log "rolled back and relaunched"
