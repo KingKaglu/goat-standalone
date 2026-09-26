@@ -3,6 +3,16 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Torch removed from the ears (2026-09-27, his ask: lighter, never slower)
+- GOAT's python was ~610MB with RAM at 87-89%; torch_cpu.dll (~300MB) came
+  only from silero-vad. audio_io.SileroVAD now runs silero_vad.onnx on
+  onnxruntime directly (the silero_vad package imports torch even in ONNX
+  mode — never import it). Bench on 4 recorded clips: probabilities identical
+  (maxdiff 0.000), 0.13ms/chunk vs 0.27-0.6ms, load 0.17s vs 1.56s.
+- goat_app import: no torch, no silero_vad in sys.modules; RSS 177MB.
+- Trap: .self-backup/last-good still has the torch version; that's fine for rollback.
+
+
 ## Self-knowledge kept current (2026-09-26, his order: automatic, lean on usage)
 - STATE.md split: history before 2026-09-14 midday -> STATE-archive.md (1780 -> 424 lines). Keep under ~450.
 - goat_doctor check 7 'self-knowledge' scans memory.md + skills for STALE_TERMS of removed features.

@@ -2,11 +2,13 @@ import queue
 import threading
 from collections import deque
 
+import importlib.util
+import os
+
 import numpy as np
+import onnxruntime as ort
 import sounddevice as sd
-import torch
 from livekit import rtc
-from silero_vad import load_silero_vad
 
 SAMPLE_RATE = 16000
 BLOCK_SAMPLES = 160          # 10ms frames, per spec
@@ -101,6 +103,39 @@ def _wasapi_devices():
     return None, None
 
 
+
+class SileroVAD:
+    """Silero VAD run straight on onnxruntime (2026-09-27). The silero_vad
+    package imports torch even for its ONNX model, and torch alone was
+    ~300MB of GOAT's RAM plus ~1.4s of boot. Same model weights: on four
+    recorded clips its probabilities matched the torch JIT build exactly,
+    at ~0.13ms per chunk vs ~0.3-0.6ms."""
+
+    CONTEXT = 64  # samples of the previous chunk the model expects prepended
+
+    def __init__(self):
+        spec = importlib.util.find_spec("silero_vad")
+        path = os.path.join(os.path.dirname(spec.origin), "data", "silero_vad.onnx")
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        self._session = ort.InferenceSession(
+            path, sess_options=opts, providers=["CPUExecutionProvider"])
+        self._sr = np.array(SAMPLE_RATE, dtype=np.int64)
+        self.reset_states()
+
+    def reset_states(self):
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, self.CONTEXT), dtype=np.float32)
+
+    def __call__(self, chunk: np.ndarray) -> float:
+        x = np.concatenate(
+            [self._context, chunk.astype(np.float32, copy=False).reshape(1, -1)], axis=1)
+        out, self._state = self._session.run(
+            None, {"input": x, "state": self._state, "sr": self._sr})
+        self._context = x[:, -self.CONTEXT:]
+        return float(out[0, 0])
+
 class WebRtcCanceller:
     """WebRTC AEC3 via livekit-rtc's prebuilt AudioProcessingModule — the
     production echo canceller browsers use, with internal delay estimation
@@ -139,7 +174,7 @@ class DuplexAudio:
     instead of predicted.
 
     The audio callback does AEC only and hands cleaned blocks off through a
-    queue; VAD inference (a torch forward pass, with real jitter risk on
+    queue; VAD inference (a model forward pass, with real jitter risk on
     first calls) runs on a separate thread so it can never make the
     real-time audio callback miss its 10ms deadline and glitch."""
 
@@ -189,7 +224,7 @@ class DuplexAudio:
                                        # carry into the next playback and prime it
                                        # to confirm almost instantly
         self._vad_leftover = np.zeros(0, dtype=np.float32)
-        self._vad_model = load_silero_vad()
+        self._vad_model = SileroVAD()
         self._noise_floor = 0.003
         self._raw_rms_ema = None
         self._calibrating = False
@@ -322,7 +357,7 @@ class DuplexAudio:
                 self._calib_samples.append(rms)
                 continue
 
-            prob = self._vad_model(torch.from_numpy(chunk), SAMPLE_RATE).item()
+            prob = self._vad_model(chunk)
 
             # Noise floor only adapts on genuinely quiet ground truth (not
             # playing, not already flagged voiced) — same reasoning as the

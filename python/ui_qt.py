@@ -2991,7 +2991,7 @@ def main():
     win = GoatWindow()
 
     # Boot latency (2026-07-15, "it needs so much time to turn on"): the
-    # goat_app import drags torch in via silero-vad — seconds even warm,
+    # goat_app import is heavy (Qt, the SDK, audio stack) — seconds warm,
     # much longer on a cold disk cache — and used to run BEFORE the window
     # existed, so launching looked like nothing was happening. Paint the
     # window immediately, import the engine on a side thread, bind it on
