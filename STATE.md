@@ -3,6 +3,16 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Autostart asleep (2026-09-27, his order: "on startup, not awake, just on the spot")
+- Startup-folder GOAT.lnk -> wscript start-goat-app.vbs /startup -> ui_qt.py --startup.
+- --startup: window collapses to the dot before first paint (no ignite),
+  goat.quiet_boot=True -> no scripted greeting (AEC learns on his first
+  reply via _warm_on_first_reply, barge-in off for it), no boot briefing,
+  no _warm_brain (zero usage), _asleep=True: name gate applies even though
+  his ui-config has wake=false; cleared on first addressed transcript.
+- Manual launches / restart-goat.ps1 unchanged (no flag).
+
+
 ## Torch removed from the ears (2026-09-27, his ask: lighter, never slower)
 - GOAT's python was ~610MB with RAM at 87-89%; torch_cpu.dll (~300MB) came
   only from silero-vad. audio_io.SileroVAD now runs silero_vad.onnx on

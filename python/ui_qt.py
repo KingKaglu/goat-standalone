@@ -2996,8 +2996,14 @@ def main():
     # existed, so launching looked like nothing was happening. Paint the
     # window immediately, import the engine on a side thread, bind it on
     # the main thread the moment the import lands.
+    # --startup: Windows launched us at login (Startup-folder shortcut).
+    # Come up as the dot, silent, until he says my name.
+    startup = "--startup" in sys.argv
     win.showFullScreen()
-    win.string.ignite()  # boot ritual: the light travels down the string
+    if startup:
+        win.collapse()   # before the loop paints: no full-screen flash
+    else:
+        win.string.ignite()  # boot ritual: the light travels down the string
 
     holder: dict = {}
 
@@ -3020,6 +3026,7 @@ def main():
                 "status", "engine import failed — check python\\goat-app.log")
             return
         goat = holder["cls"](emit=win.post_event)
+        goat.quiet_boot = startup
         holder["goat"] = goat
         win.on_submit = goat.submit_text
         win.on_work = goat.submit_work

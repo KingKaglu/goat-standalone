@@ -44,4 +44,9 @@ End If
 sh.CurrentDirectory = APP_DIR
 ' py -3.13 pinned: Ada-SI's install (2026-07-14) put Python 3.12 first on
 ' PATH; bare "python" then lost PySide6/numpy and GOAT died at import.
-sh.Run "cmd /c py -3.13 -u ui_qt.py >> goat-app.log 2>&1", 0, False
+' /startup (the Windows Startup-folder shortcut) boots GOAT asleep as the dot.
+extra = ""
+If WScript.Arguments.Count > 0 Then
+  If LCase(WScript.Arguments(0)) = "/startup" Then extra = " --startup"
+End If
+sh.Run "cmd /c py -3.13 -u ui_qt.py" & extra & " >> goat-app.log 2>&1", 0, False

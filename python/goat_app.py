@@ -1152,6 +1152,13 @@ class GoatApp:
         # after WAKE_WINDOW_S of silence, voice input must carry the name.
         self.wake_enabled = os.environ.get("GOAT_WAKE", "on").lower() not in (
             "off", "0", "false")
+        # Launched by Windows at login (ui_qt --startup, his order
+        # 2026-09-27): come up asleep — no greeting sound, no briefing, no
+        # warm-up turn (zero Claude usage) — and answer only when named.
+        self.quiet_boot = False
+        # Asleep = the name gate applies even with his wake-word setting
+        # off; set by a quiet boot, cleared the first time he addresses me.
+        self._asleep = False
         # UI-controllable: muted mic drops utterances AND barge-in triggers
         # at the engine gate (audio threads keep running — cheap, reversible).
         self.mic_muted = False
@@ -1673,7 +1680,7 @@ class GoatApp:
             return  # silence/junk — normal, stay quiet
         if self._mishearing(text):
             return
-        if (self.wake_enabled and not self.busy
+        if ((self.wake_enabled or getattr(self, "_asleep", False)) and not self.busy
                 and not self.audio.is_tts_playing
                 and time.monotonic() - self._last_exchange > WAKE_WINDOW_S
                 and not WAKE_RE.search(text)):
@@ -1681,6 +1688,7 @@ class GoatApp:
             print(f"[wake] not addressed, ignored: {text!r}")
             self.emit("status", "heard — say my name to wake me")
             return
+        self._asleep = False
         await self._talk(text)
 
     async def _talk(self, text: str, echo: bool = True):
@@ -2302,6 +2310,17 @@ class GoatApp:
             await asyncio.sleep(0.1)
         self.audio.warming_up = False
 
+    async def _warm_on_first_reply(self):
+        """Quiet boot has no scripted greeting for the echo canceller to
+        learn the room on, so his first reply does that job: barge-in stays
+        off until it has finished playing (see _warm_up)."""
+        self.audio.warming_up = True
+        while not self.audio.is_tts_playing:
+            await asyncio.sleep(0.2)
+        while self.audio.is_tts_playing:
+            await asyncio.sleep(0.1)
+        self.audio.warming_up = False
+
     async def run(self):
         self.loop = asyncio.get_running_loop()
         # Away-time, read BEFORE this boot's init overwrites the session
@@ -2376,7 +2395,11 @@ class GoatApp:
         self.audio.start()
         self.emit("status", "calibrating — stay quiet for 2 seconds")
         await asyncio.to_thread(self.audio.calibrate, 2.0)
-        await self._warm_up()
+        if self.quiet_boot:
+            tts_edge.prime()
+            asyncio.create_task(self._warm_on_first_reply())
+        else:
+            await self._warm_up()
         stt_ok = await stt_task
         await connect_task
         self_update.mark_engine_up()
@@ -2414,7 +2437,11 @@ class GoatApp:
 
         # Boot briefing (Phase 3, ported from the Node app 2026-07-10):
         # back after 6+ hours away → GOAT speaks first, JARVIS-style.
-        if away_h is not None and away_h >= BRIEFING_AFTER_H:
+        if self.quiet_boot:
+            # No open conversation window at login: only his name wakes me.
+            self._last_exchange = time.monotonic() - WAKE_WINDOW_S - 1
+            self._asleep = True
+        elif away_h is not None and away_h >= BRIEFING_AFTER_H:
             now = datetime.datetime.now()
             await self._talk(
                 "[boot-briefing] Giorgi just started you after about "
