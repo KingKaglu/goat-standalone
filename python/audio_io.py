@@ -87,7 +87,8 @@ EAR_QUIET_PEAK = 0.12        # below this, say so on the status line: a GOAT
                              # that cannot hear must look like one
 EAR_CLIP_FRACTION = 0.005    # >0.5% of samples at full scale = clipped at the
                              # source, which no amount of gain can undo
-NOISE_FLOOR_MARGIN = 3.0     # cleaned-block RMS must clear floor*margin to count as
+MUSIC_LEVEL = 0.01           # loopback RMS above this = something else is playing
+NOISE_FLOOR_MARGIN = 3.0    # cleaned-block RMS must clear floor*margin to count as
                              # real speech — Silero alone judges speech SHAPE, not
                              # loudness, so quiet but speech-shaped residual echo
                              # (imperfect AEC cancellation) still scores as "voiced"
@@ -168,6 +169,81 @@ class WebRtcCanceller:
                   .astype(np.float32) / 32768.0)
 
 
+class LoopbackTap:
+    """Everything the speakers play, as heard by Windows (WASAPI loopback).
+
+    2026-09-28, his report: "you've been hearing the music I've been
+    playing". The canceller's reference was only GOAT's own voice, so music
+    from Brave reached the mic as raw, un-cancelled sound — vocals and all —
+    and kept tripping speech detection and cutting him off mid-sentence.
+    Feeding this tap to AEC3 while GOAT is silent lets it cancel whatever
+    else is playing.
+
+    Kept deliberately shallow: a reference that lags the echo is useless to
+    AEC3, so the buffer never holds more than MAX_MS; when it backs up, the
+    oldest audio is dropped so the reference stays early, never late."""
+
+    MAX_MS = 40
+    BLOCK = BLOCK_SAMPLES
+
+    def __init__(self):
+        self._buf = np.zeros(0, dtype=np.float32)
+        self._lock = threading.Lock()
+        self._running = False
+        self.level = 0.0       # smoothed RMS of what's playing (not GOAT)
+        self.healthy = False
+        self.reopens = 0
+
+    def start(self):
+        self._running = True
+        threading.Thread(target=self._run, daemon=True, name="loopback").start()
+
+    def stop(self):
+        self._running = False
+
+    def _run(self):
+        import warnings
+        try:
+            import soundcard as sc
+        except Exception as e:  # noqa: BLE001 — without it GOAT still hears,
+            # just without music cancellation, exactly as before this existed
+            print(f"[loopback] unavailable: {e!r}")
+            return
+        warnings.filterwarnings("ignore", category=sc.SoundcardRuntimeWarning)
+        cap = int(SAMPLE_RATE * self.MAX_MS / 1000)
+        while self._running:
+            try:
+                # Re-resolved on every (re)open: follows him from speakers to
+                # headphones when the default output changes.
+                spk = sc.default_speaker()
+                mic = sc.get_microphone(id=str(spk.name), include_loopback=True)
+                with mic.recorder(samplerate=SAMPLE_RATE, channels=1,
+                                  blocksize=self.BLOCK) as rec:
+                    self.healthy = True
+                    print(f"[loopback] tapping {spk.name}")
+                    while self._running:
+                        d = rec.record(numframes=self.BLOCK)[:, 0].astype(np.float32)
+                        r = float(np.sqrt(np.mean(d.astype(np.float64) ** 2)))
+                        self.level = self.level * 0.9 + r * 0.1
+                        with self._lock:
+                            self._buf = np.concatenate([self._buf, d])[-cap:]
+            except Exception as e:  # noqa: BLE001 — device swap, sleep, unplug
+                self.healthy = False
+                self.reopens += 1
+                if self.reopens <= 5 or self.reopens % 50 == 0:
+                    print(f"[loopback] lost ({e!r}) — reopening")
+                time.sleep(2.0)
+        self.healthy = False
+
+    def take(self, n: int) -> np.ndarray | None:
+        """n samples of reference, or None if the tap has nothing to give."""
+        with self._lock:
+            if not self.healthy or len(self._buf) < n:
+                return None
+            out, self._buf = self._buf[:n].copy(), self._buf[n:]
+        return out
+
+
 class DuplexAudio:
     """Owns the one shared duplex stream: every frame GOAT plays and every
     frame the mic hears pass through here, time-aligned by construction
@@ -181,6 +257,8 @@ class DuplexAudio:
 
     def __init__(self, on_interrupt=None, on_status=None, on_utterance=None):
         self.aec = WebRtcCanceller()
+        self.loopback = LoopbackTap()
+        self.music_on = False  # other audio playing while GOAT is silent
         self._playback_buf = np.zeros(0, dtype=np.float32)
         self._playback_lock = threading.Lock()
         self.is_tts_playing = False
@@ -259,6 +337,7 @@ class DuplexAudio:
 
     def start(self):
         self._running = True
+        self.loopback.start()
         self._vad_thread.start()
         self._last_cb = time.monotonic()
         self._stream.start()
@@ -266,6 +345,7 @@ class DuplexAudio:
 
     def stop(self):
         self._running = False
+        self.loopback.stop()
         self._stream.stop()
         self._stream.close()
         self._cleaned_q.put(None)
@@ -362,7 +442,15 @@ class DuplexAudio:
                 outdata[:, 0] = block
 
             mic_block = indata[:, 0].copy()
-            cleaned = self.aec.process_block(block, mic_block)
+            # While GOAT talks, its own block stays the reference — that path
+            # is exact and its barge-in tuning was earned. Otherwise the
+            # loopback tap is the reference, so music and videos cancel too.
+            # Always drained, so it is fresh the moment GOAT goes quiet.
+            tap = self.loopback.take(frames)
+            ref = tap if (tap is not None and not self.is_tts_playing) else block
+            cleaned = self.aec.process_block(ref, mic_block)
+            self.music_on = (not self.is_tts_playing
+                             and self.loopback.level > MUSIC_LEVEL)
             raw_rms = float(np.sqrt(np.mean(mic_block.astype(np.float64) ** 2)))
             # Output level, for the UI only (orb pulses with GOAT's own voice).
             out_rms = float(np.sqrt(np.mean(block.astype(np.float64) ** 2)))
@@ -470,7 +558,9 @@ class DuplexAudio:
             self._vote_hist_state = was_playing
         self._vote_hist.append(voiced)
 
-        if was_playing:
+        if was_playing or self.music_on:
+            # Music leaves a speech-shaped residual even after cancellation;
+            # the barge-in vote (7 of ~320ms) ignores it where 3-of-4 won't.
             window, needed = VOTE_WINDOW, BARGE_NEEDED
         else:
             window, needed = QUIET_WINDOW, QUIET_NEEDED

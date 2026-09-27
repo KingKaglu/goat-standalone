@@ -3,6 +3,24 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Music cancellation via loopback (2026-09-28, "you've been hearing the music I'm playing")
+- Cause: AEC3 reference was only GOAT's own playback block, so Brave/YouTube
+  audio hit the mic uncancelled; lyrics became "his" messages and cut him off.
+- Fix (audio_io.py): `LoopbackTap` reads WASAPI loopback of the default
+  speaker via the `soundcard` package (py -3.13; sounddevice 0.5.5 has no
+  loopback). Reference = own block while TTS plays, tap otherwise.
+  `music_on` (tap level > MUSIC_LEVEL) makes the quiet-mode speech vote use
+  the stricter barge vote (7/10).
+- TRAP: the tap buffer MUST stay shallow (MAX_MS=40, drop oldest). With a 1s
+  ring the reference lagged the echo by ~100ms and AEC gained 0.5dB; capped,
+  it leads by ~29ms and gained 15dB, VAD false hits 95 -> 7 of 156.
+- TRAP: pycparser 2.22 in py3.13 was missing c_parser.py (soundcard's cffi
+  cdef needs it) — force-reinstalled. If the tap logs "[loopback]
+  unavailable", check that first. Tap failure degrades to old behaviour.
+- TRAP: test_aec.py / test_audio_resilience.py play speech out loud; the live
+  GOAT transcribes it as a flood of fake messages. Run them only when he's away.
+- Verified live 2026-09-28 00:34: he spoke over the playlist, music ignored; one possible lyric leak ("You cannot use that"), unconfirmed.
+
 ## Autostart asleep (2026-09-27, his order: "on startup, not awake, just on the spot")
 - Startup-folder GOAT.lnk -> wscript start-goat-app.vbs /startup -> ui_qt.py --startup.
 - --startup: window collapses to the dot before first paint (no ignite),
