@@ -45,11 +45,13 @@ CORE = [
     "goat_doctor.py",
     "self_check.py",
     "self_update.py",
+    "child_guard.py",
+    "screen_hands.py",
 ]
 
 # goat_doctor runs its probes at import time (it's a script), so it is
 # compile-checked but excluded from the import smoke test.
-IMPORT_TEST = "import goat_paths, stt_whisper, tts_edge, tts_piper, audio_io, goat_app, ui_qt"
+IMPORT_TEST = "import goat_paths, stt_whisper, tts_edge, tts_piper, audio_io, goat_app, ui_qt, child_guard"
 
 # Things the app dies or goes deaf/mute without.
 ASSETS = [

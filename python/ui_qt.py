@@ -2977,6 +2977,15 @@ def main():
     except Exception:  # noqa: BLE001 — never let instrumentation stop the app
         pass
 
+    # Engine dies with GOAT, always (2026-09-27): an orphaned claude.exe kept
+    # goat-app.log locked after a self-restart and the relaunch never came
+    # up. See child_guard.py.
+    try:
+        import child_guard
+        child_guard.start()
+    except Exception:  # noqa: BLE001 — never let the guard stop the app
+        pass
+
     # Own taskbar identity (otherwise Windows groups us under "Python").
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KingKaglu.GOAT")

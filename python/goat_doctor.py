@@ -4,6 +4,7 @@ while the app is live. Prints a compact report; the brain speaks ONE line.
 
 Run:  python C:/Users/user/goat-standalone/python/goat_doctor.py
 """
+import glob
 import json
 import os
 import socket
@@ -13,7 +14,10 @@ import time
 import httpx
 
 PY_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG = os.path.join(PY_DIR, "goat-app.log")
+# Normally goat-app.log; when a leftover process held it at launch, the
+# launcher logs that run to goat-app.<stamp>.log instead — read the newest.
+LOG = max(glob.glob(os.path.join(PY_DIR, "goat-app*.log")),
+          key=os.path.getmtime, default=os.path.join(PY_DIR, "goat-app.log"))
 SESSION = "C:/Users/user/goat-standalone/.goat-session-py"
 FIXES = "C:/Users/user/goat-standalone/stt-fixes.json"
 STT_PORT = 3781

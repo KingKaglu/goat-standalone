@@ -433,12 +433,37 @@ def _key_up(vk: int) -> _INPUT:
     return _key_input(vk, 0, f)
 
 
+# Chords that close the focused window. 2026-09-27 00:44: asked to "close the
+# picture", GOAT sent alt+f4 (confirmed, per the policy gate) while its OWN
+# window had focus, and closed itself mid-conversation. The confirm gate asks
+# "should this fire?"; it can't know WHAT has focus. This check can, and no
+# confirmation overrides it: GOAT must never be able to close GOAT.
+_CLOSE_CHORDS = ({"alt", "f4"}, {"ctrl", "f4"})
+
+
+def _refuse_closing_self(combo: str) -> None:
+    hits = [c for c in combo.lower().split()
+            if {p for p in c.split("+") if p} in _CLOSE_CHORDS]
+    if not hits:
+        return
+    pid = wt.DWORD()
+    _user32.GetWindowThreadProcessId(_user32.GetForegroundWindow(),
+                                     ctypes.byref(pid))
+    if pid.value == os.getpid():
+        raise ValueError(
+            f"refused {hits[0]}: GOAT's own window has focus, so it would close "
+            "GOAT itself. Close the target by process instead (Stop-Process / "
+            "taskkill), or focus the target window first and check with "
+            "foreground before pressing it.")
+
+
 def press(combo: str, times: int = 1) -> str:
     """Press a key or chord: "enter", "ctrl+s", "win+shift+s", "alt+f4".
 
     Several chords in one call are space separated: "ctrl+a ctrl+c".
     """
     _guard()
+    _refuse_closing_self(combo)
     with _LOCK:
         done = []
         for _ in range(max(1, times)):

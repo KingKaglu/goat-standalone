@@ -32,6 +32,32 @@ function KillGoat {
     while ((Get-Date) -lt $deadline -and (GoatAlive)) {
         Start-Sleep -Milliseconds 300
     }
+    KillOrphanEngines
+}
+
+# 2026-09-27: killing python.exe left its engine (bundled claude.exe) alive as
+# an orphan, still holding goat-app.log via the inherited `>>` handle. The
+# launcher's log rotation then failed, it never started GOAT, and this
+# watchdog rolled back innocent code into the same dead end. With GOAT dead,
+# any engine carrying GOAT's persona is an orphan. Only the engine itself is
+# killed - never a tree - so apps GOAT opened for Giorgi keep running.
+function KillOrphanEngines {
+    $orph = Get-CimInstance Win32_Process -Filter "Name='claude.exe'" |
+        Where-Object { $_.CommandLine -match 'You are GOAT' }
+    foreach ($o in $orph) {
+        Stop-Process -Id $o.ProcessId -Force -ErrorAction SilentlyContinue
+        Log "killed orphaned engine pid $($o.ProcessId)"
+    }
+    if ($orph) { Start-Sleep -Milliseconds 500 }
+}
+
+# goat-crash.log gets a session header in the first instant of ui_qt main().
+# No new header since the launch = python never even started, which is a
+# LAUNCH failure (launcher error, file lock), not a code crash - rolling back
+# code cannot fix it.
+$crashLog = Join-Path $py "goat-crash.log"
+function GoatStarted($since) {
+    (Test-Path $crashLog) -and ((Get-Item $crashLog).LastWriteTime -gt $since)
 }
 
 function LaunchGoat {
@@ -61,41 +87,58 @@ if (Test-Path (Join-Path $py ".update-pending.json")) {
 }
 $engineUp = Join-Path $py ".engine-up"
 Remove-Item $engineUp -Force -ErrorAction SilentlyContinue
-$launchedAt = Get-Date
-LaunchGoat
 
 # 3. WATCHDOG — preflight can't catch everything (a bug that only fires on
 # real boot: audio devices, SDK connect, Qt event loop). The fresh instance
 # must prove its ENGINE connected (goat_app writes .engine-up), not just
 # that a window exists: on 2026-09-27 an engine update died on connect, the
 # window stayed up, this check said "restart OK", and GOAT was deaf.
-function EngineUp {
-    (Test-Path $engineUp) -and ((Get-Item $engineUp).LastWriteTime -gt $launchedAt)
-}
-$deadline = $launchedAt.AddSeconds(120)
-$alive = $true
-while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds 3
-    $alive = GoatAlive
-    if (-not $alive -or (EngineUp)) { break }
-}
-$ok = $alive -and (EngineUp)
-if (-not $ok) {
-    if ($alive) { Log "ENGINE NEVER CAME UP after restart (window alive, brain dead) - rolling back" }
-    else { Log "BOOT CRASH after restart - rolling back to last-good snapshot" }
-    $backup = Join-Path $py ".self-backup\last-good"
-    if (Test-Path $backup) {
-        KillGoat
-        Copy-Item (Join-Path $backup '*.py') $py -Force
-        # A just-installed engine may be the thing that broke boot.
-        Start-Process py -ArgumentList '-3.13', 'self_update.py', 'revert' `
-            -WorkingDirectory $py -WindowStyle Hidden -Wait | Out-Null
-        Start-Sleep -Seconds 2
-        LaunchGoat
-        Log "rolled back and relaunched"
-    } else {
-        Log "no last-good snapshot exists - manual fix needed"
+# Returns 'up', 'deaf' (window alive, engine never connected), 'crashed'
+# (python started, then died) or 'nostart' (python never ran at all).
+function WaitUp {
+    $since = Get-Date
+    LaunchGoat
+    $deadline = $since.AddSeconds(120)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 3
+        $up = (Test-Path $engineUp) -and ((Get-Item $engineUp).LastWriteTime -gt $since)
+        if ($up -and (GoatAlive)) { return 'up' }
+        if (-not (GoatAlive)) {
+            # wscript -> cmd -> py -> python takes a moment; give a slow
+            # cold start 15s before calling it dead.
+            if (GoatStarted $since) { return 'crashed' }
+            if ((Get-Date) -gt $since.AddSeconds(15)) { return 'nostart' }
+        }
     }
-} else {
-    Log "restart OK - new instance is up"
+    if (GoatAlive) { return 'deaf' }
+    return 'crashed'
 }
+
+$r = WaitUp
+if ($r -eq 'nostart') {
+    # Not the code's fault - clear whatever blocked the launch and retry the
+    # SAME code before touching any snapshot.
+    Log "LAUNCH FAILED - GOAT never started (launcher blocked?) - clearing orphans, retrying same code"
+    KillGoat
+    $r = WaitUp
+}
+if ($r -eq 'up') {
+    Log "restart OK - new instance is up"
+    exit 0
+}
+if ($r -eq 'deaf') { Log "ENGINE NEVER CAME UP after restart (window alive, brain dead) - rolling back" }
+else { Log "BOOT FAILURE after restart ($r) - rolling back to last-good snapshot" }
+$backup = Join-Path $py ".self-backup\last-good"
+if (-not (Test-Path $backup)) {
+    Log "no last-good snapshot exists - manual fix needed"
+    exit 1
+}
+KillGoat
+Copy-Item (Join-Path $backup '*.py') $py -Force
+# A just-installed engine may be the thing that broke boot.
+Start-Process py -ArgumentList '-3.13', 'self_update.py', 'revert' `
+    -WorkingDirectory $py -WindowStyle Hidden -Wait | Out-Null
+Start-Sleep -Seconds 2
+$r = WaitUp
+if ($r -eq 'up') { Log "rolled back and relaunched - instance is up" }
+else { Log "ROLLBACK RELAUNCH ALSO FAILED ($r) - manual fix needed; see goat-crash.log / goat-app.log" }
