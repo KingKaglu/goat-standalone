@@ -11,6 +11,13 @@ Current design: ONE Claude brain that speaks and sees (see first section). Older
   no _warm_brain (zero usage), _asleep=True: name gate applies even though
   his ui-config has wake=false; cleared on first addressed transcript.
 - Manual launches / restart-goat.ps1 unchanged (no flag).
+- Startup folder only fires on a real boot/login — NOT on wake from sleep.
+  2026-09-27 23:52 "startup doesn't work": PC resumed from sleep with the
+  old GOAT still up, and its WASAPI stream had died silently on resume
+  (no callbacks, no error) -> deaf. Fix: DuplexAudio._stream_watchdog
+  (audio_io.py) reopens the stream after 3s with no callback, re-initing
+  PortAudio so devices re-scan. Live test: test_audio_stall.py.
+- Lesson: bare `python` is 3.12 (no scipy) — run self_check with py -3.13.
 
 
 ## Torch removed from the ears (2026-09-27, his ask: lighter, never slower)
@@ -455,3 +462,6 @@ back, and read his screen correctly.
 - goat_app._update_watch: every 30 min; pending engine update → restarts via restart-goat.ps1 after 20 min idle. restart-goat installs between kill and relaunch; watchdog reverts engine on boot crash.
 - Results queued in python/update-notice.txt → prepended to his next turn once.
 - Lesson: Python urllib rejected docs.claude.com cert (expired chain) — use curl.exe there.
+
+- 2026-09-27 00:45 LESSON: never send alt+f4 via computer tool to close an app - it closed GOAT itself. Close apps by process/taskkill. Also: start-goat-app.vbs relaunch silently failed twice (restart-goat logged BOOT CRASH + rollback, no python spawned); direct 'py -3.13 -u ui_qt.py' worked. Launcher needs a look.
+- 2026-09-27 00:56 FIXED (launcher + alt+f4): root cause of the failed relaunch = orphaned engine claude.exe held goat-app.log (inherited >> handle) -> launcher MoveFile 'Permission denied' -> vbs died before launch -> watchdog rolled back innocent code. Now: child_guard.py puts every engine in a kill-on-close Job Object (engine dies with GOAT, apps it opened survive); launcher kills orphan engines + logs to goat-app.<stamp>.log if the log is still held; restart-goat.ps1 kills orphans, treats 'never started' as a launch failure (retry, no rollback), verifies the rollback relaunch; screen_hands refuses alt+f4/ctrl+f4 while GOAT's own window has focus, even with confirm=true. Tests: test_child_guard.py.

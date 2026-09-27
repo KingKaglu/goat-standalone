@@ -1,5 +1,6 @@
 import queue
 import threading
+import time
 from collections import deque
 
 import importlib.util
@@ -237,11 +238,16 @@ class DuplexAudio:
         self._vad_thread = threading.Thread(target=self._vad_loop, daemon=True)
         self._running = False
 
+        self._last_cb = time.monotonic()
+        self.stream_reopens = 0
+        self._stream = self._open_stream()
+
+    def _open_stream(self):
         in_dev, out_dev = _wasapi_devices()
         # These devices are 48kHz-native — WASAPI shared mode rejects a bare
         # request for 16kHz (PaErrorCode -9997). auto_convert lets PortAudio
         # do the resampling so the rest of this class can stay at 16kHz.
-        self._stream = sd.Stream(
+        return sd.Stream(
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="float32",
@@ -254,13 +260,62 @@ class DuplexAudio:
     def start(self):
         self._running = True
         self._vad_thread.start()
+        self._last_cb = time.monotonic()
         self._stream.start()
+        threading.Thread(target=self._stream_watchdog, daemon=True).start()
 
     def stop(self):
+        self._running = False
         self._stream.stop()
         self._stream.close()
-        self._running = False
         self._cleaned_q.put(None)
+
+    # Deaf after sleep (2026-09-27): the laptop slept at 21:18 with GOAT up,
+    # woke at 23:52, and GOAT never heard another word — "hello GOAT" got no
+    # reply and he had to relaunch me by hand. Resume invalidates the WASAPI
+    # endpoint; PortAudio just stops calling back, raises nothing, and the
+    # duplex stream sits dead forever. The callback fires every 10ms even in
+    # silence, so a gap of seconds means the stream is gone: reopen it, with
+    # PortAudio re-initialised so it re-scans devices (its list is frozen at
+    # init — a resumed or swapped headset would otherwise never be found).
+    STALL_S = 3.0
+
+    def _stream_watchdog(self):
+        while self._running:
+            time.sleep(1.0)
+            if not self._running:
+                return
+            gap = time.monotonic() - self._last_cb
+            if gap < self.STALL_S and self._stream.active:
+                continue
+            print(f"[audio] stream silent {gap:.1f}s "
+                  f"(active={self._stream.active}) — reopening mic/speaker")
+            self._status("ears went quiet — reopening the mic")
+            try:
+                self._reopen_stream()
+                self.stream_reopens += 1
+                print(f"[audio] stream reopened (#{self.stream_reopens})")
+            except Exception as e:  # noqa: BLE001 — device may not be back
+                # yet right after resume; keep trying every few seconds
+                print(f"[audio] reopen failed, retrying: {e!r}")
+                self._last_cb = time.monotonic()
+
+    def _reopen_stream(self):
+        old = self._stream
+        try:
+            old.abort()
+        except Exception:  # noqa: BLE001 — a dead stream may refuse; fine
+            pass
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001
+            pass
+        sd._terminate()
+        sd._initialize()
+        self.clear_playback()
+        self._stream = self._open_stream()
+        self._last_cb = time.monotonic()
+        self._stream.start()
 
     def calibrate(self, seconds: float = 2.0):
         """Measure the room's real quiet-mic RMS instead of trusting a
@@ -291,6 +346,7 @@ class DuplexAudio:
             self._duck_active = False
 
     def _callback(self, indata, outdata, frames, time_info, status):
+        self._last_cb = time.monotonic()
         try:
             with self._playback_lock:
                 available = len(self._playback_buf)
