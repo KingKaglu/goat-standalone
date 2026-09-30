@@ -3,6 +3,26 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Overall performance pass (2026-10-01, his question: "is there anything we
+## can do to improve GOAT's overall performance?" then "fix these step by step")
+- Reflex gaps from his live log (each cost 3-4s in the brain): "could you
+  scroll this"/"keep scrolling" = scroll down; "close it now" (the "now" was
+  read as a window name); a click name never spans a sentence break ("click
+  stop. First image you see" searched 491ms, then deferred). reflex 130/130.
+- Idle CPU: Chat page held 36% of a core idle (real window, 30Hz). VoiceOrb
+  math moved to numpy, dots batched by bucket (drawPoints, round pen),
+  halo+core cached per energy step; idle orb and rail wave repaint at 10fps;
+  hud_tick skips animation while minimized. Now 10% / home 3.1% / min 0.
+  TRAP for benches: a window parked at (-4000,0) is never painted — measure
+  on-screen at opacity 0 instead.
+- [turn] log line per brain turn: total = prep + model (steps, first token
+  each) + tools (named, per gap between steps) + other, with effort and ctx.
+- Effort measured (throwaway session, GOAT's real setup, 7 questions x
+  low/medium/high): first word is decided by whether adaptive thinking
+  kicks in (~0.8s without, 1.8-3.9s with), NOT by the dial — tool-free
+  averages low 1.9s, medium 2.1s, high 1.65s. Kept "high". Don't lower the
+  effort for speed without new evidence.
+
 ## Fast hands (2026-10-01, his order: "goat takes about 10 seconds to do the
 ## simple tasks, close the tab, click this, click that — optimize this")
 - Cause, from his live test: "close the two tabs" was not a reflex, so the
@@ -197,63 +217,6 @@ Not yet tried by him live.
 
 Updated: 2026-09-15 night (sub-500ms voice shipped; then the deafness:
 his mic endpoint was at 66% and GOAT was inventing English over his Georgian)
-
-## "GOAT cannot hear me in Georgian" (2026-09-15 night) — it was the MIC LEVEL
-
-Not an STT bug, and not the language pinning. Numbers first, from his own
-captures in `python/stt-debug/`:
-
-    02:2x (working)   peak 0.49-0.86   -6 to -1 dBFS   Georgian transcribed well
-    21:03 (deaf)      peak 0.05-0.10  -26 to -20 dBFS   nothing, or English
-
-The Windows capture endpoint "Microphone (C-Media(R) Audio)" was sitting at
-**66%**; his speech was landing ~20dB below where it had been the night
-before. At that level the two ears fail in the two worst possible ways at
-once: the ka-pinned ear commits an EMPTY transcript, and the en-pinned ear
-invents fluent English over his Georgian — "The term will be $10 a month" for
-a Georgian sentence, "Rach Debar." for "რა ხდება", "Hello. Aba, aba, aba." for
-"აბა აბა აბა". `Pair.result` then does what it was written to do: ka is empty,
-en is Latin, so it hands back the English. GOAT answered words he never said.
-
-### Proof it was level, not language
-- `stt_realtime` ka-pinned, raw 21:03 capture -> committed `''`.
-- Same capture x5 -> `'ფეის და გირტყმენ'` (garbled, but Georgian).
-- Endpoint raised to 100%: the live floor went from **-35.7 dBFS to -11.5**.
-- The ka ear on a GOOD (02:2x) capture, paced in real time, commits in
-  ~200-310ms and reads correctly — so the wave's code was never the problem.
-
-### What changed in the code
-1. **Makeup gain for the ears only** (`audio_io._learn_ear_gain` /
-   `_ear_level`). Each finished utterance sets the gain that would put its
-   peak at `EAR_TARGET_PEAK` (0.5), capped at x12, never below x1, smoothed
-   0.5/0.5 so one shouted word cannot slam the next turn — and the remembered
-   gain is applied to the LIVE blocks going to the streaming ear, not just the
-   batch copy. The VAD and the noise-floor gate still see raw audio: this is
-   deliberately not WebRTC AGC, which stays off because it fights that gate.
-   Only real speech teaches the level; a discarded blip does not.
-2. **The quiet-mic guard** (`GoatApp._mishearing`). Under
-   `EAR_QUIET_PEAK` (0.12 / -18 dBFS), in ka or auto mode, a transcript with
-   no Georgian letters is dropped instead of answered, and GOAT says once —
-   in the turn's language — that the mic is too quiet to make out. A healthy
-   turn clears the gate so the next outage speaks again. Answering a
-   hallucination is worse than admitting deafness: it puts words in his mouth
-   and then replies to them.
-3. The status line now names the lift: `mic is very quiet (-26 dBFS) —
-   lifting it x10.2 for the ear`.
-
-Honest limit: gain cannot rescue audio that is already ruined. Replaying the
-21:03 captures through the shipped path lifts them and warns correctly, but
-they still do not transcribe — at -26 dBFS with noise suppression on top,
-there is not enough of his voice left. The hardware level is the fix; the code
-is the net that makes the failure visible instead of fluent.
-
-### If it happens again
-    py -3.13 -c "import wave,numpy as np;w=wave.open('stt-debug/<file>.wav','rb');a=np.frombuffer(w.readframes(w.getnframes()),dtype=np.int16)/32768.0;print(abs(a).max())"
-Peak under ~0.15 means the mic, not the model. Check the endpoint level
-(pycaw: `IAudioEndpointVolume.GetMasterVolumeLevelScalar`), and remember this
-machine also exposes an ASUS "AI Noise-cancelling Input" virtual mic and
-several Bluetooth headset mics — GOAT follows the WASAPI default input, so a
-device switch moves the level too.
 
 ## Sub-500ms voice — the streaming ear (2026-09-15 night, his goal: "use
 ## streaming architectures ... target sub-500ms latency")
