@@ -1,5 +1,43 @@
 # GOAT State — ARCHIVE (pre-2026-09-14 midday). History only: much of this describes the removed two-brain design (talk lane, Gemini, front desk). Search it for a specific trap; never load it whole.
 
+## Collapse to a bubble (2026-09-14 night, his order: messenger-style bubble)
+Minimize used to send GOAT to the taskbar, which hides the only thing worth
+seeing — whether it is listening. Now the window folds into a round
+always-on-top dot: `Bubble` in `ui_qt.py` (frameless + WA_TranslucentBackground
++ Qt.Tool), driven by `GoatWindow.collapse()` / `expand()` / `toggle_bubble()`.
+- Three ways in: the titlebar "–", Ctrl+B, or ANY OS minimize (taskbar, Win+D,
+  shake) via `changeEvent`, guarded by `_collapsing` against recursion.
+- The ring carries the live state from `hud_tick`, and a reply arriving while
+  collapsed ("delta") lights an accent dot — collapsed is not blind.
+- The animation timer runs ONLY while busy or unread. A dot nobody is looking
+  at must not burn a worn battery.
+- Position persists as `cfg["bubble"]` = [x, y] (logical px), saved on drag
+  release, clamped to the live work area on every placement so a position from
+  an unplugged monitor can't strand it.
+- Theme and UI scale reach it through `apply_theme()`, which is already the
+  single funnel for both.
+- Qt.Tool is deliberate: without it, collapsing leaves a second taskbar button
+  next to the window it just replaced.
+
+NOTE ON THE ORDER: it asked not to break "existing tray/notification logic".
+There is none — grep for QSystemTrayIcon/notify across the repo returns
+nothing; GOAT has never had a tray icon. Nothing to preserve, nothing broken.
+
+TRAPS: the Qt review harness writes preferences, and `ui-config.json` is his
+LIVE session — `test_bubble.py` redirects `ui_qt.UI_CONFIG` to a temp file
+before any window exists (this bit once already, in the v6 design pass).
+Also: his display runs at 125%, so Qt logical pixels (1536x816) and the
+physical pixels `screen_hands` clicks in (1920x1080) are different spaces —
+do not compare coordinates across them.
+
+VERIFIED: `test_bubble.py` 40/40 (flags, translucency, scale floor, paint,
+beat-timer gating, clamping, drag-vs-click, collapse/expand, persistence,
+theme+scale propagation, OS-minimize, state mirroring) plus rendered PNGs per
+theme for the eye. `test_engine_router.py` 100/100, `test_screen.py` 65/65,
+preflight PASS. Driven live afterwards with GOAT's own new hands: collapse
+button, Ctrl+B, drag, and click-to-open all confirmed on the running app.
+
+
 ## Screen control (2026-09-14 evening, his goal, in his words: computer-use /
 ## screen-automation — "ხედავს ეკრანს და მართავს მაუს/კლავიატურას პირდაპირ")
 GOAT could drive anything with a CLI and nothing else; it had to tell him so.
