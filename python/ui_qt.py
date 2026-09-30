@@ -2521,6 +2521,10 @@ class MessagePop(QWidget):
     update_spoken), fades out a few seconds after the last word, and a click
     opens GOAT. It never takes focus — it must not steal the caret from
     whatever he is typing in.
+
+    v7 (his ask 2026-09-30): no card — just the words, floating beside the
+    sphere like subtitles: light type with a soft dark shadow so it reads on
+    a bright wallpaper as well as a dark one.
     """
 
     clicked = Signal()
@@ -2541,6 +2545,10 @@ class MessagePop(QWidget):
         self.label.setWordWrap(True)
         self.label.setTextFormat(Qt.PlainText)
         self.label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # The label only measures and wraps; the words are painted by
+        # paintEvent with a subtitle halo (a blur shadow alone vanished on a
+        # white wallpaper).
+        self._ink = QColor("#f4f7fb")
         self._fade = QTimer(self)
         self._fade.setSingleShot(True)
         self._fade.timeout.connect(self.hide)
@@ -2552,8 +2560,10 @@ class MessagePop(QWidget):
         self._pad = int(round(14 * s))
         f = self.label.font()
         f.setFamilies(["Segoe UI Variable Text", "Segoe UI"])
-        f.setPixelSize(max(12, int(round(14 * s))))
+        f.setPixelSize(max(13, int(round(16 * s))))
+        f.setWeight(QFont.DemiBold)
         self.label.setFont(f)
+        self._halo = max(1.5, 2.0 * s)
         self._restyle()
         self._relayout()
 
@@ -2563,8 +2573,11 @@ class MessagePop(QWidget):
         self.update()
 
     def _restyle(self):
-        self.label.setStyleSheet(
-            f"color: {self._t.get('paper', '#f4ede0')}; background: transparent;")
+        # Subtitles are light on any room: a dark-ink theme's paper colour
+        # would vanish into the shadow that keeps it readable.
+        paper = QColor(self._t.get("paper", "#f4ede0"))
+        self._ink = QColor(paper.name() if paper.lightness() > 150 else "#f4f7fb")
+        self.label.setStyleSheet("color: transparent; background: transparent;")
 
     def show_text(self, text: str, anchor: QRect):
         text = " ".join((text or "").split())
@@ -2619,29 +2632,27 @@ class MessagePop(QWidget):
         self.move(x, y)
 
     def paintEvent(self, _ev):
+        # No card. An alpha-1 wash keeps the whole box clickable (Windows
+        # passes clicks through fully transparent pixels of a layered window)
+        # while staying invisible.
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        t = self._t
-        r = QRect(0, 0, self.width(), self.height()).adjusted(1, 1, -1, -1)
-        g = QLinearGradient(0, r.top(), 0, r.bottom())
-        g.setColorAt(0.0, QColor(t.get("bg_top", "#1a1713")))
-        g.setColorAt(1.0, QColor(t.get("bg_bot", "#14110e")))
-        edge = QColor(t.get("accent", "#ffb35e"))
-        edge.setAlpha(170)
-        p.setPen(QPen(edge, 1.2))
-        p.setBrush(g)
-        rad = 3 if t.get("hud") else max(10, self._pad)
-        p.drawRoundedRect(r, rad, rad)
-        if t.get("hud"):
-            edge.setAlpha(255)
-            p.setPen(QPen(edge, 2, Qt.SolidLine, Qt.SquareCap))
-            L = max(10, self._pad)
-            for (x, y, dx, dy) in ((r.left(), r.top(), 1, 1),
-                                   (r.right(), r.top(), -1, 1),
-                                   (r.left(), r.bottom(), 1, -1),
-                                   (r.right(), r.bottom(), -1, -1)):
-                p.drawLine(x, y, x + dx * L, y)
-                p.drawLine(x, y, x, y + dy * L)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        text = self.label.text()
+        if not text:
+            return
+        p.setRenderHint(QPainter.TextAntialiasing, True)
+        p.setFont(self.label.font())
+        box = self.label.geometry()
+        flags = int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop)
+        # Halo: a wide faint ring, then a tight dark one, then the ink.
+        for radius, alpha, steps in ((self._halo * 1.8, 55, 12), (self._halo, 190, 8)):
+            p.setPen(QColor(0, 0, 0, alpha))
+            for i in range(steps):
+                a = i * math.tau / steps
+                p.drawText(box.translated(round(math.cos(a) * radius),
+                                          round(math.sin(a) * radius)), flags, text)
+        p.setPen(self._ink)
+        p.drawText(box, flags, text)
 
     def mouseReleaseEvent(self, ev):
         self._fade.stop()

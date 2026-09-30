@@ -38,6 +38,11 @@ Current design: ONE Claude brain that speaks and sees (see first section). Older
   hidden VoiceOrb(n=220) and calls paint_orb() into its disc; hud_tick feeds
   set_level(). Still animates only on the busy/unread beat — idle is a still
   frame (test_bubble pins that battery rule).
+- Message beside the bubble is text only (his ask): no card. MessagePop's
+  QLabel only measures/wraps (ink transparent); paintEvent draws the words
+  with a two-ring dark halo, then light ink — a QGraphicsDropShadowEffect
+  alone was unreadable on a white wallpaper. An alpha-1 wash keeps the box
+  clickable (fully transparent layered-window pixels pass clicks through).
 - Tests: test_scroll was already stale (win._follow) -> fixed to _pin.follow
   and shows the chat page; test_scroll/test_statusword now write a temp
   config, never his real ui-config.json.
