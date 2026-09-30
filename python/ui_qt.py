@@ -1213,9 +1213,11 @@ class VoiceOrb(QWidget):
     SPIN = {"idle": 0.18, "booting": 0.18, "listening": 0.35,
             "thinking": 1.1, "working": 0.8, "speaking": 0.55}
 
-    def __init__(self):
+    def __init__(self, n: int = 0):
         super().__init__()
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        if n:
+            self.N = n           # the bubble's small sphere needs fewer points
         self.level = 0.0
         self.state = "idle"
         self._t = 0.0
@@ -1297,12 +1299,17 @@ class VoiceOrb(QWidget):
         return 0.012 + 0.008 * math.sin(self._t * 0.9), 2.5, 0.8
 
     def paintEvent(self, _ev):
-        w, h = self.width(), self.height()
+        p = QPainter(self)
+        self.paint_orb(p, QRectF(self.rect()))
+
+    def paint_orb(self, p: QPainter, box: QRectF, dot_k: float = 1.0):
+        """Paint the orb into any box — the Chat page's widget, or the
+        collapsed bubble, so both are the same sphere."""
+        w, h = box.width(), box.height()
         if w < 10 or h < 10:
             return
-        p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        cx, cy = w / 2, h / 2
+        cx, cy = box.center().x(), box.center().y()
         R = min(w, h) * 0.34
         e = self._energy
         acc, acc2, paper = self._acc, self._acc2, self._paper
@@ -1375,7 +1382,7 @@ class VoiceOrb(QWidget):
             lift = disp / 2.2 if disp > 0 else 0.0
             lift *= e
             p.setBrush(col(int(near * 15), min(4, int(lift * 4))))
-            size = 0.6 + 1.5 * near ** 1.5 + 1.1 * lift
+            size = (0.6 + 1.5 * near ** 1.5 + 1.1 * lift) * dot_k
             p.drawEllipse(QPointF(px, py), size, size)
 
 
@@ -2313,6 +2320,12 @@ class Bubble(QWidget):
         self._dragged = False
         self._beat_timer = QTimer(self)
         self._beat_timer.timeout.connect(self._beat)
+        # v7 (his ask 2026-09-30: "same sphere as the bubble"): the dot is
+        # the Chat page's voice orb in miniature, moving with the same live
+        # level. Never shown as a widget — it only paints into the disc.
+        self._orb = VoiceOrb(n=220)
+        self._orb.set_theme(_complete_theme(self._t))
+        self._level = 0.0
         self.set_scale(scale)
 
     # ---- appearance -------------------------------------------------------
@@ -2326,7 +2339,12 @@ class Bubble(QWidget):
 
     def set_theme(self, t: dict):
         self._t = dict(t)
+        self._orb.set_theme(_complete_theme(self._t))
         self.update()
+
+    def set_level(self, level: float):
+        """Live audio level (his mic / GOAT's voice) — the sphere's swell."""
+        self._level = level
 
     def set_state(self, state: str):
         if state == self._state:
@@ -2358,6 +2376,9 @@ class Bubble(QWidget):
 
     def _beat(self):
         self._phase = (self._phase + 0.055) % 1.0
+        # 50ms beat, orb advances at its 33ms step x1.5 to keep real speed.
+        self._orb.tick(self._level, self._state)
+        self._orb._t += 0.0165
         self.update()
 
     def paintEvent(self, _ev):
@@ -2389,26 +2410,21 @@ class Bubble(QWidget):
         p.setBrush(g)
         p.drawEllipse(disc)
 
+        # The sphere, clipped to the disc — the same orb as the Chat page.
+        p.save()
+        clip = QPainterPath()
+        clip.addEllipse(QRectF(disc))
+        p.setClipPath(clip)
+        box = QRectF(disc).adjusted(-disc.width() * 0.03, -disc.height() * 0.03,
+                                    disc.width() * 0.03, disc.height() * 0.03)
+        self._orb.paint_orb(p, box, dot_k=max(0.5, self._d / 130))
+        p.restore()
+
         rim = QColor(accent)
         rim.setAlpha(int(90 + 165 * glow))
         p.setPen(QPen(rim, max(2, self._d // 22)))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(disc)
-        if t.get("hud"):
-            # Three coils around the G, turning while GOAT is busy.
-            coil = QColor(accent)
-            coil.setAlpha(int(110 + 130 * glow))
-            p.setPen(QPen(coil, max(1.5, self._d / 30), Qt.SolidLine, Qt.FlatCap))
-            inner = QRectF(disc).adjusted(disc.width() * 0.14, disc.height() * 0.14,
-                                          -disc.width() * 0.14, -disc.height() * 0.14)
-            a0 = self._phase * 360
-            for k in range(3):
-                p.drawArc(inner, int((a0 + k * 120) * 16), int(80 * 16))
-
-        # v7: the goat mark instead of a "G" — the same face as the rail.
-        inset = disc.width() * 0.2
-        paint_goat_mark(p, QRectF(disc).adjusted(inset, inset, -inset, -inset),
-                        _complete_theme(t), glow=False)
 
         if self._unread:
             # One dot, the accent, ringed in the page colour so it reads
@@ -4527,6 +4543,7 @@ class GoatWindow(QWidget):
             self._statew = state
             self.stateword.setText(state)
         if self.bubble.isVisible():
+            self.bubble.set_level(mic_level)
             self.bubble.set_state(state)
         if self._page == "chat":
             cap = self.stateword.text()

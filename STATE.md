@@ -34,6 +34,10 @@ Current design: ONE Claude brain that speaks and sees (see first section). Older
   while Chat is on screen; wave projections precomputed and colours
   bucketed so a frame is ~4ms. Halo must fade to 0 inside the widget or its
   edge shows as a box.
+- Bubble = the same orb (his ask: "same sphere as bubble"): Bubble owns a
+  hidden VoiceOrb(n=220) and calls paint_orb() into its disc; hud_tick feeds
+  set_level(). Still animates only on the busy/unread beat — idle is a still
+  frame (test_bubble pins that battery rule).
 - Tests: test_scroll was already stale (win._follow) -> fixed to _pin.follow
   and shows the chat page; test_scroll/test_statusword now write a temp
   config, never his real ui-config.json.
