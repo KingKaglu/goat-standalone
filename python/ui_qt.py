@@ -63,6 +63,7 @@ import sys
 import threading
 import time
 
+import numpy as np
 from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
@@ -86,6 +87,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPolygonF,
     QPixmap,
     QRadialGradient,
     QShortcut,
@@ -1023,7 +1025,10 @@ class StringLine(QWidget):
         self.level = self.level * 0.7 + max(0.0, min(1.0, level)) * 0.3
         self.state = state
         self._t += 0.05
-        self.update()
+        # Idle is a slow ripple: every third tick (10 fps) is enough.
+        self._frame = getattr(self, "_frame", 0) + 1
+        if state != "idle" or self._frame % 3 == 0:
+            self.update()
 
     def _amplitude_at(self, u: float) -> float:
         """u in [0,1] across the string; returns y offset in px."""
@@ -1252,7 +1257,11 @@ class VoiceOrb(QWidget):
                        2.9 * (x * d2[0] + y * d2[1] + z * d2[2]),
                        0.7 * (x * d3[0] + y * d3[1] + z * d3[2]))
                       for (x, y, z) in pts]
+        self._P = np.array(pts, dtype=float)
+        self._A = np.array(self._proj, dtype=float)
         self._cols: dict = {}      # (near bucket, lift bucket) -> QColor
+        self._glow: dict = {}      # size/energy step -> halo+core pixmap
+        self._frame = 0
 
     def set_theme(self, t: dict):
         self._acc = QColor(t["accent"])
@@ -1284,7 +1293,11 @@ class VoiceOrb(QWidget):
                 "listening": 0.3 + 0.7 * self.level,
                 "thinking": 0.55, "working": 0.45}.get(self.state, 0.15)
         self._energy += (want - self._energy) * 0.08
-        if self.isVisible():
+        # Idle is a slow drift: 10 frames a second shows it just as well as
+        # 30, at a third of the CPU. Voice and work states keep every frame.
+        self._frame += 1
+        calm = self.state in ("idle", "booting") and self.level < 0.05
+        if self.isVisible() and (not calm or self._frame % 3 == 0):
             self.update()
 
     def _amp(self) -> tuple:
@@ -1302,6 +1315,33 @@ class VoiceOrb(QWidget):
         p = QPainter(self)
         self.paint_orb(p, QRectF(self.rect()))
 
+    def _paint_glow(self, w: float, h: float, R: float, hr: float, e: float,
+                    dpr: float) -> QPixmap:
+        """Halo (light spilling from the orb) + core (a soft inner light,
+        hotter when it talks), for one energy step."""
+        pm = QPixmap(max(1, int(math.ceil(w * dpr))), max(1, int(math.ceil(h * dpr))))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        acc, acc2, paper = self._acc, self._acc2, self._paper
+        cx, cy = w / 2, h / 2
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        halo = QRadialGradient(QPointF(cx, cy), hr)
+        halo.setColorAt(0.0, _mixc(acc, acc, 0, int(70 + 90 * e)))
+        halo.setColorAt(0.35 + 0.15 * e, _mixc(acc, acc, 0, int(22 + 40 * e)))
+        halo.setColorAt(1.0, _mixc(acc, acc, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(halo)
+        p.drawEllipse(QPointF(cx, cy), hr, hr)
+        core = QRadialGradient(QPointF(cx, cy - R * 0.1), R * 1.05)
+        core.setColorAt(0.0, _mixc(acc2, paper, 0.5, int(90 + 110 * e)))
+        core.setColorAt(0.5, _mixc(acc, acc2, 0.5, int(40 + 60 * e)))
+        core.setColorAt(1.0, _mixc(acc, acc, 0, 0))
+        p.setBrush(core)
+        p.drawEllipse(QPointF(cx, cy), R * 1.05, R * 1.05)
+        p.end()
+        return pm
+
     def paint_orb(self, p: QPainter, box: QRectF, dot_k: float = 1.0):
         """Paint the orb into any box — the Chat page's widget, or the
         collapsed bubble, so both are the same sphere."""
@@ -1314,24 +1354,23 @@ class VoiceOrb(QWidget):
         e = self._energy
         acc, acc2, paper = self._acc, self._acc2, self._paper
 
-        # Halo: light spilling from the orb, breathing with the voice. It
-        # must reach zero INSIDE the widget, or the edge shows as a box.
+        # Halo + core: two big radial gradients that only change with the
+        # energy, so they are painted once per energy step into a pixmap
+        # and blitted — filling them live was ~2ms of every frame.
+        dpr = p.device().devicePixelRatioF() if p.device() else 1.0
+        eb = round(e * 24)
+        # The halo must reach zero INSIDE the Chat widget, or its edge shows
+        # as a box; in the bubble it overshoots and the disc clips it.
         hr = min(cx, cy) * 0.98
-        halo = QRadialGradient(QPointF(cx, cy), hr)
-        halo.setColorAt(0.0, _mixc(acc, acc, 0, int(70 + 90 * e)))
-        halo.setColorAt(0.35 + 0.15 * e, _mixc(acc, acc, 0, int(22 + 40 * e)))
-        halo.setColorAt(1.0, _mixc(acc, acc, 0, 0))
-        p.setPen(Qt.NoPen)
-        p.setBrush(halo)
-        p.drawEllipse(QPointF(cx, cy), hr, hr)
-
-        # Core: a soft inner light, hotter when it talks.
-        core = QRadialGradient(QPointF(cx, cy - R * 0.1), R * 1.05)
-        core.setColorAt(0.0, _mixc(acc2, paper, 0.5, int(90 + 110 * e)))
-        core.setColorAt(0.5, _mixc(acc, acc2, 0.5, int(40 + 60 * e)))
-        core.setColorAt(1.0, _mixc(acc, acc, 0, 0))
-        p.setBrush(core)
-        p.drawEllipse(QPointF(cx, cy), R * 1.05, R * 1.05)
+        key = (int(w), int(h), int(hr), eb, dpr, acc.rgba(), acc2.rgba(),
+               paper.rgba())
+        glow = self._glow.get(key)
+        if glow is None:
+            if len(self._glow) > 48:
+                self._glow.clear()
+            glow = self._paint_glow(w, h, R, hr, eb / 24, dpr)
+            self._glow[key] = glow
+        p.drawPixmap(box.topLeft(), glow)
 
         # Orbit rings: two thin tilted ellipses turning around the globe.
         p.setBrush(Qt.NoBrush)
@@ -1358,32 +1397,45 @@ class VoiceOrb(QWidget):
         tilt = 0.35 + 0.08 * math.sin(self._t * 0.3)
         cyr, syr = math.cos(ry), math.sin(ry)
         cxr, sxr = math.cos(tilt), math.sin(tilt)
-        sin = math.sin
-        f0, f1, f2, f3 = freq, freq, freq, freq
-        t1, t2, t3 = t * 1.3, t * 1.9, t * 0.6
         k = 1.3 * R
-        dots = []
-        for (x, y, z), (a0, a1, a2, a3) in zip(self._pts, self._proj):
-            disp = (sin(f0 * a0 + t) + 0.6 * sin(f1 * a1 - t1)
-                    + 0.35 * sin(f2 * a2 + t2) + 0.25 * sin(f3 * a3 - t3))
-            r = 1.0 + amp * disp / 2.2
-            # Rotate about Y, then tilt about X.
-            x1 = x * cyr + z * syr
-            z1 = -x * syr + z * cyr
-            y2 = y * cxr - z1 * sxr
-            z2 = y * sxr + z1 * cxr
-            s = r * k / (1.6 - z2 * 0.45)
-            dots.append((z2, cx + x1 * s, cy + y2 * s, disp))
-        dots.sort(key=lambda d: d[0])          # far first, near on top
-        p.setPen(Qt.NoPen)
+        # The whole globe in one pass of array math (the per-point Python
+        # loop was ~2ms of every frame), then dots batched by (depth, lift)
+        # bucket — one drawPoints call per bucket with a round pen instead of
+        # one drawEllipse per dot. Before this the Chat page held 36% of a
+        # core while GOAT sat idle (measured 2026-10-01). Buckets are drawn
+        # far to near, so near dots still land on top.
+        P, A = self._P, self._A
+        x, y, z = P[:, 0], P[:, 1], P[:, 2]
+        disp = (np.sin(freq * A[:, 0] + t) + 0.6 * np.sin(freq * A[:, 1] - t * 1.3)
+                + 0.35 * np.sin(freq * A[:, 2] + t * 1.9)
+                + 0.25 * np.sin(freq * A[:, 3] - t * 0.6))
+        # Rotate about Y, then tilt about X.
+        x1 = x * cyr + z * syr
+        z1 = -x * syr + z * cyr
+        y2 = y * cxr - z1 * sxr
+        z2 = y * sxr + z1 * cxr
+        s = (1.0 + amp * disp / 2.2) * k / (1.6 - z2 * 0.45)
+        px = (cx + x1 * s).tolist()
+        py = (cy + y2 * s).tolist()
+        nb = np.clip(((z2 + 1) * 7.5).astype(int), 0, 15)   # 0 far .. 15 near
+        lb = np.clip((np.maximum(disp, 0) * (e * 4 / 2.2)).astype(int), 0, 4)
+        keys = (nb * 5 + lb).tolist()
+        groups: dict = {}
+        for key, X, Y in zip(keys, px, py):
+            g = groups.get(key)
+            if g is None:
+                groups[key] = g = []
+            g.append(QPointF(X, Y))
         col = self._col
-        for z2, px, py, disp in dots:
-            near = (z2 + 1) / 2                # 0 far .. 1 near
-            lift = disp / 2.2 if disp > 0 else 0.0
-            lift *= e
-            p.setBrush(col(int(near * 15), min(4, int(lift * 4))))
-            size = (0.6 + 1.5 * near ** 1.5 + 1.1 * lift) * dot_k
-            p.drawEllipse(QPointF(px, py), size, size)
+        p.setBrush(Qt.NoBrush)
+        for key in sorted(groups):
+            nb_, lb_ = divmod(key, 5)
+            near = (nb_ + 0.5) / 15
+            size = (0.6 + 1.5 * near ** 1.5 + 1.1 * (lb_ + 0.4) / 4) * dot_k
+            pen = QPen(col(nb_, lb_), size * 2)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawPoints(QPolygonF(groups[key]))
 
 
 def _sweep_inbox(folder: str = INBOX, days: float = 7.0):
@@ -4550,8 +4602,12 @@ class GoatWindow(QWidget):
              "booting": "off"}
 
     def hud_tick(self, mic_level: float, state: str, _listening: bool):
-        self.string.tick(mic_level, state)
-        if self._page == "chat" and self.isVisible():
+        # Minimized, nothing on screen can move — skip the animations
+        # entirely (Qt still counts a minimized window as visible).
+        shown = self.isVisible() and not self.isMinimized()
+        if shown:
+            self.string.tick(mic_level, state)
+        if self._page == "chat" and shown:
             self.orb.tick(mic_level, state)
         # Status lines ("calibrating…", "reconnected") hold the word for a
         # few seconds — without the hold, the 33ms audio-state ticker stomps
