@@ -27,6 +27,13 @@ Current design: ONE Claude brain that speaks and sees (see first section). Older
   (3) Qt drops QSS border-radius larger than half the height -> chips went
   square at 150%: keep radii under half height at every zoom.
   (4) offscreen QPA renders no fonts; judge renders with QT_QPA_PLATFORM=windows.
+- Voice orb (same night, his order: "a sphere in the middle that moves like
+  in the movies when AI talks"): VoiceOrb on the Chat page — 760-point
+  Fibonacci globe + orbit rings + halo, surface waves driven by the REAL
+  level (speaker envelope speaking, mic listening). Ticked from hud_tick only
+  while Chat is on screen; wave projections precomputed and colours
+  bucketed so a frame is ~4ms. Halo must fade to 0 inside the widget or its
+  edge shows as a box.
 - Tests: test_scroll was already stale (win._follow) -> fixed to _pin.follow
   and shows the chat page; test_scroll/test_statusword now write a temp
   config, never his real ui-config.json.

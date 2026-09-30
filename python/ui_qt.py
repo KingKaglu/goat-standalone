@@ -536,6 +536,8 @@ QLabel#notice {{ color: #ffb4a8; background: rgba(255,107,107,26);
   border: 1px solid rgba(255,107,107,70); border-radius: {s(12)}px; font-size: {s(14)}px; }}
 QLabel#epigraph {{ color: {t['faint']}; font-family: {VOICE_FONT};
   font-size: {s(22)}px; font-weight: 300; }}
+QLabel#orbCaption {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(12)}px;
+  letter-spacing: {s(2)}px; }}
 QLabel#speaker {{ color: {acc2}; font-size: {s(12)}px; font-weight: 600; }}
 QLabel#doc {{ color: {t['paper']}; font-size: {s(14)}px; }}
 
@@ -1189,6 +1191,192 @@ class StringLine(QWidget):
             arc(R * 0.97, 90, -sweep, 230, 2.6)
         else:
             arc(R * 0.97, 90 - (t * spin * 1.4) % 360, -40, 120, 1.6)
+
+
+class VoiceOrb(QWidget):
+    """The conversation's presence (his order 2026-09-30: "a sphere in the
+    middle that moves like in the movies when AI talks").
+
+    A globe of light points on a rotating sphere, projected with a little
+    perspective so the near side is bright and large and the far side
+    fades. Its surface is displaced by travelling waves, and the waves are
+    driven by the REAL audio: GOAT's speaker envelope while it talks, his
+    mic level while it listens — so it moves with the voice, not a loop.
+
+    idle      — slow spin, a barely-there breath
+    listening — ripples that follow his voice
+    thinking  — fast, fine shimmer; spin speeds up
+    speaking  — big, smooth swells with GOAT's own voice level
+    """
+
+    N = 760                       # points on the sphere
+    SPIN = {"idle": 0.18, "booting": 0.18, "listening": 0.35,
+            "thinking": 1.1, "working": 0.8, "speaking": 0.55}
+
+    def __init__(self):
+        super().__init__()
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.level = 0.0
+        self.state = "idle"
+        self._t = 0.0
+        self._rot = 0.0
+        self._energy = 0.0         # smoothed "how alive" 0..1 for glow
+        self._acc = QColor("#3b8bff")
+        self._acc2 = QColor("#6fb3ff")
+        self._paper = QColor("#e9eefa")
+        # Fibonacci sphere: evenly spread points, no poles bunching.
+        golden = math.pi * (3 - math.sqrt(5))
+        pts = []
+        for i in range(self.N):
+            y = 1 - 2 * (i + 0.5) / self.N
+            r = math.sqrt(1 - y * y)
+            a = golden * i
+            pts.append((math.cos(a) * r, y, math.sin(a) * r))
+        self._pts = pts
+        rng = random.Random(3)
+        # Wave directions for the surface displacement.
+        self._dirs = []
+        for _ in range(4):
+            v = (rng.uniform(-1, 1), rng.uniform(-1, 1), rng.uniform(-1, 1))
+            n = math.sqrt(sum(c * c for c in v)) or 1.0
+            self._dirs.append(tuple(c / n for c in v))
+        # The waves live in the sphere's own frame, so each point's
+        # projection on each wave direction never changes: compute once.
+        # Per frame that leaves only the sines — the paint must stay cheap,
+        # it runs on the UI thread thirty times a second.
+        d0, d1, d2, d3 = self._dirs
+        self._proj = [(x * d0[0] + y * d0[1] + z * d0[2],
+                       1.7 * (x * d1[0] + y * d1[1] + z * d1[2]),
+                       2.9 * (x * d2[0] + y * d2[1] + z * d2[2]),
+                       0.7 * (x * d3[0] + y * d3[1] + z * d3[2]))
+                      for (x, y, z) in pts]
+        self._cols: dict = {}      # (near bucket, lift bucket) -> QColor
+
+    def set_theme(self, t: dict):
+        self._acc = QColor(t["accent"])
+        self._acc2 = QColor(t.get("accent2", t["accent"]))
+        self._paper = QColor(t["paper"])
+        self._cols = {}
+        self.update()
+
+    def _col(self, nb: int, lb: int) -> QColor:
+        c = self._cols.get((nb, lb))
+        if c is None:
+            near, lift = nb / 15, lb / 4
+            c = _mixc(self._acc, self._acc2, near * 0.8, 0)
+            c = _mixc(c, self._paper, min(1.0, 0.15 + lift * 0.5), 0)
+            c.setAlpha(int(25 + 205 * near ** 1.4))
+            self._cols[(nb, lb)] = c
+        return c
+
+    def tick(self, level: float, state: str):
+        lvl = max(0.0, min(1.0, level))
+        # Fast attack, slower release — reads like a VU needle, not jitter.
+        k = 0.45 if lvl > self.level else 0.12
+        self.level += (lvl - self.level) * k
+        self.state = state or "idle"
+        spin = self.SPIN.get(self.state, 0.3)
+        self._rot += 0.033 * spin * (1 + self.level * 1.5)
+        self._t += 0.033
+        want = {"speaking": 0.55 + 0.45 * self.level,
+                "listening": 0.3 + 0.7 * self.level,
+                "thinking": 0.55, "working": 0.45}.get(self.state, 0.15)
+        self._energy += (want - self._energy) * 0.08
+        if self.isVisible():
+            self.update()
+
+    def _amp(self) -> tuple:
+        """(amplitude, wave frequency, wave speed) for the current state."""
+        s, lv = self.state, self.level
+        if s == "speaking":
+            return 0.05 + 0.20 * lv, 3.0, 2.4
+        if s == "listening":
+            return 0.02 + 0.16 * lv, 5.0, 3.2
+        if s in ("thinking", "working"):
+            return 0.035, 9.0, 7.0
+        return 0.012 + 0.008 * math.sin(self._t * 0.9), 2.5, 0.8
+
+    def paintEvent(self, _ev):
+        w, h = self.width(), self.height()
+        if w < 10 or h < 10:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        cx, cy = w / 2, h / 2
+        R = min(w, h) * 0.34
+        e = self._energy
+        acc, acc2, paper = self._acc, self._acc2, self._paper
+
+        # Halo: light spilling from the orb, breathing with the voice. It
+        # must reach zero INSIDE the widget, or the edge shows as a box.
+        hr = min(cx, cy) * 0.98
+        halo = QRadialGradient(QPointF(cx, cy), hr)
+        halo.setColorAt(0.0, _mixc(acc, acc, 0, int(70 + 90 * e)))
+        halo.setColorAt(0.35 + 0.15 * e, _mixc(acc, acc, 0, int(22 + 40 * e)))
+        halo.setColorAt(1.0, _mixc(acc, acc, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(halo)
+        p.drawEllipse(QPointF(cx, cy), hr, hr)
+
+        # Core: a soft inner light, hotter when it talks.
+        core = QRadialGradient(QPointF(cx, cy - R * 0.1), R * 1.05)
+        core.setColorAt(0.0, _mixc(acc2, paper, 0.5, int(90 + 110 * e)))
+        core.setColorAt(0.5, _mixc(acc, acc2, 0.5, int(40 + 60 * e)))
+        core.setColorAt(1.0, _mixc(acc, acc, 0, 0))
+        p.setBrush(core)
+        p.drawEllipse(QPointF(cx, cy), R * 1.05, R * 1.05)
+
+        # Orbit rings: two thin tilted ellipses turning around the globe.
+        p.setBrush(Qt.NoBrush)
+        for k, (tilt, speed, alpha) in enumerate(((0.28, 0.6, 90), (0.16, -0.9, 60))):
+            p.save()
+            p.translate(cx, cy)
+            p.rotate(math.degrees(self._rot * speed) * 0.25 + k * 70)
+            rr = R * (1.32 + 0.12 * k + 0.05 * e)
+            pen = QPen(_mixc(acc2, paper, 0.2, int(alpha * (0.6 + 0.6 * e))), 1.2)
+            p.setPen(pen)
+            p.drawEllipse(QPointF(0, 0), rr, rr * tilt)
+            # A bright bead travelling along the ring.
+            a = self._t * (1.4 + k) * (1 if speed > 0 else -1)
+            p.setPen(Qt.NoPen)
+            p.setBrush(_mixc(paper, acc2, 0.3, int(150 + 100 * e)))
+            p.drawEllipse(QPointF(math.cos(a) * rr, math.sin(a) * rr * tilt), 2.4, 2.4)
+            p.setBrush(Qt.NoBrush)
+            p.restore()
+
+        # The globe itself.
+        amp, freq, speed = self._amp()
+        t = self._t * speed
+        ry = self._rot
+        tilt = 0.35 + 0.08 * math.sin(self._t * 0.3)
+        cyr, syr = math.cos(ry), math.sin(ry)
+        cxr, sxr = math.cos(tilt), math.sin(tilt)
+        sin = math.sin
+        f0, f1, f2, f3 = freq, freq, freq, freq
+        t1, t2, t3 = t * 1.3, t * 1.9, t * 0.6
+        k = 1.3 * R
+        dots = []
+        for (x, y, z), (a0, a1, a2, a3) in zip(self._pts, self._proj):
+            disp = (sin(f0 * a0 + t) + 0.6 * sin(f1 * a1 - t1)
+                    + 0.35 * sin(f2 * a2 + t2) + 0.25 * sin(f3 * a3 - t3))
+            r = 1.0 + amp * disp / 2.2
+            # Rotate about Y, then tilt about X.
+            x1 = x * cyr + z * syr
+            z1 = -x * syr + z * cyr
+            y2 = y * cxr - z1 * sxr
+            z2 = y * sxr + z1 * cxr
+            s = r * k / (1.6 - z2 * 0.45)
+            dots.append((z2, cx + x1 * s, cy + y2 * s, disp))
+        dots.sort(key=lambda d: d[0])          # far first, near on top
+        p.setPen(Qt.NoPen)
+        col = self._col
+        for z2, px, py, disp in dots:
+            near = (z2 + 1) / 2                # 0 far .. 1 near
+            lift = disp / 2.2 if disp > 0 else 0.0
+            lift *= e
+            p.setBrush(col(int(near * 15), min(4, int(lift * 4))))
+            size = 0.6 + 1.5 * near ** 1.5 + 1.1 * lift
+            p.drawEllipse(QPointF(px, py), size, size)
 
 
 def _sweep_inbox(folder: str = INBOX, days: float = 7.0):
@@ -2919,6 +3107,15 @@ class GoatWindow(QWidget):
             head.addWidget(b)
         lay.addLayout(head)
 
+        # ---- the orb: GOAT's presence in the middle of the conversation ----
+        self.orb = VoiceOrb()
+        self._themed.append(self.orb)
+        lay.addWidget(self.orb)
+        self.orb_caption = QLabel("")
+        self.orb_caption.setObjectName("orbCaption")
+        self.orb_caption.setAlignment(Qt.AlignHCenter)
+        lay.addWidget(self.orb_caption)
+
         # ---- the page: the conversation ----
         self.col = QVBoxLayout()
         self.col.setSpacing(12)
@@ -3822,6 +4019,9 @@ class GoatWindow(QWidget):
             w.set_scale(k)
         self.string.setFixedHeight(round(34 * k))
         self.today.setMinimumHeight(round(120 * k))
+        # The orb takes about a quarter of the window: big enough to read as
+        # the presence, small enough that the conversation keeps the room.
+        self.orb.setFixedHeight(round(max(130 * k, min(300 * k, self.height() * 0.27))))
         self._cards_lay.setSpacing(round(12 * k))
         self.side_stack.setMinimumHeight(round(230 * k))
         self._hero_gap.setFixedHeight(round(max(28, min(96, self.height() * 0.09)) * k))
@@ -4317,6 +4517,8 @@ class GoatWindow(QWidget):
 
     def hud_tick(self, mic_level: float, state: str, _listening: bool):
         self.string.tick(mic_level, state)
+        if self._page == "chat" and self.isVisible():
+            self.orb.tick(mic_level, state)
         # Status lines ("calibrating…", "reconnected") hold the word for a
         # few seconds — without the hold, the 33ms audio-state ticker stomps
         # every status within one frame and none of them are ever seen.
@@ -4326,6 +4528,10 @@ class GoatWindow(QWidget):
             self.stateword.setText(state)
         if self.bubble.isVisible():
             self.bubble.set_state(state)
+        if self._page == "chat":
+            cap = self.stateword.text()
+            if cap != self.orb_caption.text():
+                self.orb_caption.setText(cap)
         muted = bool(self.goat and self.goat.mic_muted)
         word = self.stateword.text()
         mood = ("bad" if (self._claude_out or "out of usage" in word
