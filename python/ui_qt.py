@@ -2603,26 +2603,33 @@ class MessagePop(QWidget):
             self._relayout()
 
     def _relayout(self):
-        inner = self._w - 2 * self._pad
-        self.label.setFixedWidth(inner)
-        # Measured from the font, not heightForWidth(): before the label has
-        # been polished that answers with a stale, far too tall guess.
-        h = self.label.fontMetrics().boundingRect(
-            QRect(0, 0, inner, 100000), Qt.TextWordWrap,
-            self.label.text() or " ").height() + 2
-        self.label.setFixedHeight(h)
-        self.label.move(self._pad, self._pad)
-        self.setFixedSize(self._w, h + 2 * self._pad)
-        if self._anchor.isNull():
-            return
-        scr = (QApplication.screenAt(self._anchor.center())
+        a = self._anchor
+        scr = ((QApplication.screenAt(a.center()) if not a.isNull() else None)
                or QApplication.primaryScreen())
         area = scr.availableGeometry()
-        gap = max(8, self._pad // 2 + 4)
-        a = self._anchor
         # Open toward the middle of the screen, like a chat head does — a dot
-        # parked on the right edge talks to its left.
-        if a.center().x() >= area.center().x():
+        # parked on the right edge talks to its left. The words hug the dot:
+        # right-aligned on its left, left-aligned on its right (his ask
+        # 2026-09-30: "start from the right, stacked if needed").
+        right_side = a.isNull() or a.center().x() >= area.center().x()
+        self._align = Qt.AlignRight if right_side else Qt.AlignLeft
+        # Only as wide as the words need, up to the cap; longer replies
+        # wrap into stacked lines. Measured from the font, not
+        # heightForWidth(): before the label has been polished that answers
+        # with a stale, far too tall guess.
+        cap = self._w - 2 * self._pad
+        box = self.label.fontMetrics().boundingRect(
+            QRect(0, 0, cap, 100000), Qt.TextWordWrap | self._align,
+            self.label.text() or " ")
+        inner = min(cap, box.width() + 2)
+        h = box.height() + 2
+        self.label.setFixedSize(inner, h)
+        self.label.move(self._pad, self._pad)
+        self.setFixedSize(inner + 2 * self._pad, h + 2 * self._pad)
+        if a.isNull():
+            return
+        gap = max(4, self._pad // 4)
+        if right_side:
             x = a.left() - gap - self.width()
         else:
             x = a.right() + 1 + gap
@@ -2643,7 +2650,7 @@ class MessagePop(QWidget):
         p.setRenderHint(QPainter.TextAntialiasing, True)
         p.setFont(self.label.font())
         box = self.label.geometry()
-        flags = int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop)
+        flags = int(Qt.TextWordWrap | getattr(self, "_align", Qt.AlignLeft) | Qt.AlignTop)
         # Halo: a wide faint ring, then a tight dark one, then the ink.
         for radius, alpha, steps in ((self._halo * 1.8, 55, 12), (self._halo, 190, 8)):
             p.setPen(QColor(0, 0, 0, alpha))
