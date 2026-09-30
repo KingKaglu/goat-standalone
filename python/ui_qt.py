@@ -1551,10 +1551,13 @@ class FlowLayout(QLayout):
     to reach them. Wrapping keeps every switch reachable at every scale.
     """
 
-    def __init__(self, parent=None, spacing: int = 10):
+    def __init__(self, parent=None, spacing: int = 10, even_rows: bool = False):
         super().__init__(parent)
         self._items: list = []
         self._space = spacing
+        # Cards in one row take the row's height, so a grid reads as a grid
+        # (Tools page, 2026-10-01: a tall card beside a short one).
+        self._even = even_rows
         self.setContentsMargins(0, 0, 0, 0)
 
     # -- QLayout plumbing
@@ -1593,20 +1596,34 @@ class FlowLayout(QLayout):
         return size
 
     def _lay(self, rect: QRect, test: bool) -> int:
-        x, y, line_h = rect.x(), rect.y(), 0
+        # Rows first, then place. A wrapped card's sizeHint height is Qt's
+        # guess at some OTHER width; heightForWidth at the card's real width
+        # is the height it actually needs.
+        rows, row, x = [], [], rect.x()
         for it in self._items:
             hint = it.sizeHint()
-            nxt = x + hint.width()
-            if nxt > rect.right() and line_h > 0:      # doesn't fit — wrap
-                x = rect.x()
-                y += line_h + self._space
-                nxt = x + hint.width()
-                line_h = 0
+            w = hint.width()
+            h = it.heightForWidth(w) if it.hasHeightForWidth() else hint.height()
+            h = max(h, it.minimumSize().height())
+            # rect.right() is width-1: cards sized to fill the row EXACTLY
+            # (CardGrid) always wrapped one early against it.
+            if x + w > rect.x() + rect.width() and row:   # doesn't fit — wrap
+                rows.append(row)
+                row, x = [], rect.x()
+            row.append((it, w, h))
+            x += w + self._space
+        if row:
+            rows.append(row)
+        y = rect.y()
+        for r in rows:
+            line_h = max(h for _, _, h in r)
             if not test:
-                it.setGeometry(QRect(QPoint(x, y), hint))
-            x = nxt + self._space
-            line_h = max(line_h, hint.height())
-        return y + line_h - rect.y()
+                x = rect.x()
+                for it, w, h in r:
+                    it.setGeometry(QRect(x, y, w, line_h if self._even else h))
+                    x += w + self._space
+            y += line_h + self._space
+        return (y - self._space - rect.y()) if rows else 0
 
 
 def glyph_icon(key: str, color: str, px: int = 20) -> QIcon:
@@ -1754,19 +1771,20 @@ class CardGrid(QWidget):
     even rows when they don't — at 150% zoom five fixed cards pushed the
     whole home page wider than the window and clipped the greeting."""
 
-    def __init__(self, spacing: int = 14):
+    def __init__(self, spacing: int = 14, min_w: int = 150):
         super().__init__()
         self.cards: list = []
-        self.min_w = 150
-        self.flow = FlowLayout(self, spacing=spacing)
+        self._base = (spacing, min_w)
+        self.min_w = min_w
+        self.flow = FlowLayout(self, spacing=spacing, even_rows=True)
 
     def add(self, card: QWidget):
         self.cards.append(card)
         self.flow.addWidget(card)
 
     def set_scale(self, k: float):
-        self.flow._space = round(14 * k)
-        self.min_w = round(150 * k)
+        self.flow._space = round(self._base[0] * k)
+        self.min_w = round(self._base[1] * k)
         self._fit()
 
     def _fit(self):
@@ -2751,9 +2769,10 @@ CAPABILITIES = [
     ("hand", "Hands", "Moves the mouse, types, clicks, opens and closes apps "
      "and runs commands on this PC — then checks it really happened.",
      ["Open Brave and go to YouTube", "Close Steam"]),
-    ("bolt", "Reflexes", "Instant and offline: open or close apps, volume, "
-     "media, the time — no model, no wait, no usage.",
-     ["Mute", "Volume 40", "What time is it?"]),
+    ("bolt", "Reflexes", "Instant and offline: open or close apps and tabs, "
+     "click a button by name, scroll, keys, volume, media, the time — no "
+     "model, no wait, no usage.",
+     ["Close this tab", "Click Subscribe", "Scroll down", "Mute"]),
     ("globe", "Web", "Searches and reads the live web, then answers from "
      "what it found — not from memory.",
      ["Search the web for today's news in Georgia"]),
@@ -3245,11 +3264,11 @@ class GoatWindow(QWidget):
     def _build_skills(self) -> QWidget:
         content, lay = self._page_shell(
             "Skills", "Playbooks Goat follows for bigger jobs. Tap one to ask for it.")
-        grid = FlowLayout(spacing=12)
+        grid = CardGrid(spacing=12, min_w=280)
+        self._scaled.append(grid)
         self._skill_cards = []
         for name, desc in _read_skills():
             c = Clickable("card")
-            c.setFixedWidth(300)
             cl = QVBoxLayout(c)
             cl.setContentsMargins(16, 14, 16, 14)
             cl.setSpacing(6)
@@ -3265,11 +3284,11 @@ class GoatWindow(QWidget):
             cl.addStretch(1)
             c.setMinimumHeight(130)
             c.clicked.connect(lambda n=name: self._prefill(f"Use your {n} skill: "))
-            grid.addWidget(c)
+            grid.add(c)
             self._skill_cards.append(c)
         if not self._skill_cards:
             lay.addWidget(mklabel("No skills found in workspace/.claude/skills.", "empty"))
-        lay.addLayout(grid)
+        lay.addWidget(grid)
         lay.addStretch(1)
         return self._scroll_page(content)
 
@@ -3325,11 +3344,11 @@ class GoatWindow(QWidget):
         content, lay = self._page_shell(
             "Tools", "What Goat can actually do on this PC. Tap an example to "
             "put it in the message box.")
-        grid = FlowLayout(spacing=12)
+        grid = CardGrid(spacing=12, min_w=300)
+        self._scaled.append(grid)
         for key, title, desc, examples in CAPABILITIES:
             c = QFrame()
             c.setObjectName("card")
-            c.setFixedWidth(330)
             cl = QVBoxLayout(c)
             cl.setContentsMargins(16, 14, 16, 14)
             cl.setSpacing(8)
@@ -3349,8 +3368,8 @@ class GoatWindow(QWidget):
                 ex.addWidget(b)
             cl.addLayout(ex)
             cl.addStretch(1)
-            grid.addWidget(c)
-        lay.addLayout(grid)
+            grid.add(c)
+        lay.addWidget(grid)
         lay.addStretch(1)
         return self._scroll_page(content)
 
@@ -3789,7 +3808,11 @@ class GoatWindow(QWidget):
     def _refresh_memory(self):
         try:
             with open(MEMORY_MD, encoding="utf-8") as f:
-                self.memory_text.setText(f.read())
+                # Qt's Markdown reads "<key>" / "<name>" as raw HTML tags,
+                # swallows them and garbles every bullet after (seen
+                # 2026-10-01: a page of empty dots). Entities render as
+                # plain angle brackets.
+                self.memory_text.setText(f.read().replace("<", "&lt;"))
         except OSError:
             self.memory_text.setText("memory.md isn't there yet.")
 
@@ -4788,6 +4811,10 @@ class GoatWindow(QWidget):
                 k = float(self.cfg.get("scale", 1.0))
                 lbl.setContentsMargins(round(14 * k), round(9 * k),
                                        round(14 * k), round(10 * k))
+        # Conversation is plain text. On AutoText, a reply that explains
+        # HTML ("wrap it in <b>…</b>") was rendered AS HTML and the code
+        # vanished from the page.
+        lbl.setTextFormat(Qt.PlainText)
         lbl.setObjectName(name)
         return lbl
 
