@@ -10,7 +10,12 @@ from PySide6.QtWidgets import QApplication
 
 app = QApplication(sys.argv)
 
+import tempfile  # noqa: E402
+import ui_qt  # noqa: E402
 from ui_qt import GoatWindow  # noqa: E402
+
+# Never let a test write his real preferences.
+ui_qt.UI_CONFIG = os.path.join(tempfile.gettempdir(), "goat-test-status-cfg.json")
 
 win = GoatWindow()
 

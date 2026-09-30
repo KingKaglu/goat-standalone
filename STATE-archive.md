@@ -1,5 +1,77 @@
 # GOAT State — ARCHIVE (pre-2026-09-14 midday). History only: much of this describes the removed two-brain design (talk lane, Gemini, front desk). Search it for a specific trap; never load it whole.
 
+## Screen control (2026-09-14 evening, his goal, in his words: computer-use /
+## screen-automation — "ხედავს ეკრანს და მართავს მაუს/კლავიატურას პირდაპირ")
+GOAT could drive anything with a CLI and nothing else; it had to tell him so.
+Now it sees the screen and uses it. Four new modules under `python/`:
+- `screen_hands.py` — mss/PIL capture + Win32 SendInput. Screenshots carry a
+  grid whose labels are REAL screen pixels (the model reads a number instead
+  of undoing the downscale in its head) and a crosshair on the cursor.
+  Mouse, keyboard (Unicode, so Georgian types on an English layout), windows,
+  and stand_aside/step_back_in.
+- `screen_browser.py` — CDP. Tabs and DOM elements as objects. Chrome 136+
+  refuses remote debugging on the default profile, so GOAT drives its own
+  profile at port 9333; `tab_search` (Ctrl+Shift+A) steers the live window he
+  is actually using.
+- `screen_policy.py` — the gate. Two triggers: WHAT (label/keys/card numbers)
+  and WHERE (a banking or checkout window makes every action confirm-tier).
+  Plain word lists, editable without touching logic. Nothing is refused.
+- `screen_tools.py` — publishes `computer` and `browser` as in-process MCP
+  tools on the work lane, next to Bash and Read. Gate + JSONL ledger +
+  live emit to the left panel live here.
+
+TRAPS HIT, all fixed — do not re-learn these:
+- The SDK's shorthand `{name: type}` schema marks EVERY field required, and
+  the model dutifully filled x=0, y=0 — a click on the screen corner. Real
+  JSON Schema with `required: ["action"]` fixed it AND cut the probe cost 63%.
+- GOAT's own always-on-top window ate the clicks aimed at the app underneath,
+  and screenshots showed GOAT instead of the work. Hence stand_aside; the
+  persona now requires hide_self before driving another app.
+- A browser launched from a shell dies with that shell (job object). Needs
+  CREATE_BREAKAWAY_FROM_JOB, not just DETACHED_PROCESS.
+- `"://" in url` is not a scheme test: it turned `data:text/html,...` into
+  `https://data:text/html,...`. Match `^[a-z][a-z0-9+.-]*:` instead.
+- Chrome's `window.screenY` is the WINDOW top, not the viewport's, and the
+  chrome above the page is a different height everywhere. element_coords
+  calibrates against the Win32 client rect instead of doing that arithmetic.
+- Arrows/Delete/Home/End need KEYEVENTF_EXTENDEDKEY or the app receives the
+  numpad twin. Tested.
+- Tk (and anything not DPI aware) reports click coordinates in a scaled space
+  that does not match the physical pixel sent — the live test opts in to
+  per-monitor DPI so the two agree.
+
+VERIFIED, not assumed: `test_screen.py` 67/67 (fires nothing, safe to run
+while he works), `test_screen_live.py` 9/9 (opens its own window and really
+drives it — Georgian text arrives exactly, click lands 0px off, chords and
+wheel all arrive), `test_engine_router.py` still 100/100, preflight PASS.
+End-to-end through the real SDK: the model called `computer`, got the image
+back, and read his screen correctly.
+
+## The 01:56:55 crash (same session)
+Windows logged it, GOAT did not: `python.exe` faulting in
+`shiboken6.abi3.dll`, exception `0xc0000005` — an access violation inside
+PySide6's binding layer. `goat-app.log` was empty and no Python traceback
+existed anywhere, because a native crash never raises. No dump survived (WER
+kept only `Report.wer`) and no debugger is installed, so that stack is gone for
+good. Two changes so the next one is not:
+- **`faulthandler`** is enabled at the top of `main()` against
+  `python/goat-crash.log`, all threads. The next fault writes the Python stack
+  of every thread at the moment it happens.
+- **The page is now capped** (`GoatWindow.PAGE_MAX = 240`, `_trim_page`). It
+  grew without bound before, and `_dim_previous()` re-polished the WHOLE column
+  on every new line — hundreds of style recalcs per turn in a long session. The
+  trim also nulls `_you_label` / `_reply_label` / `epigraph` when they point at
+  a widget it just deleted: a Python name aimed at a destroyed C++ object is
+  exactly the class of access violation that was logged, and it is the one lead
+  the evidence supports.
+
+No Qt object is touched off the GUI thread anywhere in the app — checked, and
+`goat_app`, `local_llm`, `local_hands` and `screen_*` import no PySide6 at all,
+while every UI callback crosses via `emit` to `event_sig`. So the stale-wrapper
+path is the remaining candidate rather than a threading violation. If it
+recurs, `goat-crash.log` now names the file and line.
+
+
 ## Thinking & answering pass (2026-09-14 midday, his goal: "run full update on
 ## my GOAT's thinking and answering system, update the design too")
 - ROSTER RE-VERIFIED, not assumed. `claude --model <id> -p` on his account:

@@ -3,6 +3,35 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## New face v7 (2026-09-30, his concept image: "the new design of the GOAT app")
+- ui_qt.py rebuilt as three columns on a painted midnight room: left rail
+  (goat mark, pages Home/Chat/Skills/Files/Memory/Tools/Settings, presence
+  card = compact StringLine + state word + footer meter), centre (greeting
+  over a painted mountain range, 5 quick actions, Recent from
+  transcript.jsonl, the composer + chips), right rail (search, Active brain,
+  Tools <-> Activity, System switches, Today card).
+- Built from the concept, but only real features: no invented models/tools.
+  Activity card = the old WorkPanel (steps, thinking, context meter). The
+  settings drawer is now SettingsPage (self.panel) with the same set_*_opt
+  handlers. Voice-synced reveal, bubble/pop, Snap hit-test, geometry,
+  global zoom, themes and every shortcut carry over; Ctrl+F = search.
+- Theme "midnight" is the new default; DESIGN_VERSION=7 re-seats his saved
+  theme once (config key "design"), then his pick sticks.
+- Scenery (paint_scene) and the goat mark (paint_goat_mark) are QPainter
+  code, cached; goat.ico is rendered from the same mark (make_icon.py).
+- TRAPS: (1) a right-aligned wrapped QLabel in a QVBoxLayout gets its height
+  at the FULL column width, then is squeezed -> clipped 2nd line: ChatBubble
+  opts out of height-for-width and sizes itself. (2) A wrapped QLabel's
+  sizeHint is Qt's guess at another width; the scroll host summed those and
+  left a gap under the last line: PageLabel.sizeHint reports the real hfw.
+  (3) Qt drops QSS border-radius larger than half the height -> chips went
+  square at 150%: keep radii under half height at every zoom.
+  (4) offscreen QPA renders no fonts; judge renders with QT_QPA_PLATFORM=windows.
+- Tests: test_scroll was already stale (win._follow) -> fixed to _pin.follow
+  and shows the chat page; test_scroll/test_statusword now write a temp
+  config, never his real ui-config.json.
+
+
 ## Music cancellation via loopback (2026-09-28, "you've been hearing the music I'm playing")
 - Cause: AEC3 reference was only GOAT's own playback block, so Brave/YouTube
   audio hit the mic uncancelled; lyrics became "his" messages and cut him off.
@@ -351,30 +380,6 @@ Router average 213-247us per input across 200 iterations. 70 reflex tests +
   `_clean_target` peels tail then place then lead then noun in a loop rather
   than in one anchored match.
 
-## The 01:56:55 crash (same session)
-Windows logged it, GOAT did not: `python.exe` faulting in
-`shiboken6.abi3.dll`, exception `0xc0000005` — an access violation inside
-PySide6's binding layer. `goat-app.log` was empty and no Python traceback
-existed anywhere, because a native crash never raises. No dump survived (WER
-kept only `Report.wer`) and no debugger is installed, so that stack is gone for
-good. Two changes so the next one is not:
-- **`faulthandler`** is enabled at the top of `main()` against
-  `python/goat-crash.log`, all threads. The next fault writes the Python stack
-  of every thread at the moment it happens.
-- **The page is now capped** (`GoatWindow.PAGE_MAX = 240`, `_trim_page`). It
-  grew without bound before, and `_dim_previous()` re-polished the WHOLE column
-  on every new line — hundreds of style recalcs per turn in a long session. The
-  trim also nulls `_you_label` / `_reply_label` / `epigraph` when they point at
-  a widget it just deleted: a Python name aimed at a destroyed C++ object is
-  exactly the class of access violation that was logged, and it is the one lead
-  the evidence supports.
-
-No Qt object is touched off the GUI thread anywhere in the app — checked, and
-`goat_app`, `local_llm`, `local_hands` and `screen_*` import no PySide6 at all,
-while every UI callback crosses via `emit` to `event_sig`. So the stale-wrapper
-path is the remaining candidate rather than a threading violation. If it
-recurs, `goat-crash.log` now names the file and line.
-
 ## Collapse to a bubble (2026-09-14 night, his order: messenger-style bubble)
 Minimize used to send GOAT to the taskbar, which hides the only thing worth
 seeing — whether it is listening. Now the window folds into a round
@@ -426,54 +431,6 @@ preflight with `py -3.13` (plain `python` lacks numpy → false PREFLIGHT FAIL).
 Not covered by `stand_aside` (neither is the bubble) — it sits in the corner
 and fades on its own.
 VERIFIED: test_message_pop.py 19/19, test_bubble.py 40/40, preflight PASS.
-
-## Screen control (2026-09-14 evening, his goal, in his words: computer-use /
-## screen-automation — "ხედავს ეკრანს და მართავს მაუს/კლავიატურას პირდაპირ")
-GOAT could drive anything with a CLI and nothing else; it had to tell him so.
-Now it sees the screen and uses it. Four new modules under `python/`:
-- `screen_hands.py` — mss/PIL capture + Win32 SendInput. Screenshots carry a
-  grid whose labels are REAL screen pixels (the model reads a number instead
-  of undoing the downscale in its head) and a crosshair on the cursor.
-  Mouse, keyboard (Unicode, so Georgian types on an English layout), windows,
-  and stand_aside/step_back_in.
-- `screen_browser.py` — CDP. Tabs and DOM elements as objects. Chrome 136+
-  refuses remote debugging on the default profile, so GOAT drives its own
-  profile at port 9333; `tab_search` (Ctrl+Shift+A) steers the live window he
-  is actually using.
-- `screen_policy.py` — the gate. Two triggers: WHAT (label/keys/card numbers)
-  and WHERE (a banking or checkout window makes every action confirm-tier).
-  Plain word lists, editable without touching logic. Nothing is refused.
-- `screen_tools.py` — publishes `computer` and `browser` as in-process MCP
-  tools on the work lane, next to Bash and Read. Gate + JSONL ledger +
-  live emit to the left panel live here.
-
-TRAPS HIT, all fixed — do not re-learn these:
-- The SDK's shorthand `{name: type}` schema marks EVERY field required, and
-  the model dutifully filled x=0, y=0 — a click on the screen corner. Real
-  JSON Schema with `required: ["action"]` fixed it AND cut the probe cost 63%.
-- GOAT's own always-on-top window ate the clicks aimed at the app underneath,
-  and screenshots showed GOAT instead of the work. Hence stand_aside; the
-  persona now requires hide_self before driving another app.
-- A browser launched from a shell dies with that shell (job object). Needs
-  CREATE_BREAKAWAY_FROM_JOB, not just DETACHED_PROCESS.
-- `"://" in url` is not a scheme test: it turned `data:text/html,...` into
-  `https://data:text/html,...`. Match `^[a-z][a-z0-9+.-]*:` instead.
-- Chrome's `window.screenY` is the WINDOW top, not the viewport's, and the
-  chrome above the page is a different height everywhere. element_coords
-  calibrates against the Win32 client rect instead of doing that arithmetic.
-- Arrows/Delete/Home/End need KEYEVENTF_EXTENDEDKEY or the app receives the
-  numpad twin. Tested.
-- Tk (and anything not DPI aware) reports click coordinates in a scaled space
-  that does not match the physical pixel sent — the live test opts in to
-  per-monitor DPI so the two agree.
-
-VERIFIED, not assumed: `test_screen.py` 67/67 (fires nothing, safe to run
-while he works), `test_screen_live.py` 9/9 (opens its own window and really
-drives it — Georgian text arrives exactly, click lands 0px off, chords and
-wheel all arrive), `test_engine_router.py` still 100/100, preflight PASS.
-End-to-end through the real SDK: the model called `computer`, got the image
-back, and read his screen correctly.
-
 
 ## 2026-09-27 — daily self-update (his order: autonomous, tell me only when updated)
 - python/self_update.py: 24h check of claude-agent-sdk (engine, py3.13), global Claude Code CLI (`claude update`), and new Opus/Sonnet/Fable ids on docs.claude.com (probed via bundled CLI; announced, NOT auto-switched).

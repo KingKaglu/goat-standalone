@@ -10,11 +10,17 @@ from PySide6.QtWidgets import QApplication
 
 app = QApplication(sys.argv)
 
-from ui_qt import GoatWindow  # noqa: E402 — needs QApplication first
+import tempfile  # noqa: E402
+import ui_qt  # noqa: E402 — needs QApplication first
+from ui_qt import GoatWindow  # noqa: E402
+
+# Never let a test write his real preferences (geometry saves on resize).
+ui_qt.UI_CONFIG = os.path.join(tempfile.gettempdir(), "goat-test-scroll-cfg.json")
 
 win = GoatWindow()
-win.resize(800, 400)
+win.resize(1000, 600)
 win.show()
+win.show_page("chat")   # v7: the conversation lives on its own page
 
 
 def pump():
@@ -41,7 +47,7 @@ print(f"[PASS] following pins to bottom ({sb.value()}/{sb.maximum()})")
 # 2. He scrolls up to read — new content must NOT yank him down.
 sb.setValue(0)
 pump()
-assert win._follow is False, "_follow should disengage when scrolled up"
+assert win._pin.follow is False, "_follow should disengage when scrolled up"
 before = sb.value()
 fill(10)
 assert sb.value() <= before + 5, f"page got yanked: {before} -> {sb.value()}"
@@ -50,7 +56,7 @@ print(f"[PASS] scrolled-up page stays put ({before} -> {sb.value()})")
 # 3. He scrolls back to the bottom — following re-engages.
 sb.setValue(sb.maximum())
 pump()
-assert win._follow is True, "_follow should re-engage at the bottom"
+assert win._pin.follow is True, "_follow should re-engage at the bottom"
 fill(5)
 assert sb.value() == sb.maximum(), "should be pinned again"
 print("[PASS] returning to bottom re-engages following")
@@ -58,12 +64,12 @@ print("[PASS] returning to bottom re-engages following")
 # 4. A new message from him re-engages following even from mid-history.
 sb.setValue(0)
 pump()
-assert win._follow is False
+assert win._pin.follow is False
 win._on_event("you", "okay what about this")
 pump()
 win._scroll_down()
 pump()
-assert win._follow is True, "'you' event should re-engage following"
+assert win._pin.follow is True, "'you' event should re-engage following"
 assert sb.value() == sb.maximum(), "his new message should bring him down"
 print("[PASS] speaking re-engages following")
 
