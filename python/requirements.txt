@@ -9,3 +9,12 @@ edge-tts
 soundfile
 PySide6
 psutil
+comtypes      # fast_hands: click by name through Windows UI Automation
+mss
+winrt-runtime                 # fast_hands: Windows' own OCR for click-by-text
+winrt-Windows.Media.Ocr
+winrt-Windows.Graphics.Imaging
+winrt-Windows.Storage.Streams
+winrt-Windows.Foundation
+winrt-Windows.Foundation.Collections
+winrt-Windows.Globalization

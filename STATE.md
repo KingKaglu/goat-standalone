@@ -3,6 +3,33 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Fast hands (2026-10-01, his order: "goat takes about 10 seconds to do the
+## simple tasks, close the tab, click this, click that — optimize this")
+- Cause, from his live test: "close the two tabs" was not a reflex, so the
+  brain thought, pressed ctrl+w (42ms), screenshotted the tab strip, pressed
+  again, screenshotted again, show_self — five model round trips.
+- fast_hands.py (new): target_window() = topmost real window that is NOT
+  GOAT (z-order), browser-only for tab verbs; keys() focuses it then presses;
+  click_named() finds the control by accessible name via UI Automation
+  (comtypes, ~30-90ms), else OCR of the window (Windows.Media.Ocr via winrt,
+  ~200ms), else returns "DEFER:" and goat_app._reflex hands the turn to the
+  brain (ack already spoken).
+- reflex.py rules (EN+KA): close N/this/all tabs, new/reopen/next/previous
+  tab, back/forward, refresh, zoom, scroll, press <key> [N times],
+  copy/paste/undo/redo/select all/save, click/tap/press <name>. "click this",
+  "close the tabs" (no count) stay with the brain. test_reflex 124/124.
+- FIXED a latent trap: _window() with no name (close/minimize this) used
+  GetForegroundWindow() — GOAT itself when he had just spoken to it; WM_CLOSE
+  would have quit GOAT. Now it targets fast_hands.target_window().
+- Measured on a throwaway tk window through the real paths: press enter
+  177ms, click "Zebra Launch" 529ms (OCR), ctrl+w 167ms.
+- TRAP: his Brave does not expose web page content to UIA (renderer
+  accessibility off) — only browser chrome. Page text goes through OCR, so
+  the target is focused and given 120ms to paint before the grab.
+- Persona SPEED rule: one press with times=N, verify once, small regions.
+- Known, NOT from this change: test_voice_latency "TTS worker tells a filler
+  from the answer" fails on the prior commit too.
+
 ## New face v7 (2026-09-30, his concept image: "the new design of the GOAT app")
 - ui_qt.py rebuilt as three columns on a painted midnight room: left rail
   (goat mark, pages Home/Chat/Skills/Files/Memory/Tools/Settings, presence

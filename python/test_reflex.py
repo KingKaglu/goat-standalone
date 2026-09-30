@@ -236,6 +236,47 @@ falls_through("so I was thinking about the way we handle the catalog sync "
               "and whether we should open the possibility of a second store "
               "adapter before the launch, what do you think about that plan")
 
+# ------------------------------------------------------------- fast hands
+# 2026-10-01, his complaint: simple tab/click orders took ~10s through the
+# brain. They must be reflexes now — and the ambiguous ones must NOT be.
+hits("close the tab", "keys", detail="close 1 tab")
+hits("close this tab", "keys", detail="close 1 tab")
+hits("Could you please close the two tabs I have open?", "keys", detail="close 2 tabs")
+hits("close 3 tabs", "keys", detail="close 3 tabs")
+hits("close all tabs", "keys", detail="close all tabs")
+hits("დახურე ტაბი", "keys", "ka", detail="close 1 tab")
+hits("ტაბი დახურე", "keys", "ka", detail="close 1 tab")
+hits("დახურე ორი ტაბი", "keys", "ka", detail="close 2 tabs")
+hits("open a new tab", "keys", detail="new tab")
+hits("new tab", "keys", detail="new tab")
+hits("reopen the closed tab", "keys", detail="reopen tab")
+hits("next tab", "keys", detail="next tab")
+hits("go to the previous tab", "keys", detail="previous tab")
+hits("go back", "keys", detail="back")
+hits("refresh the page", "keys", detail="refresh")
+hits("scroll down", "keys", detail="scroll down")
+hits("ჩამოსქროლე", "keys", "ka", detail="scroll down")
+hits("zoom in", "keys", detail="zoom in")
+hits("press enter", "keys", detail="press enter")
+hits("press escape", "keys", detail="press esc")
+hits("copy that", "keys", detail="copy")
+hits("paste it", "keys", detail="paste")
+hits("save it", "keys", detail="save")
+hits("click subscribe", "click", detail="subscribe")
+hits("click on the Settings button", "click", detail="settings")
+hits("please click Sign in", "click", detail="sign in")
+hits("Subscribe-ზე დააჭირე", "click", "ka", detail="subscribe")
+hits("დააჭირე Subscribe", "click", "ka", detail="subscribe")
+# Pointing needs eyes; plural tabs with no count needs a question.
+falls_through("click this")
+falls_through("click here")
+falls_through("click that one")
+falls_through("close the tabs")
+falls_through("hit me with a joke")
+falls_through("how do I close a tab?")
+# "next" alone is still the media key, not a tab.
+hits("next", "media", detail="next")
+
 # ------------------------------------------------------------------- speed
 # The claim is "instant". Prove the router itself is not the cost.
 SAMPLE = ["open google", "open gg", "volume up", "what time is it",

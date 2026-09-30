@@ -240,9 +240,18 @@ def _window(action: str, target: str = "") -> str:
         except Exception as e:  # noqa: BLE001
             return f"ERROR: no window matching {target!r} ({e})"
     if not hwnd:
-        hwnd = u.GetForegroundWindow()
-    if not hwnd:
-        return "no window in front"
+        # "close this" means what he is looking at — the topmost window that
+        # is NOT GOAT. The old GetForegroundWindow() was GOAT itself whenever
+        # he had just been talking to it, and WM_CLOSE would have quit GOAT.
+        try:
+            import fast_hands
+            w = fast_hands.target_window()
+        except Exception:  # noqa: BLE001
+            w = None
+        if w is None:
+            return "ERROR: no window in front"
+        hwnd = w["hwnd"]
+        target = w.get("app") or w["title"]
     what = f"the {target} window" if target else "the front window"
     if action == "close":
         u.PostMessageW(hwnd, 0x0010, 0, 0)   # WM_CLOSE
@@ -616,6 +625,191 @@ _BATT_RE = re.compile(
     r"(?:\s+(?:level|percent(?:age)?|status))?|how\s+much\s+battery|"
     r"ბატარე\w*|დამუხტ\w*)\s*[.!?]*$", re.IGNORECASE)
 
+# ---- fast hands: tabs, keys, clicks (2026-10-01) ---------------------------
+# His complaint: "goat takes about 10 seconds to do the simple tasks, close
+# the tab, click this, click that". Those went to the brain — think, press
+# ctrl+w, screenshot, press, screenshot — five model round trips around 42ms
+# of keystrokes. Here they are one Win32 call aimed at the window he means
+# (fast_hands.target_window: the topmost real window that is not GOAT).
+
+_NUM = {"one": 1, "a": 1, "an": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "couple": 2,
+        "ერთი": 1, "ორი": 2, "სამი": 3, "ოთხი": 4, "ხუთი": 5, "ექვსი": 6,
+        "შვიდი": 7, "რვა": 8, "ცხრა": 9, "ათი": 10}
+_NUM_ALT = (r"(?:\d{1,2}|" + "|".join(sorted((k for k in _NUM if len(k) > 2),
+                                             key=len, reverse=True)) + r")")
+# What may trail a tab order without changing it: "…that I have open",
+# "…in Brave", "…please".
+_TAB_TAIL = (r"(?:\s+(?:that\s+|which\s+)?i(?:'ve|\s+have)?\s+(?:got\s+)?open"
+             r"(?:ed)?)?(?:\s+(?:in|on)\s+(?:the\s+)?(?:browser|brave|chrome|"
+             r"edge|firefox))?\s*(?:please|for\s+me|now)?\s*[.!?]*$")
+_TAB_W = r"(?:tabs?|ტაბ\w*|ჩანართ\w*)"
+_CLOSE_TAB_RE = re.compile(
+    r"^" + _LEAD + r"(?:close|shut|kill|get\s+rid\s+of|remove|დახურ\w*|დახუე?ვ\w*)"
+    r"\s+(?:(?:the|this|that|my|current|these|those|last|ეს|ბოლო)\s+)*"
+    r"(?:(?P<n>" + _NUM_ALT + r"|all(?:\s+the)?|ყველა)\s+)?"
+    r"(?:(?:open|current|last|of\s+the|of\s+my)\s+)*"
+    + _TAB_W + _TAB_TAIL, re.IGNORECASE)
+_CLOSE_TAB_KA_END_RE = re.compile(
+    r"^" + _LEAD + r"(?:(?:ეს|ბოლო)\s+)?(?:(?P<n>" + _NUM_ALT + r"|ყველა)\s+)?"
+    + _TAB_W + r"\s+(?:დახურ\w*|დახუე?ვ\w*)\s*[.!?]*$", re.IGNORECASE)
+_NEW_TAB_RE = re.compile(
+    r"^" + _LEAD + r"(?:(?:open|give\s+me)\s+)?(?:a\s+)?new\s+tab\s*[.!?]*$|"
+    r"^" + _LEAD + r"ახალი\s+" + _TAB_W + r"(?:\s+" + _OPEN_KA + r")?\s*[.!?]*$",
+    re.IGNORECASE)
+_REOPEN_TAB_RE = re.compile(
+    r"^" + _LEAD + r"(?:re-?open|bring\s+back|restore|undo\s+close)\s+"
+    r"(?:the\s+)?(?:last\s+)?(?:closed\s+)?tab(?:\s+i\s+closed)?\s*[.!?]*$",
+    re.IGNORECASE)
+_NEXT_TAB_RE = re.compile(
+    r"^" + _LEAD + r"(?:(?:go|switch|move)\s+to\s+(?:the\s+)?)?next\s+tab\s*[.!?]*$|"
+    r"^" + _LEAD + r"შემდეგ\w*\s+" + _TAB_W + r"\s*[.!?]*$", re.IGNORECASE)
+_PREV_TAB_RE = re.compile(
+    r"^" + _LEAD + r"(?:(?:go|switch|move)\s+(?:back\s+)?to\s+(?:the\s+)?)?"
+    r"(?:previous|prev|last)\s+tab\s*[.!?]*$|"
+    r"^" + _LEAD + r"წინა\s+" + _TAB_W + r"\s*[.!?]*$", re.IGNORECASE)
+_BACK_RE = re.compile(
+    r"^" + _LEAD + r"(?:go\s+back(?:\s+a\s+page|\s+one\s+page)?|back\s+a\s+page|"
+    r"previous\s+page|წინა\s+გვერდ\w*)\s*[.!?]*$", re.IGNORECASE)
+_FWD_RE = re.compile(
+    r"^" + _LEAD + r"(?:go\s+forward(?:\s+a\s+page)?|next\s+page|"
+    r"შემდეგ\w*\s+გვერდ\w*)\s*[.!?]*$", re.IGNORECASE)
+_REFRESH_RE = re.compile(
+    r"^" + _LEAD + r"(?:refresh|reload)(?:\s+(?:the|this)\s+(?:page|tab)|"
+    r"\s+it|\s+the\s+site)?\s*[.!?]*$|"
+    r"^" + _LEAD + r"(?:გვერდი\s+)?(?:დაარეფრეშ\w*|გადატვირთ\w*)(?:\s+გვერდ\w*)?"
+    r"\s*[.!?]*$", re.IGNORECASE)
+_ZOOM_RE = re.compile(
+    r"^" + _LEAD + r"zoom\s+(?P<d>in|out)\s*[.!?]*$", re.IGNORECASE)
+_SCROLL_RE = re.compile(
+    r"^" + _LEAD + r"(?:scroll\s+(?P<d>down|up)(?:\s+(?:a\s+bit|a\s+little|more|"
+    r"please))?|(?P<ka_d>ჩამო|ა)სქროლ\w*|(?P<ka2>ქვემოთ|ზემოთ)\s+(?:ჩამოდი|ადი|"
+    r"ჩასქროლე|ასქროლე))\s*[.!?]*$", re.IGNORECASE)
+_KEYNAMES = {"enter": "enter", "return": "enter", "escape": "esc", "esc": "esc",
+             "space": "space", "spacebar": "space", "tab": "tab",
+             "backspace": "backspace", "delete": "delete", "up": "up",
+             "down": "down", "left": "left", "right": "right",
+             "page down": "pagedown", "page up": "pageup", "home": "home",
+             "end": "end", "f5": "f5", "f11": "f11", "f1": "f1"}
+_PRESS_RE = re.compile(
+    r"^" + _LEAD + r"(?:press|hit|push)\s+(?:the\s+)?(?P<k>"
+    + "|".join(sorted((re.escape(k) for k in _KEYNAMES), key=len, reverse=True))
+    + r")(?:\s+key)?(?:\s+(?P<n>" + _NUM_ALT + r")\s+times)?\s*[.!?]*$",
+    re.IGNORECASE)
+_EDIT_KEYS = [
+    (re.compile(r"^" + _LEAD + r"(?:copy(?:\s+(?:it|that|this))?|დააკოპირ\w*)"
+                r"\s*[.!?]*$", re.IGNORECASE), "ctrl+c", "copy"),
+    (re.compile(r"^" + _LEAD + r"(?:paste(?:\s+(?:it|that|this))?|ჩასვ\w*|"
+                r"დაპასტ\w*)\s*[.!?]*$", re.IGNORECASE), "ctrl+v", "paste"),
+    (re.compile(r"^" + _LEAD + r"undo(?:\s+(?:it|that|this))?\s*[.!?]*$",
+                re.IGNORECASE), "ctrl+z", "undo"),
+    (re.compile(r"^" + _LEAD + r"redo\s*[.!?]*$", re.IGNORECASE), "ctrl+y", "redo"),
+    (re.compile(r"^" + _LEAD + r"(?:select\s+all|მონიშნე\s+ყველა\w*)\s*[.!?]*$",
+                re.IGNORECASE), "ctrl+a", "select all"),
+    (re.compile(r"^" + _LEAD + r"(?:save(?:\s+(?:it|this|that|the\s+file))?|"
+                r"შეინახ\w*|დაასეივ\w*)\s*[.!?]*$", re.IGNORECASE), "ctrl+s", "save"),
+]
+# "click Subscribe", "click on the Settings button", "დააჭირე Subscribe-ს",
+# "Subscribe-ზე დააჭირე". Pointing words ("click this", "click here") need
+# eyes, so they are not a reflex.
+_CLICK_RE = re.compile(
+    r"^" + _LEAD + r"(?:click|tap|press)\s+(?:on\s+)?(?:the\s+)?"
+    r"(?P<t>.+?)(?:\s+(?:button|link|tab|icon|option|menu|item))?\s*[.!?]*$|"
+    r"^" + _LEAD + r"(?:დააჭირე|დააკლიკე|დააწექი|დააკლიკ\w*)\s+(?P<t2>.+?)\s*[.!?]*$|"
+    r"^" + _LEAD + r"(?P<t3>.+?)(?:-?ზე|-?ს)\s+(?:დააჭირე|დააკლიკე|დააწექი)\s*[.!?]*$",
+    re.IGNORECASE)
+_DEICTIC = re.compile(
+    r"^(?:this|that|it|here|there|this\s+one|that\s+one|the\s+first\s+one|"
+    r"on\s+it|me|ეს|ის|აქ|იქ|ამას|იმას|ამ\w*|იმ\w*)$", re.IGNORECASE)
+
+
+def _count(word: str | None) -> int:
+    if not word:
+        return 1
+    w = word.strip().lower()
+    return int(w) if w.isdigit() else _NUM.get(w, 1)
+
+
+def _fast(kind: str, *args, **kw):
+    """Deferred import: fast_hands pulls in screen_hands (ctypes setup), and
+    match() must stay importable and cheap in tests that never act."""
+    def run():
+        import fast_hands
+        return getattr(fast_hands, kind)(*args, **kw)
+    return run
+
+
+def _fast_hands_rule(t: str) -> Reflex | None:
+    for rx in (_CLOSE_TAB_RE, _CLOSE_TAB_KA_END_RE):
+        m = rx.match(t)
+        if m:
+            n = (m.group("n") or "").lower()
+            if n.startswith("all") or n == "ყველა":
+                # All tabs = the browser window: ctrl+shift+w closes it.
+                return Reflex("keys", "close all tabs",
+                              _fast("keys", "ctrl+shift+w", browser=True,
+                                    what="closed the window's tabs"))
+            count = _count(n)
+            plural = bool(re.search(r"(?:tabs|ტაბები|ჩანართები)\b", t, re.IGNORECASE))
+            if plural and not m.group("n"):
+                return None     # "close the tabs" — which ones? a brain asks.
+            return Reflex("keys", f"close {count} tab{'s' if count > 1 else ''}",
+                          _fast("keys", "ctrl+w", times=count, browser=True,
+                                what="closed tab"))
+    if _NEW_TAB_RE.match(t):
+        return Reflex("keys", "new tab", _fast("keys", "ctrl+t", browser=True,
+                                               what="new tab"))
+    if _REOPEN_TAB_RE.match(t):
+        return Reflex("keys", "reopen tab",
+                      _fast("keys", "ctrl+shift+t", browser=True, what="reopened tab"))
+    if _NEXT_TAB_RE.match(t):
+        return Reflex("keys", "next tab", _fast("keys", "ctrl+tab", browser=True,
+                                                what="next tab"))
+    if _PREV_TAB_RE.match(t):
+        return Reflex("keys", "previous tab",
+                      _fast("keys", "ctrl+shift+tab", browser=True, what="previous tab"))
+    if _BACK_RE.match(t):
+        return Reflex("keys", "back", _fast("keys", "alt+left", browser=True,
+                                            what="back"))
+    if _FWD_RE.match(t):
+        return Reflex("keys", "forward", _fast("keys", "alt+right", browser=True,
+                                               what="forward"))
+    if _REFRESH_RE.match(t):
+        return Reflex("keys", "refresh", _fast("keys", "f5", what="refreshed"))
+    m = _ZOOM_RE.match(t)
+    if m:
+        d = m.group("d").lower()
+        return Reflex("keys", f"zoom {d}",
+                      _fast("keys", "ctrl+equals" if d == "in" else "ctrl+minus",
+                            what=f"zoom {d}"))
+    m = _SCROLL_RE.match(t)
+    if m:
+        if m.group("d"):
+            d = m.group("d").lower()
+        elif m.group("ka_d") is not None:
+            d = "down" if m.group("ka_d").startswith("ჩამო") else "up"
+        else:
+            d = "down" if (m.group("ka2") or "").startswith("ქვე") else "up"
+        return Reflex("keys", f"scroll {d}", _fast("scroll", d))
+    m = _PRESS_RE.match(t)
+    if m:
+        key = _KEYNAMES[m.group("k").lower()]
+        n = _count(m.group("n"))
+        return Reflex("keys", f"press {key}" + (f" x{n}" if n > 1 else ""),
+                      _fast("keys", key, times=n, what=f"pressed {key}"))
+    for rx, combo, what in _EDIT_KEYS:
+        if rx.match(t):
+            return Reflex("keys", what, _fast("keys", combo, what=what))
+    m = _CLICK_RE.match(t)
+    if m:
+        label = (m.group("t") or m.group("t2") or m.group("t3") or "").strip(" .,!?:;\"'")
+        label = re.sub(r"(?:-?ზე|-?ს)$", "", label).strip()
+        if label and not _DEICTIC.match(label) and len(label) <= 60 \
+                and len(label.split()) <= 6:
+            return Reflex("click", label, _fast("click_named", label))
+    return None
+
+
 # A question is never a reflex. "how do I open a file?" must reach a brain.
 _QUESTION_RE = re.compile(
     r"^\s*(?:hey\s+|ok(?:ay)?\s+|goat[,!\s]+)*"
@@ -744,6 +938,10 @@ def match(text: str, lang: str = "en") -> Reflex | None:
     if _SHOT_RE.match(t):
         return Reflex("screenshot", "region capture", _screenshot)
 
+    got = _fast_hands_rule(t)
+    if got is not None:
+        return got
+
     for rx in (_QUIT_RE, _QUIT_KA_RE, _QUIT_KA_END_RE):
         m = rx.match(t)
         if m:
@@ -793,6 +991,20 @@ def match(text: str, lang: str = "en") -> Reflex | None:
     return None
 
 
+# A fast hand returns this prefix when the job needs eyes after all.
+DEFER = "DEFER"
+
+
 def warm():
-    """Called once at boot: build the disk index behind the UI."""
+    """Called once at boot: build the disk index behind the UI, and generate
+    the UI Automation bindings so his first "click …" isn't the slow one."""
     reflex_index.refresh(background=True)
+
+    def _hands():
+        try:
+            import fast_hands
+            fast_hands.warm()
+        except Exception:  # noqa: BLE001 — clicks then defer to the brain
+            pass
+    import threading
+    threading.Thread(target=_hands, daemon=True).start()

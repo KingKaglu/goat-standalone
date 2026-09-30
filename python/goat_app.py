@@ -347,6 +347,12 @@ you cannot see the screen, and never fall back to the old PowerShell capture.
 - THE LOOP, every time: screenshot → act → screenshot to verify. A blind click
   is a bug. If the second look doesn't show what you expected, say so and fix
   it rather than reporting success.
+- SPEED (2026-10-01, he timed it: ~10s to close two tabs). Every tool call is
+  a full round trip, so spend them like money: repeat a key with ONE press
+  (e.g. ctrl+w times=2), not press-look-press-look; for a keyboard action
+  whose effect is certain, verify ONCE at the end, not after every step; use
+  a small region capture, not the whole screen. Tabs, keys, back/refresh,
+  scroll and "click <name>" are reflexes now and usually never reach you.
 - Coordinates are real screen pixels. Screenshots carry a yellow grid whose
   labels are ALREADY real coordinates — read the number, use the number. The
   cyan crosshair is the mouse.
@@ -1777,6 +1783,15 @@ class GoatApp:
             result = f"ERROR: {e}"
         ms = (time.monotonic() - t0) * 1000
         print(f"[reflex] {rx.kind} {rx.detail!r} -> {result} ({ms:.0f}ms)")
+        if isinstance(result, str) and result.startswith(getattr(reflex, "DEFER", "DEFER")):
+            # A fast hand that couldn't finish on its own ("click Subscribe"
+            # with nothing by that name in UI Automation or OCR) hands the
+            # turn to the brain, which can look — the ack already went out,
+            # so to him it is one continuous "on it".
+            self._say_buf = ""
+            await self._work(text, hard=False, echo_you=False)
+            self._last_exchange = time.monotonic()
+            return
         if isinstance(result, str) and result.startswith("ERROR"):
             line = REFLEX_FAIL.get(self.turn_lang) or REFLEX_FAIL["en"]
             self._say_now(line)
