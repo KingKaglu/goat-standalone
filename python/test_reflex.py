@@ -276,6 +276,14 @@ falls_through("hit me with a joke")
 falls_through("how do I close a tab?")
 # "next" alone is still the media key, not a tab.
 hits("next", "media", detail="next")
+# From his live session the same night: each of these cost 3-4s in the brain.
+hits("could you scroll this", "keys", detail="scroll down")
+hits("keep scrolling", "keys", detail="scroll down")
+hits("scroll up a bit", "keys", detail="scroll up")
+hits("Okay, close it now.", "window", detail="close")
+hits("click Node.js", "click", detail="node.js")
+# The ear heard "click stop. First image you see." — a description, not a name.
+falls_through("Okay, click stop. First image you see.")
 
 # ------------------------------------------------------------------- speed
 # The claim is "instant". Prove the router itself is not the cost.

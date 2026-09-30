@@ -605,7 +605,10 @@ _WIN_RE = re.compile(
     r"გაად?[გდ]ი[დთ]\w*|გაზარდ\w*|დაპატარავ\w*|ჩააგდ\w*|დახურ\w*|დახუე?ვ\w*)"
     r"(?:\s+(?P<t>.+?))??"
     r"(?:\s*(?:this|the|it)?\s*(?:window|ფანჯარ\w*))?"
-    r"(?:\s+(?:all\s+the\s+way|fully|ბოლომდე|მთლიანად))?\s*[.!?]*$",
+    r"(?:\s+(?:all\s+the\s+way|fully|ბოლომდე|მთლიანად))?"
+    # "Okay, close it now." (live 2026-10-01) fell through to the brain for
+    # 3.8s because "now" was read as a window name.
+    r"(?:\s+(?:now|please|for\s+me|ახლა|გთხოვ))*\s*[.!?]*$",
     re.IGNORECASE)
 # Words that are never a window name — they are the sentence, not the target.
 _NOT_A_TARGET = re.compile(
@@ -682,8 +685,11 @@ _REFRESH_RE = re.compile(
 _ZOOM_RE = re.compile(
     r"^" + _LEAD + r"zoom\s+(?P<d>in|out)\s*[.!?]*$", re.IGNORECASE)
 _SCROLL_RE = re.compile(
-    r"^" + _LEAD + r"(?:scroll\s+(?P<d>down|up)(?:\s+(?:a\s+bit|a\s+little|more|"
-    r"please))?|(?P<ka_d>ჩამო|ა)სქროლ\w*|(?P<ka2>ქვემოთ|ზემოთ)\s+(?:ჩამოდი|ადი|"
+    # No direction ("scroll this", "keep scrolling") means down — live on
+    # 2026-10-01 "could you scroll this" went to the brain for 3.2s.
+    r"^" + _LEAD + r"(?:(?:keep\s+)?scroll(?:ing)?(?:\s+(?P<d>down|up))?"
+    r"(?:\s+(?:this|it|the\s+page|a\s+bit|a\s+little|more|some|please|"
+    r"for\s+me|now))*|(?P<ka_d>ჩამო|ა)სქროლ\w*|(?P<ka2>ქვემოთ|ზემოთ)\s+(?:ჩამოდი|ადი|"
     r"ჩასქროლე|ასქროლე))\s*[.!?]*$", re.IGNORECASE)
 _KEYNAMES = {"enter": "enter", "return": "enter", "escape": "esc", "esc": "esc",
              "space": "space", "spacebar": "space", "tab": "tab",
@@ -788,8 +794,10 @@ def _fast_hands_rule(t: str) -> Reflex | None:
             d = m.group("d").lower()
         elif m.group("ka_d") is not None:
             d = "down" if m.group("ka_d").startswith("ჩამო") else "up"
+        elif m.group("ka2"):
+            d = "down" if m.group("ka2").startswith("ქვე") else "up"
         else:
-            d = "down" if (m.group("ka2") or "").startswith("ქვე") else "up"
+            d = "down"      # "scroll this" / "keep scrolling"
         return Reflex("keys", f"scroll {d}", _fast("scroll", d))
     m = _PRESS_RE.match(t)
     if m:
@@ -804,8 +812,13 @@ def _fast_hands_rule(t: str) -> Reflex | None:
     if m:
         label = (m.group("t") or m.group("t2") or m.group("t3") or "").strip(" .,!?:;\"'")
         label = re.sub(r"(?:-?ზე|-?ს)$", "", label).strip()
+        # "Okay, click stop. First image you see." (live 2026-10-01, the ear
+        # mishearing "click the first image") searched for a button named
+        # "stop. First image you see" for 491ms, then deferred anyway. A name
+        # never spans a sentence break — that is a description, and
+        # describing needs eyes.
         if label and not _DEICTIC.match(label) and len(label) <= 60 \
-                and len(label.split()) <= 6:
+                and len(label.split()) <= 6 and not re.search(r"[.?!]\s", label):
             return Reflex("click", label, _fast("click_named", label))
     return None
 
