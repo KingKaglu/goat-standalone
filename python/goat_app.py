@@ -141,6 +141,7 @@ WORK_RE = re.compile(
 STICKY_FULL_CTX = 25_000   # past this, stop bouncing back to the fast model
 ROTATE_CTX = 60_000        # past this, compact (or rotate) at turn end
 HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
+NEW_CHAT_RECAP = 4         # ...and across a New chat, as reference only
 # Preferred trim: the CLI's own /compact — a model-written summary that keeps
 # the SAME session (far richer than the 8-exchange handoff). Verified via
 # get_context_usage() afterwards; if it didn't take, fall back to rotation.
@@ -1462,6 +1463,57 @@ class GoatApp:
         if self.loop is not None and not self.loop.is_closed():
             asyncio.run_coroutine_threadsafe(self._apply_effort(), self.loop)
 
+    def new_chat(self):
+        """Fresh conversation, same running app. Thread-safe.
+
+        New chat used to delete the session file and restart the WHOLE app
+        (~25s: ears, voice socket, engine). The fresh brain then knew nothing
+        while the chat page still painted his last exchanges from disk — he
+        read that as "the memory is cleared up for some reason" (2026-10-01).
+        Now it is a rotation: a turn in flight is cut, the session is dropped,
+        and the new one opens with a short recap of the last few exchanges,
+        so "what were we just doing?" still has an answer. Long-term memory
+        (workspace/memory.md) was never touched either way."""
+        if self.loop is not None and not self.loop.is_closed():
+            asyncio.run_coroutine_threadsafe(self._new_chat(), self.loop)
+
+    async def _new_chat(self):
+        if self.busy and not self._warming:
+            await self._cut_turn(None)
+        for _ in range(100):          # the cut lands in ~20ms; ≤10s worst case
+            if not self.busy:
+                break
+            await asyncio.sleep(0.1)
+        recent = list(self._exchanges)[-NEW_CHAT_RECAP:]
+        self._exchanges.clear()
+        self._local_unseen.clear()
+        self._pending_handoff = ""
+        if recent:
+            lines = "\n".join(f"Giorgi: {u}\nYou: {r}" for u, r in recent)
+            self._pending_handoff = (
+                "[new chat] Giorgi started a new chat. Treat this as a fresh "
+                "conversation. For reference only — bring it up just if he "
+                "refers back — the last lines of the previous one:\n" + lines
+                + "\nLong-term memory lives in workspace/memory.md as always.")
+        self._rotate_only = True
+        self._last_ctx = 0
+        try:
+            os.remove(SESSION_FILE)
+        except OSError:
+            pass
+        # A marker, so the page painted at the next boot starts here too.
+        try:
+            with open(TRANSCRIPT_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"t": time.time(), "new_chat": True}) + "\n")
+        except OSError:
+            pass
+        self.emit("work_ctx", f"0|{ROTATE_CTX}")
+        self.emit("status", "new chat")
+        try:
+            await self.client.disconnect()   # ends _consume → run() reopens
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _apply_effort(self):
         """Close the work client so run() rebuilds it at the new effort. The
         session id is kept, so the conversation carries over; a turn already
@@ -2226,7 +2278,8 @@ class GoatApp:
         # Stream ended. A clean end normally means shutdown — unless the
         # thinking dial moved, in which case _apply_effort() closed the
         # client on purpose and run() should rebuild it at the new effort.
-        if self._reopen_only:
+        if self._reopen_only or self._rotate_only:
+            # _apply_effort / _new_chat closed the client on purpose.
             return True
         return False
 

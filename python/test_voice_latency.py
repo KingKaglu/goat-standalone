@@ -360,7 +360,9 @@ p._register = lambda *a_: None
 p.on_first_audio = lambda: fired.append("answer")
 p.on_filler_audio = lambda: fired.append("filler")
 p.synth = lambda text: np.zeros(160, dtype=np.float32)
-p.say("Mm-hm.", filler=True)
+# A real backchannel line — hum-words ("Mm-hm.") are stripped by HUM_RE
+# since 2026-09-26 and never reach the worker at all.
+p.say("Okay.", filler=True)
 p.say("It is ten past nine.")
 import threading as _th
 _th.Thread(target=p._worker, daemon=True).start()

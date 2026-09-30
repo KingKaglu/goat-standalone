@@ -9,7 +9,7 @@ from collections import deque
 
 import numpy as np
 
-from audio_io import DuplexAudio, BLOCK_SAMPLES
+from audio_io import DuplexAudio, LoopbackTap, BLOCK_SAMPLES
 
 
 class BoomAec:
@@ -39,6 +39,10 @@ def make_audio():
     a._preroll = deque(maxlen=31)
     a._raw_rms_ema = None
     a._running = False  # _vad_loop drains the preloaded queue, then exits
+    # The loopback tap (2026-09-28) is read in every callback; an unstarted
+    # one has nothing to give, so the callback falls back to GOAT's own block.
+    a.loopback = LoopbackTap()
+    a.music_on = False
     return a
 
 

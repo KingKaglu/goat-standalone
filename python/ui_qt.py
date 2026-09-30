@@ -4347,12 +4347,25 @@ class GoatWindow(QWidget):
 
     # ---- session actions ----
     def new_chat(self):
-        """Fresh brain: drop the session file, restart through the gate."""
-        try:
-            os.remove(os.path.join(GOAT_ROOT, ".goat-session-py"))
-        except OSError:
-            pass
-        self.restart_goat()
+        """Fresh conversation in the running app — see GoatApp.new_chat.
+        The page is cleared too: old lines on screen next to a brain that
+        doesn't have them is what read as "the memory is cleared"."""
+        if self.goat is None or not hasattr(self.goat, "new_chat"):
+            # Engine not up yet: the old route, through the restart gate.
+            try:
+                os.remove(os.path.join(GOAT_ROOT, ".goat-session-py"))
+            except OSError:
+                pass
+            self.restart_goat()
+            return
+        self._clear_page()
+        self.epigraph = QLabel("New chat. Say the word.")
+        self.epigraph.setObjectName("epigraph")
+        self.epigraph.setAlignment(Qt.AlignHCenter)
+        self.epigraph.setContentsMargins(0, 90, 0, 0)
+        self.col.insertWidget(0, self.epigraph)
+        self.show_page("chat")
+        self.goat.new_chat()
 
     def restart_goat(self):
         self._on_event("status", "restarting…")
@@ -4701,21 +4714,24 @@ class GoatWindow(QWidget):
                 lines = f.readlines()[-keep:]
         except OSError:
             return False
-        restored = False
+        pairs = []
         for line in lines:
             try:
                 ex = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if ex.get("new_chat"):
+                pairs = []      # nothing from before his last New chat
+                continue
             user = (ex.get("user") or "").strip()
             reply = (ex.get("reply") or "").strip()
-            if not user:
-                continue
+            if user:
+                pairs.append((user, reply))
+        for user, reply in pairs:
             self._add_line(_sentence_case(user), "youOld")
             if reply:
                 self._add_line(reply, "replyOld")
-            restored = True
-        return restored
+        return bool(pairs)
 
     # The page kept every line of every exchange forever. Two costs, both
     # real in a long session: _dim_previous() re-polishes the whole column on
@@ -4745,6 +4761,20 @@ class GoatWindow(QWidget):
         for attr in ("_you_label", "_reply_label", "epigraph"):
             if getattr(self, attr, None) in stale:
                 setattr(self, attr, None)
+
+    def _clear_page(self):
+        """Empty the conversation column (New chat). The stretch at the end
+        stays; every dropped widget's Python name is cleared, as in
+        _trim_page, so nothing can touch a deleted label later."""
+        while self.col.count() > 1:
+            item = self.col.itemAt(0)
+            w = item.widget()
+            self.col.removeItem(item)
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        for attr in ("_you_label", "_reply_label", "epigraph"):
+            setattr(self, attr, None)
 
     def _make_line(self, text: str, name: str) -> QLabel:
         if name in ("youNow", "youOld"):
