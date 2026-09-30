@@ -221,8 +221,29 @@ class LoopbackTap:
                                   blocksize=self.BLOCK) as rec:
                     self.healthy = True
                     print(f"[loopback] tapping {spk.name}")
+                    # soundcard's record(numframes=…) waits for packets by
+                    # polling WASAPI with ~0.75ms sleeps and a GetDevicePeriod
+                    # COM call per pass: this thread was HALF of GOAT's idle
+                    # CPU (py-spy, 2026-10-01). Waiting 3ms between checks
+                    # ourselves costs a third as much and delivers the same
+                    # frames; a reference at most 3ms later stays well ahead
+                    # of the echo, which crosses the room and the mic buffer.
+                    poll = hasattr(rec, "_capture_available_frames")
                     while self._running:
-                        d = rec.record(numframes=self.BLOCK)[:, 0].astype(np.float32)
+                        if poll:
+                            if rec._capture_available_frames() == 0:
+                                time.sleep(0.003)
+                                # No packets = silent speakers: the level
+                                # must still fall (0.9 per 10ms, as when
+                                # record() handed back zeros), or music_on
+                                # would stick after the music stops.
+                                self.level *= 0.969
+                                continue
+                            d = rec.record()[:, 0].astype(np.float32)
+                            if not len(d):
+                                continue
+                        else:
+                            d = rec.record(numframes=self.BLOCK)[:, 0].astype(np.float32)
                         r = float(np.sqrt(np.mean(d.astype(np.float64) ** 2)))
                         self.level = self.level * 0.9 + r * 0.1
                         with self._lock:
