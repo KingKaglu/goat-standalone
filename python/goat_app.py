@@ -1146,6 +1146,7 @@ class GoatApp:
         # rotation handoffs, and the rotation flags.
         self._last_ctx = 0
         self._step_ctx = 0   # last API step's prompt size this turn
+        self._tl_t0 = None   # turn timeline — see _tl_reset
         self._exchanges = deque(maxlen=HANDOFF_KEEP)
         self._reply_acc = ""
         self._rotate_only = False
@@ -1902,6 +1903,7 @@ class GoatApp:
         self.last_user_text = text
         self._current_task = text
         self._work_started = time.monotonic()
+        self._tl_reset()
         self._turn_has_tools = False
         self._last_tool = ""
         self._reply_acc = ""
@@ -1942,7 +1944,62 @@ class GoatApp:
             # is told per dispatch. Without this he gets Georgian in the
             # middle and English on the left in the same breath.
             send = KA_WORK_NOTE + send
+        self._tl_prep = time.monotonic() - self._tl_t0
         await self.client.query(send)
+
+    # ---- turn timeline (2026-10-01: "is there anything we can do to improve
+    # GOAT's overall performance?") ----
+    # The [latency] line only measures up to the first spoken word; a turn
+    # that then took 40s in screenshots left no trace of where the time
+    # went. Each model step is timed from message_start (first token, end),
+    # and the gap between one step's end and the next step's start is the
+    # tool run, named by the tools that step asked for. One [turn] line at
+    # the end: total = prep + model + tools + other.
+    def _tl_reset(self):
+        self._tl_t0 = time.monotonic()
+        self._tl_prep = 0.0
+        self._tl_steps = []      # (first-token s, step s)
+        self._tl_step_t0 = None
+        self._tl_first = None
+        self._tl_stop = None
+        self._tl_pending = []    # tools the last step asked for
+        self._tl_tools = []      # (names, s)
+
+    def _tl_event(self, et: str):
+        now = time.monotonic()
+        if et == "message_start":
+            if self._tl_stop is not None and self._tl_pending:
+                self._tl_tools.append(("+".join(self._tl_pending),
+                                       now - self._tl_stop))
+            self._tl_pending = []
+            self._tl_step_t0, self._tl_first = now, None
+        elif et == "content_block_delta":
+            if self._tl_first is None and self._tl_step_t0 is not None:
+                self._tl_first = now - self._tl_step_t0
+        elif et == "message_stop" and self._tl_step_t0 is not None:
+            self._tl_steps.append((self._tl_first or 0.0, now - self._tl_step_t0))
+            self._tl_step_t0 = None
+            self._tl_stop = now
+
+    def _tl_log(self):
+        if getattr(self, "_tl_t0", None) is None:
+            return
+        total = time.monotonic() - self._tl_t0
+        model = sum(d for _, d in self._tl_steps)
+        tools = sum(s for _, s in self._tl_tools)
+        other = max(0.0, total - self._tl_prep - model - tools)
+        firsts = "/".join(f"{f:.1f}" for f, _ in self._tl_steps[:8])
+        if len(self._tl_steps) > 8:
+            firsts += "/…"
+        slow = sorted(self._tl_tools, key=lambda x: -x[1])[:4]
+        line = (f"[turn] {total:.1f}s @{self.effort} = prep {self._tl_prep:.2f}s"
+                f" + model {model:.1f}s in {len(self._tl_steps)} step(s)"
+                f" (first token {firsts or '-'}s) + tools {tools:.1f}s")
+        if slow:
+            line += " [" + ", ".join(f"{n} {s:.1f}s" for n, s in slow) + "]"
+        line += f" + other {other:.1f}s · ctx {self._step_ctx // 1000}k"
+        print(line)
+        self._tl_t0 = None
 
     def _speak_delta(self, text: str):
         self.emit("delta", text)
@@ -1987,6 +2044,8 @@ class GoatApp:
         async for msg in self.client.receive_messages():
             if isinstance(msg, StreamEvent):
                 ev = msg.event
+                if getattr(self, "_tl_t0", None) is not None:
+                    self._tl_event(ev.get("type", ""))
                 if ev.get("type") == "content_block_delta":
                     delta = ev.get("delta", {})
                     if (delta.get("type") == "text_delta"
@@ -2021,6 +2080,8 @@ class GoatApp:
                     elif isinstance(block, ToolUseBlock):
                         self._turn_has_tools = True  # this is a WORK turn now
                         self._last_tool = block.name
+                        if getattr(self, "_tl_t0", None) is not None:
+                            self._tl_pending.append(block.name.split("__")[-1])
                         self.emit("work_tool", _describe_tool(block))
             elif isinstance(msg, SystemMessage):
                 if msg.subtype == "init":
@@ -2070,6 +2131,7 @@ class GoatApp:
                     continue
                 self.suppressed = False
                 self.busy = False
+                self._tl_log()
                 err = str(getattr(msg, "result", "") or "").lower()
                 if msg.is_error and "prompt is too long" in err:
                     # Work session's context is full — start a fresh one and
