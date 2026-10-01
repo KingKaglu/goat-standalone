@@ -142,6 +142,8 @@ STICKY_FULL_CTX = 25_000   # past this, stop bouncing back to the fast model
 ROTATE_CTX = 60_000        # past this, compact (or rotate) at turn end
 HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
 NEW_CHAT_RECAP = 4         # ...and across a New chat, as reference only
+# CLI system messages that happen on every boot/turn — not worth a log line.
+ENGINE_ROUTINE = {"commands_changed", "requesting"}
 # Preferred trim: the CLI's own /compact — a model-written summary that keeps
 # the SAME session (far richer than the 8-exchange handoff). Verified via
 # get_context_usage() afterwards; if it didn't take, fall back to rotation.
@@ -2149,7 +2151,9 @@ class GoatApp:
                     if sid:
                         with open(SESSION_FILE, "w", encoding="utf-8") as f:
                             f.write(sid)
-                else:
+                elif not (msg.subtype in ENGINE_ROUTINE or (
+                        msg.subtype == "status"
+                        and (msg.data or {}).get("status") in ENGINE_ROUTINE)):
                     # Retries, compaction, anything else the CLI reports —
                     # the log is where a slow turn's "wait" gets its name.
                     print(f"[engine] {msg.subtype}: "
