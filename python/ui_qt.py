@@ -63,7 +63,13 @@ import sys
 import threading
 import time
 
-import numpy as np
+# Before numpy loads (2026-10-01, RAM): OpenBLAS reserves a work buffer per
+# CPU thread at import — ~360 MB committed in this process for matrix math
+# GOAT never does (audio blocks are tiny; the VAD runs in onnxruntime).
+# One thread: same speed for GOAT's work, measured.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
+import numpy as np  # noqa: E402
 from PySide6.QtCore import (
     QEasingCurve,
     QEvent,

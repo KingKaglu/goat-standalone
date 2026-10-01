@@ -30,7 +30,9 @@ import threading
 import time
 from ctypes import wintypes
 
-ENGINE_NAMES = {"claude.exe"}
+# The engine, and (2026-10-01, RAM) GOAT's helper servers: a whisper-server
+# spawned the night before was still holding 325 MB long after its GOAT died.
+ENGINE_NAMES = {"claude.exe", "whisper-server.exe", "piper.exe"}
 # Every scan walks the whole process table through ctypes — ~1% of a core
 # at a 2s poll, all day, for an engine that only appears on (re)connect.
 # So: a slow background scan, and a fast burst right after kick(), which the
@@ -192,7 +194,8 @@ def _loop():
     while True:
         try:
             for pid in adopt_once(k):
-                print(f"[guard] engine pid {pid} bound to GOAT's life", flush=True)
+                print(f"[guard] pid {pid} (engine/helper) bound to GOAT's life",
+                      flush=True)
         except Exception:  # noqa: BLE001 — a guard must never take GOAT down
             pass
         fast = time.monotonic() < _fast_until

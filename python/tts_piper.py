@@ -5,8 +5,8 @@ import tempfile
 import time
 
 import numpy as np
-from scipy.io import wavfile
-from scipy.signal import resample_poly
+# scipy is never loaded (2026-10-01, RAM): dsp.py has the same math.
+import dsp
 
 from goat_paths import GOAT_ROOT
 
@@ -28,7 +28,7 @@ def synth_to_16k(text: str, target_rate: int = 16000) -> np.ndarray:
             capture_output=True,
             creationflags=flags,
         )
-        rate, data = wavfile.read(wav_path)
+        rate, data = dsp.read_wav(wav_path)
     finally:
         os.unlink(wav_path)
 
@@ -41,13 +41,13 @@ def synth_to_16k(text: str, target_rate: int = 16000) -> np.ndarray:
 
     if rate != target_rate:
         g = np.gcd(rate, target_rate)
-        data = resample_poly(data, target_rate // g, rate // g).astype(np.float32)
+        data = dsp.resample_poly(data, target_rate // g, rate // g).astype(np.float32)
 
     return data
 
 
 def _load_wav_16k(wav_path: str, target_rate: int) -> np.ndarray:
-    rate, data = wavfile.read(wav_path)
+    rate, data = dsp.read_wav(wav_path)
     if data.dtype == np.int16:
         data = data.astype(np.float32) / 32768.0
     else:
@@ -56,7 +56,7 @@ def _load_wav_16k(wav_path: str, target_rate: int) -> np.ndarray:
         data = data[:, 0]
     if rate != target_rate:
         g = np.gcd(rate, target_rate)
-        data = resample_poly(data, target_rate // g, rate // g).astype(np.float32)
+        data = dsp.resample_poly(data, target_rate // g, rate // g).astype(np.float32)
     return data
 
 

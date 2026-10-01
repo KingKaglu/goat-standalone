@@ -32,7 +32,7 @@ import time
 
 import httpx
 import numpy as np
-from scipy.io import wavfile
+import dsp
 
 import stt_whisper  # shares FIXES_FILE + _apply_fixes so both ears learn together
 from goat_paths import GOAT_ROOT
@@ -54,7 +54,7 @@ def _debug_log(audio, sample_rate, text, note):
         os.makedirs(DEBUG_DIR, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
-        wavfile.write(os.path.join(DEBUG_DIR, stamp + ".wav"), sample_rate, pcm)
+        dsp.write_wav16(os.path.join(DEBUG_DIR, stamp + ".wav"), sample_rate, pcm)
         wavs = sorted(f for f in os.listdir(DEBUG_DIR) if f.endswith(".wav"))
         for old in wavs[:-20]:
             os.remove(os.path.join(DEBUG_DIR, old))
@@ -209,7 +209,7 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000,
         return ""
     buf = io.BytesIO()
     pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
-    wavfile.write(buf, sample_rate, pcm)
+    dsp.write_wav16(buf, sample_rate, pcm)
     wav = buf.getvalue()
 
     engine, text, heard = "scribe", None, ""

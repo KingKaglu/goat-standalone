@@ -21,7 +21,8 @@ import io
 import edge_tts
 import numpy as np
 import soundfile as sf
-from scipy.signal import lfilter, resample_poly
+# scipy is never loaded (2026-10-01, RAM): dsp.py has the same math.
+import dsp
 
 # Who GOAT sounds like: a voice per language, the delivery edge-tts applies
 # at the source, and an optional post-processing colour.
@@ -120,9 +121,9 @@ def _ultron(x: np.ndarray, rate: int) -> np.ndarray:
     # isn't a chest. Mixed in part-strength so consonants survive it.
     c = max(1, int(rate * 0.0042))
     if n > c:
-        a = np.zeros(c + 1, dtype=np.float32)
-        a[0], a[c] = 1.0, -0.33
-        y = 0.75 * y + 0.25 * lfilter([1.0], a, y).astype(np.float32)
+        # Was lfilter([1], a) with a float32 a[c] = -0.33: same gain, exact.
+        g = float(np.float32(0.33))
+        y = 0.75 * y + 0.25 * dsp.comb(y, c, g).astype(np.float32)
 
     # Drive, then a small dead-room tail.
     y = np.tanh(y * 1.5).astype(np.float32) / np.float32(np.tanh(1.5))
@@ -360,5 +361,5 @@ def synth(text: str, target_rate: int = 16000, timeout_s: float = 10.0) -> np.nd
         data = data[:, 0]
     if rate != target_rate:
         g = int(np.gcd(int(rate), int(target_rate)))
-        data = resample_poly(data, target_rate // g, rate // g).astype(np.float32)
+        data = dsp.resample_poly(data, target_rate // g, rate // g).astype(np.float32)
     return color(data, target_rate)

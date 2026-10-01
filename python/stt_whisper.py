@@ -27,13 +27,19 @@ import time
 
 import httpx
 import numpy as np
-from scipy.io import wavfile
+import dsp
 
 from goat_paths import GOAT_ROOT
 
 WHISPER_SERVER_BIN = os.path.join(GOAT_ROOT, "stt", "bin", "Release", "whisper-server.exe")
 WHISPER_MODEL_SMALL = os.path.join(GOAT_ROOT, "stt", "ggml-small.en.bin")
 WHISPER_MODEL_BASE = os.path.join(GOAT_ROOT, "stt", "ggml-base.en.bin")
+# 8-bit quantized base.en (2026-10-01, RAM): measured on his own recordings
+# with GOAT's real server args — same word errors (17/92 vs cloud Scribe),
+# ~18% faster, 66 MB less resident (359 -> 293 MB). Used when present.
+WHISPER_MODEL_BASE_Q8 = os.path.join(GOAT_ROOT, "stt", "ggml-base.en-q8_0.bin")
+if os.path.exists(WHISPER_MODEL_BASE_Q8):
+    WHISPER_MODEL_BASE = WHISPER_MODEL_BASE_Q8
 # Multilingual models — needed for Georgian. Measured 2026-07-10: base
 # multilingual transcribes Georgian audio into LATIN transliteration
 # (useless); small multilingual is required for Georgian script. base kept
@@ -182,7 +188,7 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000):
         return ""
     buf = io.BytesIO()
     pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
-    wavfile.write(buf, sample_rate, pcm)
+    dsp.write_wav16(buf, sample_rate, pcm)
     for attempt in (1, 2):
         try:
             r = httpx.post(

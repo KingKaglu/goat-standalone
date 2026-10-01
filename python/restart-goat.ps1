@@ -48,7 +48,17 @@ function KillOrphanEngines {
         Stop-Process -Id $o.ProcessId -Force -ErrorAction SilentlyContinue
         Log "killed orphaned engine pid $($o.ProcessId)"
     }
-    if ($orph) { Start-Sleep -Milliseconds 500 }
+    # 2026-10-01 (RAM): GOAT's helper servers outlived it too - a
+    # whisper-server from the night before (325 MB) was still serving, with
+    # whatever model and args that older code chose. The new instance starts
+    # its own.
+    $helpers = Get-CimInstance Win32_Process -Filter "Name='whisper-server.exe' OR Name='piper.exe'" |
+        Where-Object { $_.CommandLine -match 'goat-standalone' }
+    foreach ($h in $helpers) {
+        Stop-Process -Id $h.ProcessId -Force -ErrorAction SilentlyContinue
+        Log "stopped leftover $($h.Name) pid $($h.ProcessId)"
+    }
+    if ($orph -or $helpers) { Start-Sleep -Milliseconds 500 }
 }
 
 # goat-crash.log gets a session header in the first instant of ui_qt main().
