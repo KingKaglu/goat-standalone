@@ -87,12 +87,30 @@ def test_alt_f4_refused_on_self():
     def other(hwnd, pid_ref):
         pid_ref._obj.value = 4
         return 1
+    # The close guard looks at the REAL foreground window (when this runs
+    # from a terminal, that's a terminal). Pin its verdict per case.
+    import close_guard
+    real_reason = close_guard.window_reason
     screen_hands._user32.GetWindowThreadProcessId = other
     try:
+        close_guard.window_reason = lambda hwnd, title="": None
         screen_hands._refuse_closing_self("alt+f4")  # another app: allowed
+        close_guard.window_reason = lambda hwnd, title="": "Windows Terminal — a terminal"
+        close_guard.clear()
+        try:
+            screen_hands._refuse_closing_self("alt+f4")
+        except ValueError as e:
+            assert "ask" in str(e).lower() and close_guard.pending() is not None
+        else:
+            raise AssertionError("alt+f4 on a protected window was not refused")
+        close_guard.grant()
+        screen_hands._refuse_closing_self("alt+f4")  # after his yes: allowed
+        close_guard._grant_until = 0.0
     finally:
         screen_hands._user32.GetWindowThreadProcessId = real
-    print("ok  alt+f4 refused on GOAT's own window, allowed on others")
+        close_guard.window_reason = real_reason
+    print("ok  alt+f4 refused on GOAT's own window and on a live session "
+          "until he says yes, allowed on others")
 
 
 if __name__ == "__main__":

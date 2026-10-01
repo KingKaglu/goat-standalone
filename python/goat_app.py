@@ -110,6 +110,20 @@ DEFAULT_HARD = "opus 5.5"
 # Applied on the WORK client only — the talk lane is latency-bound and stays
 # at "low" (a spoken answer that thinks for 20s is a broken answer).
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+# Per-turn routing (2026-10-01, measured — see GoatApp._turn_effort): talk
+# and questions run at QUICK_EFFORT, work orders at his dial. GOAT_EFFORT_
+# ROUTE=off pins every turn to the dial again.
+EFFORT_ROUTING = os.environ.get("GOAT_EFFORT_ROUTE", "on").strip().lower() \
+    not in ("off", "0", "false", "no")
+QUICK_EFFORT = os.environ.get("GOAT_QUICK_EFFORT", "low").strip().lower()
+if QUICK_EFFORT not in EFFORT_LEVELS:
+    QUICK_EFFORT = "low"
+QUICK_MAX_WORDS = 40   # a long message is rarely a quick question
+# Asking for depth is asking for the dial.
+DEEP_RE = re.compile(
+    r"\b(?:think|carefully|in\s+depth|deep(?:ly)?|detailed|analy[sz]\w*|plan|"
+    r"step\s+by\s+step|compare|debug|investigate|figure\s+out|prove|"
+    r"დაფიქრდი|დეტალურად|ღრმად|გააანალიზ\w*|შეადარე)\b", re.IGNORECASE)
 DEFAULT_EFFORT = os.environ.get("GOAT_EFFORT", "max").strip().lower()
 if DEFAULT_EFFORT not in EFFORT_LEVELS:
     DEFAULT_EFFORT = "max"
@@ -440,9 +454,12 @@ Context economy (protects Giorgi's Claude usage limits):
   decisions, unfinished work). Read first, then update — lazy load, always.
 - Keep replies lean. Never repeat what was already said.
 
-DIAGNOSTICS (2026-07-10, Stark loop): when Giorgi asks how you're doing,
-whether you're okay, or for a status/diagnostic, run
+DIAGNOSTICS (2026-07-10, Stark loop): when Giorgi asks for a status check, a
+diagnostic, or whether you're working / okay in a SYSTEM sense, run
   python C:/Users/user/goat-standalone/python/goat_doctor.py
+A casual "how are you" / "how's it going" is small talk (his rule,
+2026-09-27): answer like a friend, no doctor run, no tools — it cost 6-30s a
+time (measured 2026-10-01).
 and speak ONE line: "all systems nominal" or what's broken and the fix.
 Details go on screen only when something failed.
 
@@ -2084,8 +2101,56 @@ class GoatApp:
             # is told per dispatch. Without this he gets Georgian in the
             # middle and English on the left in the same breath.
             send = KA_WORK_NOTE + send
+        await self._route_effort(text, hard)
         self._tl_prep = time.monotonic() - self._tl_t0
         await self.client.query(send)
+
+    # ---- effort routing (2026-10-01, his order: "make GOAT answer fast …
+    # route simple turns low and hard ones high") ----
+    # Measured on a fork of his live session (42k context, same persona and
+    # tools): conversational replies reached their first spoken text in
+    # ~2.8s at low, ~3.8s at medium, ~4.7s at high; short factual and
+    # trick questions were ~1-2s at every level, and every checkable answer
+    # was right at every level. So talk and questions go LOW; work orders
+    # keep his chosen depth. `/effort X` switches the live session in 0.1s
+    # with no reconnect, but it re-caches the conversation, so it is sent
+    # only when the kind of turn changes, never every turn.
+    def _turn_effort(self, text: str, hard: bool) -> str:
+        ceiling = self.effort
+        if not EFFORT_ROUTING or hard:
+            return ceiling
+        t = text or ""
+        if (WORK_RE.search(t) or DEEP_RE.search(t)
+                or len(t.split()) > QUICK_MAX_WORDS):
+            return ceiling
+        # Never ABOVE his dial: if he set "low", quick stays low.
+        if EFFORT_LEVELS.index(QUICK_EFFORT) > EFFORT_LEVELS.index(ceiling):
+            return ceiling
+        return QUICK_EFFORT
+
+    async def _route_effort(self, text: str, hard: bool):
+        if self._warming or self._compacting or self._cut:
+            return      # another result is due first — it would be mistaken
+                        # for the command's echo
+        if self.client is not getattr(self, "_effort_client", None):
+            # A fresh client (boot, reopen, rotation, new chat) starts at
+            # the effort it was built with.
+            self._effort_client = self.client
+            self._live_effort = (getattr(self._work_options, "effort", None)
+                                 or self.effort)
+        want = self._turn_effort(text, hard)
+        if want == self._live_effort:
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self._effort_cmd = fut
+        try:
+            await self.client.query(f"/effort {want}")
+            await asyncio.wait_for(fut, 3.0)
+            self._live_effort = want
+        except Exception as e:  # noqa: BLE001 — a missed switch costs speed,
+            print(f"[effort] switch to {want} failed: {e!r}")  # never the turn
+        finally:
+            self._effort_cmd = None
 
     # ---- turn timeline (2026-10-01: "is there anything we can do to improve
     # GOAT's overall performance?") ----
@@ -2139,7 +2204,8 @@ class GoatApp:
         if len(self._tl_steps) > 8:
             firsts += "/…"
         slow = sorted(self._tl_tools, key=lambda x: -x[1])[:4]
-        line = (f"[turn] {total:.1f}s @{self.effort} = prep {self._tl_prep:.2f}s"
+        eff = getattr(self, "_live_effort", None) or self.effort
+        line = (f"[turn] {total:.1f}s @{eff} = prep {self._tl_prep:.2f}s"
                 f" + wait {wait:.1f}s"
                 f" + model {model:.1f}s in {len(self._tl_steps)} step(s)"
                 f" (first token {firsts or '-'}s) + tools {tools:.1f}s")
@@ -2190,6 +2256,15 @@ class GoatApp:
         Claude usage-out or error the work turn ends gracefully; Gemini keeps
         talking in the middle."""
         async for msg in self.client.receive_messages():
+            fut = getattr(self, "_effort_cmd", None)
+            if fut is not None and not fut.done():
+                # The local "/effort X" command's own echo ("Set effort level
+                # to low…") — never spoken, never a turn end.
+                if isinstance(msg, ResultMessage):
+                    fut.set_result(True)
+                    continue
+                if isinstance(msg, AssistantMessage):
+                    continue
             if isinstance(msg, StreamEvent):
                 ev = msg.event
                 if getattr(self, "_tl_t0", None) is not None:

@@ -1526,3 +1526,98 @@ Peak under ~0.15 means the mic, not the model. Check the endpoint level
 machine also exposes an ASUS "AI Noise-cancelling Input" virtual mic and
 several Bluetooth headset mics — GOAT follows the WASAPI default input, so a
 device switch moves the level too.
+
+## Sub-500ms voice — the streaming ear (2026-09-15 night, his goal: "use
+## streaming architectures ... target sub-500ms latency")
+
+Written 02:27-02:44, left uncommitted and undocumented when the session ended.
+Verified and shipped the evening of 2026-09-15; this section is the record.
+
+The budget he actually feels is *last sound he makes -> first sound GOAT
+makes*. Before this wave the ear owned most of it, and the ear was a batch
+upload: wait for the whole utterance, upload the whole WAV, wait for the whole
+answer. Measured on his own captured audio:
+
+    batch ElevenLabs scribe    1089-2594 ms   after he stopped speaking
+    local whisper server       1745-3122 ms   (and cannot do Georgian)
+    realtime, language pinned   134- 554 ms   same audio, same key
+
+All of that batch time is pure overlap waste — the first five seconds of a
+six-second sentence could have been transcribed while he was still saying the
+sixth.
+
+### What was built
+- **`stt_realtime.py`** — Scribe v2 Realtime over a WebSocket, fed every
+  captured block as it arrives (preroll first, so his first word is in).
+  `Pair` runs one pinned ear per language for bilingual "auto" and lets the
+  ALPHABET say which one answered — the same rule the rest of the app already
+  uses for turn language. Any failure returns None and the caller falls back to
+  the batch ear with the audio it already holds: worst case is today's
+  latency, never a lost sentence. `GOAT_STT_REALTIME=off` is the kill switch.
+- **Adaptive endpointing** (`audio_io`) — the 700ms hangover exists to protect
+  a THOUGHT (he pauses mid-sentence working out what he wants, and cutting him
+  off there is worse than any latency). A short utterance is not a thought, it
+  is a command, so under `UTT_SHORT_VOICED_MS` (2000ms voiced) the hangover is
+  `UTT_SILENCE_STOP_SHORT_MS` = 480ms. ~220ms off every command.
+- **Soft commit** (`UTT_SOFT_COMMIT_MS` = 200ms) — 200ms into the silence the
+  ear is told "he may be finished, start wrapping up", so finalising overlaps
+  the hangover instead of starting after it. Re-armed if he resumes speaking,
+  so a breath does not truncate the sentence.
+- **Latency ledger** (`GoatApp._lat_*`) — every voice turn prints
+  `endpoint + ear + think/voice = total`, back-dated by the hangover that had
+  already elapsed (counting from the callback would flatter every number by
+  exactly the wait he sat through), marked / . / ! at 500ms / 1s. The total
+  also goes to the UI. A target nobody measures is a wish.
+- **First breath on a clause** — `FIRST_CLAUSE_RE` + `GOAT_FIRST_CLAUSE_MIN`
+  (28 chars): the FIRST fragment of a reply goes to TTS at a comma, not a full
+  stop; later sentences are never split that way. A fragment under the minimum
+  waits, because "Yes," alone sounds like a glitch.
+- **Backchannel** — one short listening noise after `GOAT_BACKCHANNEL_AFTER`
+  (0.9s) when the answer itself is slow. Once per turn, never over a reply that
+  already started, dropped if the turn was cancelled, pre-synthesised in the
+  prewarm list so it costs no network. `GOAT_BACKCHANNEL=off`.
+
+### Measured live (his own voice, session 2026-09-15 20:52)
+    [stt-rt] committed in 194ms / 198ms / 199ms / 240ms
+    endpoint 480ms + ear(streaming) 198ms + think/voice 2318ms = 2997ms  (first turn, cold)
+    endpoint 480ms + ear(streaming) 199ms + think/voice  905ms = 1584ms  (warm)
+
+So the ear is done: it is no longer the expensive stage. **What is left is the
+talking brain's first token plus the first TTS clip** — ~900ms warm, ~2.3s on
+the first turn of a session. Reflex commands, which skip both, are inside the
+budget already. Next candidates, in order of expected win, none of them done:
+1. Connection reuse in `local_llm` — it opens a fresh TLS connection per turn
+   through urllib; a kept-alive connection is worth roughly a handshake.
+2. Warm the talking brain and the TTS socket at boot so turn one is not the
+   slow one.
+3. Speculative dispatch: send the soft-committed partial to the talking brain
+   during the hangover and discard it if he resumes. Costs tokens on a
+   false ending, so measure the win before trusting it.
+
+### Traps hit
+- **Realtime must be language-PINNED.** On auto-detect it heard his Georgian as
+  Russian and returned Cyrillic transliteration ("Ааа, мотхидэн..."). Pinned to
+  `kat` the same audio came back in proper Mkhedruli. This is the OPPOSITE of
+  the batch endpoint, where auto-detect is the accurate mode (see stt_gladia) —
+  the two ears are configured differently on purpose, do not "unify" them.
+- **GOAT's VAD owns the turn boundary**, not the server's: with
+  `commit_strategy=vad` the server split one sentence into several committed
+  fragments on its own schedule. `manual` puts the boundary where the rest of
+  the app already believes the utterance ended.
+- Piper's API is `synth_to_16k`, not `synth` — the first benchmark harness
+  called the wrong name and measured nothing.
+- Wrapping stdout in a UTF-8 writer inside a bench script closed the underlying
+  file and every later print raised.
+
+### Tests (all green, 2026-09-15 evening, `py -3.13`)
+    test_voice_latency.py     25 passed   endpointing, soft commit, ledger, backchannel, barge-in
+    test_reflex.py            71 passed   incl. match cost 380us/input
+    test_engine_router.py    106 passed
+    test_audio_resilience.py / test_statusword.py  all passed
+
+### Crash watch
+`goat-crash.log` holds the 02:20:59 access violation (Qt event loop, main
+thread, `<no Python frame>` in the faulting thread) that the faulthandler pass
+was added to catch. The two sessions run this evening (20:50:31, 20:52:46)
+recorded no fault — the page cap and the stale-wrapper nulling stand as the
+best available lead, unconfirmed until it either recurs or does not.

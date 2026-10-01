@@ -24,6 +24,9 @@ import numpy as np
 os.environ.setdefault("GOAT_REFLEX", "off")
 
 import goat_app as g
+# Per-turn effort routing sends "/effort X" and waits for the CLI's echo;
+# the mock clients here don't echo. Routing has its own tests at the end.
+g.EFFORT_ROUTING = False
 import reflex as _reflex_mod  # the real Reflex class, kept reachable while
                               # g.reflex is swapped for a stub
 from claude_agent_sdk import ResultMessage, StreamEvent
@@ -948,6 +951,56 @@ async def main():
     blocked = await g._close_guard_hook(
         {"tool_name": "PowerShell", "tool_input": {"command": "echo hi"}}, "t", None)
     check("close guard hook lets ordinary commands through", blocked == {})
+
+    # Effort routing (2026-10-01, measured: talk 2.8s at low vs 4.7s at high
+    # to first text on his real session, every checkable answer right).
+    g.EFFORT_ROUTING = True
+    e = make_app(MockClient())
+    e.effort = "high"
+    te = e._turn_effort
+    check("routing: a question goes low",
+          te("What's the capital of Australia?", False) == "low")
+    check("routing: small talk goes low", te("Hey GOAT, how are you, man?", False) == "low")
+    check("routing: a work order keeps his dial",
+          te("Delete all the League of Legends images.", False) == "high")
+    check("routing: asking for depth keeps his dial",
+          te("Think carefully: should I upgrade my RAM?", False) == "high")
+    check("routing: a long message keeps his dial", te("word " * 60, False) == "high")
+    check("routing: a hard order keeps his dial", te("what's up", True) == "high")
+    e.effort = "low"
+    check("routing: never above his dial", te("Fix the build", False) == "low")
+    e.effort = "high"
+
+    class EchoClient(MockClient):
+        """Answers "/effort X" the way the CLI does: a local result."""
+        def __init__(self, app):
+            super().__init__()
+            self.app = app
+
+        async def query(self, text, **kw):
+            self.queries.append(text)
+            if text.startswith("/effort"):
+                asyncio.get_running_loop().call_soon(
+                    self.app._effort_cmd.set_result, True)
+
+    e.client = EchoClient(e)
+    e._work_options = type("O", (), {"effort": "high"})()
+    await e._route_effort("What time is it in Tokyo?", False)
+    check("routing: first quick turn switches the session to low",
+          e.client.queries == ["/effort low"] and e._live_effort == "low",
+          e.client.queries)
+    await e._route_effort("And in London?", False)
+    check("routing: the next quick turn sends nothing (no re-cache)",
+          e.client.queries == ["/effort low"], e.client.queries)
+    await e._route_effort("Fix the failing test in reflex.py", False)
+    check("routing: a work order switches back to his dial",
+          e.client.queries[-1] == "/effort high" and e._live_effort == "high",
+          e.client.queries)
+    e.client = EchoClient(e)       # reconnect: the new session starts at its build effort
+    await e._route_effort("Run the tests again", False)
+    check("routing: a fresh client is assumed at its build effort",
+          e.client.queries == [] and e._live_effort == "high", e.client.queries)
+    g.EFFORT_ROUTING = False
 
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
