@@ -3,6 +3,30 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## RAM cut (2026-10-01 late, his order: "cut GOAT's RAM footprint … nothing
+## may slow GOAT down"; laptop 8 GB at 86-88% used)
+- numpy + scipy each carry OpenBLAS, which reserves a buffer per CPU thread
+  at import: ~760 MB COMMITTED in the core. OPENBLAS_NUM_THREADS=1 is set at
+  the top of ui_qt before numpy (GOAT does no big matrix math).
+- scipy is no longer imported anywhere in GOAT: dsp.py = scipy's exact
+  resample_poly recipe (polyphase; 3e-7 max error, as fast or faster),
+  the Ultron comb (lfilter equivalent, 3x faster, voice bit-identical), WAV
+  read/write via soundfile/wave (byte-identical). test_dsp.py proves it
+  against scipy. Engine import 3.3s -> 2.1s as a bonus.
+- whisper: ggml-base.en-q8_0 (stt/, gitignored, falls back to base.en if
+  missing). His 11 English debug recordings with GOAT's real args: same
+  word errors 17/92, ~18% faster, 359 -> 293 MB resident after use.
+  q5_1 was smaller but not faster -> rejected. -bs 1 rejected earlier.
+- whisper-server and piper are bound to GOAT's life; restart-goat.ps1 also
+  stops leftovers (one from the night before held 325 MB with old args).
+  TRAP: one shared kill-on-close job broke engine adoption (piper first,
+  then claude.exe -> ERROR_ACCESS_DENIED, reproduced). One job per process.
+- Left alone on purpose: piper (offline fallback voice, ~90 MB; lazy start
+  would delay the first word when Edge is down), the engine (Bun runtime).
+- Live, committed memory: core 1109 -> 303 MB, whisper 792 -> 727,
+  GOAT total ~2.46 GB -> ~1.57 GB. In RAM: core 324 -> 265 MB (fresh,
+  like for like), whisper 359 -> 293 MB after use.
+
 ## Fast answers + close guard (2026-10-01 evening, his order: "make GOAT
 ## answer fast … route simple turns low and hard ones high" and "make it
 ## confirm before closing any window that has a running session")
