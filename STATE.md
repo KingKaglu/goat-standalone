@@ -3,6 +3,35 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Full audit pass (2026-10-01 night, his order: "find issues in the GOAT
+## app and fix all — performance, visual, technical")
+- New chat no longer restarts the app: GoatApp.new_chat() rotates in place
+  (cut turn, drop session, reopen) with a 4-exchange reference recap; UI
+  clears the page; {"new_chat": true} marker in transcript.jsonl so the boot
+  page starts after it. Cause of his "the memory is cleared up": old lines
+  painted on screen beside a brain that had none of them.
+- Memory page: Qt Markdown ate "<key>"/"<name>" as HTML -> "<" escaped.
+  Chat lines are Qt.PlainText (a reply explaining HTML used to vanish).
+- FlowLayout: heightForWidth at the real width, even rows for grids, hidden
+  items take no gap, wrap test fixed (rect.right() is width-1). Tools and
+  Skills use CardGrid(min_w=300/280). Composer chips go compact (icons,
+  "high", slim padding, File hidden) when one row won't fit — at 150% on a
+  1536px screen they wrapped to three rows. TRAP: never name a dynamic
+  property "icon" on a QPushButton — it IS the icon property.
+- Boot: ui_qt no longer imports tts_edge at the top (scipy.signal +
+  edge_tts, ~2s in front of the first paint): import ui_qt 2.55s -> 0.47s.
+  qt.qpa.fonts warnings (8514oem/Fixedsys) silenced via QT_LOGGING_RULES.
+- A transcript ending mid-word/trailing off ("This is-") waits 1.6s for
+  the rest and joins it (DANGLING_RE, HOLD_DANGLING_S).
+- [turn] line has "wait" (query -> first model step); non-routine CLI
+  system messages log as [engine] <subtype>. A live turn had 22.5s of
+  unexplained time — the next one will say where.
+- Stale tests fixed: test_voice_latency used "Mm-hm." (HUM_RE strips it),
+  test_audio_resilience lacked the loopback tap. test_aec is a MANUAL
+  harness that plays speech out loud — not part of the suite.
+- Checked, left alone: whisper -bs 1 only ~10% faster than -bs 5; private
+  bytes 1.09GB after 3.4h was FLAT at idle (a one-off peak, not a leak).
+
 ## Overall performance pass (2026-10-01, his question: "is there anything we
 ## can do to improve GOAT's overall performance?" then "fix these step by step")
 - Reflex gaps from his live log (each cost 3-4s in the brain): "could you
