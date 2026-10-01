@@ -483,6 +483,7 @@ QPushButton#chip {{
   background: {rgba(t['card'], 200)}; border: 1px solid {line}; color: {t['paper']};
   border-radius: {s(14)}px; padding: {s(7)}px {s(14)}px; font-size: {s(13)}px;
 }}
+QPushButton#chip[slim="true"] {{ padding: {s(7)}px {s(9)}px; min-width: 0px; }}
 QPushButton#chip:hover {{ border: 1px solid {rgba(acc, 150)}; }}
 QPushButton#chip[on="true"] {{ border: 1px solid {acc}; background: {tint_hi}; }}
 
@@ -1601,6 +1602,8 @@ class FlowLayout(QLayout):
         # is the height it actually needs.
         rows, row, x = [], [], rect.x()
         for it in self._items:
+            if it.isEmpty():
+                continue      # a hidden widget takes no room and no gap
             hint = it.sizeHint()
             w = hint.width()
             h = it.heightForWidth(w) if it.hasHeightForWidth() else hint.height()
@@ -3423,7 +3426,49 @@ class GoatWindow(QWidget):
                   self.chip_screen, self.chip_file, self.chip_lang):
             chips.addWidget(c)
         lay.addLayout(chips)
+        # Labels the row can drop to icons when it would otherwise wrap.
+        self._chip_labels = {c: c.text() for c in (self.chip_work, self.chip_web,
+                                                   self.chip_screen, self.chip_file)}
+        self._chips_all = (self.chip_model, self.chip_effort, self.chip_work,
+                           self.chip_web, self.chip_screen, self.chip_file,
+                           self.chip_lang)
         return box
+
+    def _fit_chips(self, avail: int):
+        """One row of chips, always. At 150% on a 1536px screen the row
+        wrapped to THREE lines and the chat kept room for one message
+        (2026-10-01); when the labels don't fit, the plain ones go icon-only
+        — their tooltips still name them."""
+        if not hasattr(self, "_chip_labels"):
+            return
+        self._chips_avail = avail
+        eff = self.cfg.get("effort", "high")
+        # Full model/language labels, as _refresh_side last wrote them.
+        for c, full in getattr(self, "_chips_full", {}).items():
+            c.setText(full)
+
+        def dress(compact: bool):
+            # ("slim", not "icon": that name is QPushButton's own icon
+            # property, and setting it clobbered the icon.)
+            self._chips_compact = compact
+            for c, label in self._chip_labels.items():
+                c.setText("" if compact else label)
+            for c in self._chips_all:
+                c.setProperty("slim", "true" if compact else "false")
+                repolish(c)
+            # The paperclip in the message box already sends a file.
+            self.chip_file.setVisible(not compact)
+            self.chip_effort.setText(f"  {eff}  ▾" if compact
+                                     else f"  Thinking: {eff}  ▾")
+            if compact:
+                for c in (self.chip_model, self.chip_effort, self.chip_lang):
+                    c.setText(" " + " ".join(c.text().split()))
+
+        dress(False)
+        need = sum(c.sizeHint().width() for c in self._chips_all) \
+            + 8 * (len(self._chips_all) - 1)
+        if need > avail:
+            dress(True)
 
     def _chip(self, text: str, cb, tip: str) -> QPushButton:
         b = QPushButton(text)
@@ -3830,10 +3875,15 @@ class GoatWindow(QWidget):
                                       if self._claude_reset else "")]
         self.model_sub.setText(" · ".join(bits))
         self.chip_model.setText("  " + (name.title() if name.islower() else name) + "  ▾")
-        self.chip_effort.setText(f"  Thinking: {eff}  ▾")
+        self.chip_effort.setText(f"  {eff}  ▾" if getattr(self, "_chips_compact", False)
+                                 else f"  Thinking: {eff}  ▾")
         lang = next((l for l, c in LANGS.items() if c == self.cfg.get("lang")), "english")
         self.chip_lang.setText("  " + {"english": "EN", "ქართული": "KA",
                                        "ორივე": "EN + KA"}.get(lang, lang) + "  ▾")
+        self._chips_full = {self.chip_model: self.chip_model.text(),
+                            self.chip_lang: self.chip_lang.text()}
+        if hasattr(self, "_chips_avail"):
+            self._fit_chips(self._chips_avail)   # labels just reset to full
         muted = bool(self.goat and self.goat.mic_muted)
         states = {
             "memory": (os.path.exists(MEMORY_MD), "On", "Off"),
@@ -4136,6 +4186,8 @@ class GoatWindow(QWidget):
         self._hero_gap.setFixedHeight(round(max(28, min(96, self.height() * 0.09)) * k))
         self._titlebar_h = round(TITLEBAR_H * k)
         self._fit_side()
+        self._fit_chips(self.width() - rail_w - side_w
+                        - round((CENTER_MARGIN[0] + CENTER_MARGIN[2]) * k))
         self._apply_measure()
 
     def _fit_side(self):
