@@ -142,6 +142,10 @@ STICKY_FULL_CTX = 25_000   # past this, stop bouncing back to the fast model
 ROTATE_CTX = 60_000        # past this, compact (or rotate) at turn end
 HANDOFF_KEEP = 8           # recent exchanges carried across a rotation
 NEW_CHAT_RECAP = 4         # ...and across a New chat, as reference only
+# A transcript that ends mid-word or trails off ("This is-", "so I was…")
+# waits this long for the rest of the sentence before it becomes a turn.
+DANGLING_RE = re.compile(r"(?:\w-|[–—]|\.\.\.|…)\s*$")
+HOLD_DANGLING_S = 1.6
 # CLI system messages that happen on every boot/turn — not worth a log line.
 ENGINE_ROUTINE = {"commands_changed", "requesting"}
 # Preferred trim: the CLI's own /compact — a model-written summary that keeps
@@ -1750,7 +1754,25 @@ class GoatApp:
             self.emit("status", "heard — say my name to wake me")
             return
         self._asleep = False
+        held = getattr(self, "_held", None)
+        if held is not None:
+            # The rest of a sentence the ear cut off: one turn, not two.
+            self._held = None
+            text = held.rstrip(" -–—.…") + " " + text
+        if DANGLING_RE.search(text) and not self.busy:
+            # "This is-" (live 2026-10-01): the ear committed him mid-sentence
+            # and the brain answered a fragment. A transcript that trails off
+            # waits HOLD_DANGLING_S for the rest before it becomes a turn.
+            self._held = text
+            asyncio.create_task(self._release_held(text))
+            return
         await self._talk(text)
+
+    async def _release_held(self, text: str):
+        await asyncio.sleep(HOLD_DANGLING_S)
+        if getattr(self, "_held", None) == text:   # nothing came after it
+            self._held = None
+            await self._talk(text)
 
     async def _talk(self, text: str, echo: bool = True):
         """TALKING brain (middle lane): Gemini Flash out loud, zero Claude

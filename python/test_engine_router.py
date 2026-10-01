@@ -876,6 +876,40 @@ async def main():
           _clamped(9.0) == ui_qt.UI_SCALE_MAX
           and _clamped(0.1) == ui_qt.UI_SCALE_MIN and _clamped(1.5) == 1.5)
 
+    # Dangling transcript (2026-10-01, "This is-" answered as a whole turn):
+    # held briefly, joined with what follows, or released alone.
+    talked = []
+    a = make_app(MockClient())
+    a.wake_enabled = False
+    a._asleep = False
+    a._stt_warned = False
+    a._mishearing = lambda t: False
+    a.audio = type("A", (), {"is_tts_playing": False})()
+
+    async def _talk(t, echo=True):
+        talked.append(t)
+    a._talk = _talk
+    old_hold = g.HOLD_DANGLING_S
+    g.HOLD_DANGLING_S = 0.15
+    await a._heard("This is-")
+    check("dangling: a cut-off transcript is held, not answered", talked == [])
+    await a._heard("the gallery I meant.")
+    check("dangling: the rest joins it into one turn",
+          talked == ["This is the gallery I meant."], talked)
+    await asyncio.sleep(0.3)
+    check("dangling: the held text is not answered a second time",
+          talked == ["This is the gallery I meant."], talked)
+    talked.clear()
+    await a._heard("So I was thinking…")
+    await asyncio.sleep(0.3)
+    check("dangling: with nothing after it, it is answered alone",
+          talked == ["So I was thinking…"], talked)
+    talked.clear()
+    await a._heard("Close the e-mail.")
+    check("dangling: a hyphen inside a word is not a cut-off",
+          talked == ["Close the e-mail."], talked)
+    g.HOLD_DANGLING_S = old_hold
+
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 
