@@ -260,6 +260,41 @@ def _window(action: str, target: str = "") -> str:
     return f"{action}d {what}"
 
 
+def _close_question(target: str, lang: str) -> "Reflex | None":
+    """A close aimed at a terminal, a Claude session or unsaved work asks
+    first (2026-10-01: "close this window" closed his live Claude Code
+    terminal). The window is pinned by handle NOW, so his "yes" closes the
+    one he was asked about, not whatever is in front by then."""
+    try:
+        import close_guard
+        if target:
+            import screen_hands
+            w = screen_hands._match(target)
+        else:
+            import fast_hands
+            w = fast_hands.target_window()
+        if not w:
+            return None
+        reason = close_guard.window_reason(w["hwnd"], w.get("title", ""))
+    except Exception:  # noqa: BLE001 — unsure means ask the brain, not close
+        return None
+    if not reason:
+        return None
+    hwnd = w["hwnd"]
+
+    def close_it(h=hwnd, why=reason):
+        ctypes.windll.user32.PostMessageW(h, 0x0010, 0, 0)   # WM_CLOSE
+        return f"closed {why.split(' — ')[0]}"
+
+    def hold(why=reason):
+        close_guard.ask(why, run=close_it)
+        return "asked first"
+
+    q = (f"ეს არის {reason}. მაინც დავხურო?" if lang == "ka"
+         else f"That's {reason}. Close it anyway?")
+    return Reflex("confirm", f"close? {reason}", hold, speak=q)
+
+
 def _has_window(target: str) -> bool:
     try:
         import screen_hands
@@ -983,11 +1018,16 @@ def match(text: str, lang: str = "en") -> Reflex | None:
         # "close the Zebra window" names "Zebra", not "the Zebra".
         target = re.sub(r"^(?:the|my|this|that)\s+", "", target,
                         flags=re.IGNORECASE)
-        if target and not _NOT_A_TARGET.match(target):
-            # Closing is the one that can hurt: resolve the window NOW, and if
-            # nothing by that name is open, a brain looks for it instead.
-            if act == "close" and not _has_window(target):
-                return None
+        named = target and not _NOT_A_TARGET.match(target)
+        # Closing is the one that can hurt: resolve the window NOW, and if
+        # nothing by that name is open, a brain looks for it instead.
+        if act == "close" and named and not _has_window(target):
+            return None
+        if act == "close":
+            ask = _close_question(target if named else "", lang)
+            if ask is not None:
+                return ask
+        if named:
             return Reflex("window", f"{act} {target}",
                           lambda x=act, n=target: _window(x, n))
         return Reflex("window", act, lambda x=act: _window(x))

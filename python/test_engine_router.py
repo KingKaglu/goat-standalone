@@ -910,6 +910,45 @@ async def main():
           talked == ["Close the e-mail."], talked)
     g.HOLD_DANGLING_S = old_hold
 
+    # Close guard answers (2026-10-01: his live terminal was closed on a
+    # vague "close this window"). Yes runs the held close; no leaves it.
+    cg = g.close_guard
+    b = make_app(MockClient())
+    b._mishearing = lambda t: False
+    ran, reflexed, worked = [], [], []
+
+    async def _rx(text, rx):
+        reflexed.append(rx.detail)
+        rx.run()
+    b._reflex = _rx
+
+    async def _w(text, hard=False, echo_you=False):
+        worked.append(text)
+    b._work = _w
+    cg.ask("Windows Terminal — a terminal with a running session",
+           run=lambda: ran.append("closed") or "closed")
+    await b._talk("Yes, close it.")
+    check("close guard: his yes runs the held close",
+          ran == ["closed"] and cg.pending() is None, (ran, reflexed))
+    cg.ask("Windows Terminal — a terminal with a running session",
+           run=lambda: ran.append("closed again") or "x")
+    await b._talk("No, don't.")
+    check("close guard: his no leaves it open and says so",
+          ran == ["closed"] and cg.pending() is None
+          and any("leaving it open" in s for s in b.tts.spoken), b.tts.spoken)
+    cg.ask("a terminal")   # the brain asked (hook blocked it): no run
+    await b._talk("yes")
+    check("close guard: yes to the brain's question opens the grant",
+          cg.granted() and worked == ["yes"], worked)
+    cg._grant_until = 0.0
+    cg.ask("a terminal")
+    await b._talk("what's the weather like?")
+    check("close guard: anything else drops the question",
+          cg.pending() is None and not cg.granted())
+    blocked = await g._close_guard_hook(
+        {"tool_name": "PowerShell", "tool_input": {"command": "echo hi"}}, "t", None)
+    check("close guard hook lets ordinary commands through", blocked == {})
+
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 

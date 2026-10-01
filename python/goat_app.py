@@ -23,6 +23,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    HookMatcher,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -30,6 +31,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
+import close_guard
 import local_hands
 import live_view
 import reflex
@@ -147,7 +149,8 @@ NEW_CHAT_RECAP = 4         # ...and across a New chat, as reference only
 DANGLING_RE = re.compile(r"(?:\w-|[–—]|\.\.\.|…)\s*$")
 HOLD_DANGLING_S = 1.6
 # CLI system messages that happen on every boot/turn — not worth a log line.
-ENGINE_ROUTINE = {"commands_changed", "requesting"}
+ENGINE_ROUTINE = {"commands_changed", "requesting",
+                  "thinking_tokens"}   # one per thinking delta — hundreds a turn
 # Preferred trim: the CLI's own /compact — a model-written summary that keeps
 # the SAME session (far richer than the 8-exchange handoff). Verified via
 # get_context_usage() afterwards; if it didn't take, fall back to rotation.
@@ -360,6 +363,12 @@ you cannot see the screen, and never fall back to the old PowerShell capture.
   whose effect is certain, verify ONCE at the end, not after every step; use
   a small region capture, not the whole screen. Tabs, keys, back/refresh,
   scroll and "click <name>" are reflexes now and usually never reach you.
+- CLOSING (2026-10-01: "close this window" made you close the terminal his
+  live Claude Code session ran in). A vague "close this" means ASK which one,
+  by name, before touching anything. Never close or kill a terminal, a Claude
+  session, or anything with unsaved work without his explicit yes — GOAT's
+  close guard blocks those commands anyway and tells you to ask. If he asks
+  "what are you closing?" mid-turn, stop and answer before acting.
 - Coordinates are real screen pixels. Screenshots carry a yellow grid whose
   labels are ALREADY real coordinates — read the number, use the number. The
   cyan crosshair is the mouse.
@@ -798,6 +807,28 @@ CLAUDE_LIMIT_RE = re.compile(
 CLAUDE_RESET_RE = re.compile(
     r"resets?\s+(?:at\s+|around\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
     re.IGNORECASE)
+
+
+async def _close_guard_hook(input_data, tool_use_id, context):
+    """PreToolUse on the brain's shells: a close/kill aimed at a window with
+    a running session or unsaved work is blocked until Giorgi says yes. The
+    SDK runs this even under bypassPermissions (verified 2026-10-01)."""
+    try:
+        cmd = str((input_data.get("tool_input") or {}).get("command") or "")
+        reason = await asyncio.to_thread(close_guard.check_command, cmd)
+    except Exception:  # noqa: BLE001 — a broken guard must not break tools
+        return {}
+    if not reason or close_guard.granted():
+        return {}
+    close_guard.ask(reason)
+    print(f"[close-guard] blocked: {reason}")
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": close_guard.block_message(reason)}}
+
+
+CLOSE_GUARD_HOOKS = {"PreToolUse": [HookMatcher(matcher="Bash|PowerShell",
+                                                hooks=[_close_guard_hook])]}
 
 
 def _new_client(options) -> ClaudeSDKClient:
@@ -1807,6 +1838,28 @@ class GoatApp:
             self.emit("delta", "")
             self.tts.say("Stopped." if self.turn_lang != "ka" else "შევჩერდი.")
             return
+        # His answer to "close that?" (close_guard). Yes runs the reflex's
+        # held close at once, or opens the grant for the brain's retry; no
+        # drops it; anything else drops the question and is a normal turn.
+        asked = close_guard.pending()
+        if asked is not None:
+            if close_guard.YES_RE.match(text):
+                if asked["run"] is not None:
+                    close_guard.clear()
+                    await self._reflex(text, reflex.Reflex(
+                        "window", "close (he said yes)", asked["run"]))
+                    return
+                close_guard.grant()
+            elif close_guard.NO_RE.match(text):
+                close_guard.clear()
+                self.tts.cancel()
+                self.tts.mark_reply()
+                self.emit("delta", "")
+                self.tts.say("Okay, leaving it open." if self.turn_lang != "ka"
+                             else "კარგი, არ დავხურავ.")
+                return
+            else:
+                close_guard.clear()
         # REFLEX LANE (2026-09-15, his complaint: "opening a file or Google
         # takes long — I want it to feel instant"). A device command that can
         # be recognised deterministically never touches a model: match is a
@@ -2561,6 +2614,9 @@ class GoatApp:
             # after the one-brain switch (2026-09-23: "Fatal error in message
             # reader ... exceeded maximum buffer size of 1048576 bytes").
             max_buffer_size=64 * 1024 * 1024,
+            # 2026-10-01: "close this window" closed his live terminal via
+            # CloseMainWindow. The brain's shells now pass the close guard.
+            hooks=CLOSE_GUARD_HOOKS,
             resume=saved_session_id(),
         )
         self._work_options = options

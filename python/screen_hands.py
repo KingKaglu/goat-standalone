@@ -447,14 +447,24 @@ def _refuse_closing_self(combo: str) -> None:
     if not hits:
         return
     pid = wt.DWORD()
-    _user32.GetWindowThreadProcessId(_user32.GetForegroundWindow(),
-                                     ctypes.byref(pid))
+    fg = _user32.GetForegroundWindow()
+    _user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
     if pid.value == os.getpid():
         raise ValueError(
             f"refused {hits[0]}: GOAT's own window has focus, so it would close "
             "GOAT itself. Close the target by process instead (Stop-Process / "
             "taskkill), or focus the target window first and check with "
             "foreground before pressing it.")
+    # A terminal, a Claude session or unsaved work in front: his yes first
+    # (2026-10-01, his live Claude Code terminal was closed on "close this").
+    try:
+        import close_guard
+        reason = close_guard.window_reason(fg)
+    except Exception:  # noqa: BLE001 — the guard must never break a keypress
+        reason = None
+    if reason and not close_guard.granted():
+        close_guard.ask(reason)
+        raise ValueError(f"refused {hits[0]}. " + close_guard.block_message(reason))
 
 
 def press(combo: str, times: int = 1) -> str:

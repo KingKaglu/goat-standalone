@@ -20,8 +20,16 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
                               errors="replace")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import close_guard     # noqa: E402
 import reflex          # noqa: E402
 import reflex_index    # noqa: E402
+
+# The close guard looks at whatever window is really in front — when these
+# tests run from a terminal, that's the terminal, and every "close it" would
+# (rightly) turn into a question. Pin it: nothing is protected unless a test
+# says so (see the close-guard section at the end).
+_protected = {"reason": None}
+close_guard.window_reason = lambda hwnd, title="": _protected["reason"]
 
 _passed = 0
 _failed = 0
@@ -295,6 +303,55 @@ for _ in range(200):
         reflex.match(s, "en")
 per = (time.perf_counter() - t0) / (200 * len(SAMPLE)) * 1e6
 check(f"match costs {per:.0f}us per input (budget 5000us)", per < 5000)
+
+# ------------------------------------------------------------- close guard
+# 2026-10-01: "close this window I have opened" closed his live Claude Code
+# terminal. A protected window is asked about, never closed outright.
+import fast_hands  # noqa: E402
+_real_target = fast_hands.target_window
+fast_hands.target_window = lambda browser=False: {
+    "hwnd": 4242, "pid": 1, "title": "Test it out", "app": "WindowsTerminal"}
+_protected["reason"] = "Windows Terminal (Test it out) — a terminal with a running session"
+r = reflex.match("close this window", "en")
+check("protected window: 'close this window' asks instead of closing",
+      r is not None and r.kind == "confirm" and "Close it anyway" in r.speak,
+      repr(r))
+check("the question names the window", r is not None and "Test it out" in r.speak)
+close_guard.clear()
+if r is not None:
+    check("asking holds the close for his yes", r.run() == "asked first"
+          and close_guard.pending() is not None
+          and close_guard.pending()["run"] is not None)
+hits("minimize it", "window", detail="minimize")    # only CLOSING asks
+r = reflex.match("დახურე ფანჯარა", "ka")
+check("Georgian close asks in Georgian",
+      r is not None and r.kind == "confirm" and "დავხურო" in r.speak)
+_protected["reason"] = None
+hits("close it", "window", detail="close")          # unprotected: instant
+close_guard.clear()
+fast_hands.target_window = _real_target
+
+for s in ("yes", "Yeah, close it.", "ok go ahead", "კი", "do it please"):
+    check(f"{s!r} is a yes", bool(close_guard.YES_RE.match(s)))
+for s in ("yes but wait, which one?", "close the other one", "what?"):
+    check(f"{s!r} is NOT a yes", not close_guard.YES_RE.match(s))
+for s in ("no", "No, don't.", "wait", "არა"):
+    check(f"{s!r} is a no", bool(close_guard.NO_RE.match(s)))
+
+# The brain's shell: the exact command that closed his terminal.
+_real_pr = close_guard.process_reason
+close_guard.process_reason = (lambda pid, kill=False, title="":
+                              "a terminal" if pid == 17688 else None)
+check("guard reads (Get-Process -Id N).CloseMainWindow()",
+      close_guard.check_command(
+          "(Get-Process -Id 17688).CloseMainWindow() | Out-Null") == "a terminal")
+check("guard reads taskkill /PID N /F",
+      close_guard.check_command("taskkill /PID 17688 /F") == "a terminal")
+check("guard ignores commands that close nothing",
+      close_guard.check_command("Get-Process -Id 17688 | select CPU") is None)
+check("guard ignores closes aimed elsewhere",
+      close_guard.check_command("Stop-Process -Id 999") is None)
+close_guard.process_reason = _real_pr
 
 print(f"\n{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)
