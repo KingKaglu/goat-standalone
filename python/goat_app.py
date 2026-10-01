@@ -2016,9 +2016,15 @@ class GoatApp:
         self._tl_stop = None
         self._tl_pending = []    # tools the last step asked for
         self._tl_tools = []      # (names, s)
+        self._tl_wait = None     # query sent -> first model step started
 
     def _tl_event(self, et: str):
         now = time.monotonic()
+        if et == "message_start" and self._tl_wait is None:
+            # Everything before the first step: queueing behind another turn,
+            # API retries, the CLI's own work. A live turn on 2026-10-01 had
+            # 22.5s of unexplained "other" that this would have named.
+            self._tl_wait = now - self._tl_t0 - self._tl_prep
         if et == "message_start":
             if self._tl_stop is not None and self._tl_pending:
                 self._tl_tools.append(("+".join(self._tl_pending),
@@ -2039,12 +2045,14 @@ class GoatApp:
         total = time.monotonic() - self._tl_t0
         model = sum(d for _, d in self._tl_steps)
         tools = sum(s for _, s in self._tl_tools)
-        other = max(0.0, total - self._tl_prep - model - tools)
+        wait = self._tl_wait or 0.0
+        other = max(0.0, total - self._tl_prep - wait - model - tools)
         firsts = "/".join(f"{f:.1f}" for f, _ in self._tl_steps[:8])
         if len(self._tl_steps) > 8:
             firsts += "/…"
         slow = sorted(self._tl_tools, key=lambda x: -x[1])[:4]
         line = (f"[turn] {total:.1f}s @{self.effort} = prep {self._tl_prep:.2f}s"
+                f" + wait {wait:.1f}s"
                 f" + model {model:.1f}s in {len(self._tl_steps)} step(s)"
                 f" (first token {firsts or '-'}s) + tools {tools:.1f}s")
         if slow:
@@ -2141,6 +2149,11 @@ class GoatApp:
                     if sid:
                         with open(SESSION_FILE, "w", encoding="utf-8") as f:
                             f.write(sid)
+                else:
+                    # Retries, compaction, anything else the CLI reports —
+                    # the log is where a slow turn's "wait" gets its name.
+                    print(f"[engine] {msg.subtype}: "
+                          f"{json.dumps(msg.data, default=str)[:200]}")
             elif isinstance(msg, ResultMessage):
                 if self._compacting:
                     # The muted /compact turn just finished. Trust nothing —
