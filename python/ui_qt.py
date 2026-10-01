@@ -111,7 +111,9 @@ from PySide6.QtWidgets import (
 )
 import subprocess
 
-import tts_edge
+# tts_edge is imported where it's used: at the top it pulled scipy.signal
+# and edge_tts (~2s) in FRONT of the window. The engine thread loads it
+# anyway, behind the first paint.
 from goat_paths import GOAT_ROOT
 
 ICON = os.path.join(GOAT_ROOT, "goat.ico")
@@ -4322,6 +4324,7 @@ class GoatWindow(QWidget):
     def set_character_opt(self, name: str):
         """Who GOAT sounds like. The sentence already in the air belongs to
         the old voice, so it gets cut rather than finished in two voices."""
+        import tts_edge
         if not tts_edge.set_character(name):
             return
         self.cfg["character"] = name
@@ -4405,6 +4408,7 @@ class GoatWindow(QWidget):
         self.goat = goat
         goat.tts.enabled = self.cfg["voice"]
         goat.tts.gain = VOICE_LEVELS[self.cfg["level"]]
+        import tts_edge     # already loaded by the engine import by now
         tts_edge.set_character(self.cfg.get("character", "goat"))
         goat.wake_enabled = self.cfg["wake"]
         # Before the engine thread starts: run() applies voice + hearing
@@ -5073,6 +5077,10 @@ def main():
         pass
 
     _sweep_inbox()
+    # Qt walks every installed font at startup and DirectWrite can't open
+    # the two DOS bitmap fonts (8514oem, Fixedsys) — two warnings at the top
+    # of every log, about fonts GOAT never uses.
+    os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
     app = QApplication(sys.argv)
     app.setApplicationName("GOAT")
     if os.path.exists(ICON):
