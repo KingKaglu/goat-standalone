@@ -96,7 +96,6 @@ class _ProcessEntry(ctypes.Structure):
     ]
 
 
-_job = None
 _adopted: set[int] = set()
 _started = False
 
@@ -154,14 +153,18 @@ def engine_children(k=None) -> list[int]:
     return found
 
 
+_jobs: list = []      # one kill-on-close job per adopted process
+
+
 def adopt_once(k=None) -> list[int]:
-    """Put any not-yet-adopted engine child into the kill-on-close job."""
-    global _job
+    """Put each not-yet-adopted child into its OWN kill-on-close job.
+
+    One shared job broke the engine (2026-10-01): with piper already inside
+    it, assigning claude.exe failed with ERROR_ACCESS_DENIED — the engine
+    sits in a job of its own, and Windows only nests jobs in a strict tree.
+    A job per process can never conflict with another adoption. All the
+    handles live in GOAT, so when GOAT dies every one of them closes."""
     k = k or _k32()
-    if _job is None:
-        _job = _make_job(k)
-        if _job is None:
-            return []
     newly = []
     for pid in engine_children(k):
         if pid in _adopted:
@@ -169,12 +172,17 @@ def adopt_once(k=None) -> list[int]:
         h = k.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
         if not h:
             continue
+        job = _make_job(k)
         try:
-            if k.AssignProcessToJobObject(_job, h):
+            if job and k.AssignProcessToJobObject(job, h):
                 _adopted.add(pid)
+                _jobs.append(job)
                 newly.append(pid)
+                job = None
         finally:
             k.CloseHandle(h)
+            if job:
+                k.CloseHandle(job)
     return newly
 
 
