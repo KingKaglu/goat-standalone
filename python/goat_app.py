@@ -800,6 +800,17 @@ CLAUDE_RESET_RE = re.compile(
     re.IGNORECASE)
 
 
+def _new_client(options) -> ClaudeSDKClient:
+    """Every engine (re)connect goes through here, so the child guard scans
+    fast while the new claude.exe spawns and binds it to GOAT's life."""
+    try:
+        import child_guard
+        child_guard.kick()
+    except Exception:  # noqa: BLE001 — the guard is a safety net, not a gate
+        pass
+    return ClaudeSDKClient(options)
+
+
 def _describe_tool(block) -> str:
     """One-line left-panel step from a tool use, e.g. 'edit — ui_qt.py'."""
     name = getattr(block, "name", "tool")
@@ -2558,7 +2569,7 @@ class GoatApp:
         # back off disk afterwards, so they have to be visible while they run.
         screen_tools.set_emit(self.emit)
         self.model = options.model
-        self.client = ClaudeSDKClient(options)
+        self.client = _new_client(options)
         connect_task = asyncio.create_task(self.client.connect())
 
         self.audio.start()
@@ -2649,7 +2660,7 @@ class GoatApp:
                         pass
                     await asyncio.sleep(crashes)  # 1s, 2s, 3s backoff
                     options.resume = saved_session_id()
-                    self.client = ClaudeSDKClient(options)
+                    self.client = _new_client(options)
                     await self.client.connect()
                     self.model = options.model
                     self.busy = False
@@ -2667,7 +2678,7 @@ class GoatApp:
                     self._effort_dirty = False
                     options.effort = self.effort
                     options.resume = saved_session_id()
-                    self.client = ClaudeSDKClient(options)
+                    self.client = _new_client(options)
                     await self.client.connect()
                     self.model = options.model
                     self.busy = False
@@ -2678,7 +2689,7 @@ class GoatApp:
                 # Context full: fresh session, retry the wall-hit message.
                 await self.client.disconnect()
                 options.resume = None
-                self.client = ClaudeSDKClient(options)
+                self.client = _new_client(options)
                 await self.client.connect()
                 self.model = options.model
                 if self._rotate_only:

@@ -31,7 +31,13 @@ import time
 from ctypes import wintypes
 
 ENGINE_NAMES = {"claude.exe"}
-POLL_S = 2.0
+# Every scan walks the whole process table through ctypes — ~1% of a core
+# at a 2s poll, all day, for an engine that only appears on (re)connect.
+# So: a slow background scan, and a fast burst right after kick(), which the
+# engine calls as it connects.
+POLL_S = 10.0
+FAST_POLL_S = 1.0
+FAST_FOR_S = 20.0
 
 _JobObjectExtendedLimitInformation = 9
 _KILL_ON_JOB_CLOSE = 0x2000
@@ -170,6 +176,17 @@ def adopt_once(k=None) -> list[int]:
     return newly
 
 
+_wake = threading.Event()
+_fast_until = time.monotonic() + FAST_FOR_S   # boot is a connect too
+
+
+def kick() -> None:
+    """An engine is about to spawn: scan fast for the next FAST_FOR_S."""
+    global _fast_until
+    _fast_until = time.monotonic() + FAST_FOR_S
+    _wake.set()
+
+
 def _loop():
     k = _k32()
     while True:
@@ -178,7 +195,9 @@ def _loop():
                 print(f"[guard] engine pid {pid} bound to GOAT's life", flush=True)
         except Exception:  # noqa: BLE001 — a guard must never take GOAT down
             pass
-        time.sleep(POLL_S)
+        fast = time.monotonic() < _fast_until
+        _wake.wait(FAST_POLL_S if fast else POLL_S)
+        _wake.clear()
 
 
 def start() -> None:
