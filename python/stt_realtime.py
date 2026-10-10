@@ -64,6 +64,25 @@ ENABLED = os.environ.get("GOAT_STT_REALTIME", "on").strip().lower() not in (
 # miss hands over to the batch ear (which already has the audio) 1.5s sooner.
 COMMIT_WAIT_S = float(os.environ.get("GOAT_STT_RT_WAIT", "1.0"))
 CONNECT_TIMEOUT_S = 4.0
+# The 1.0s above was measured at home. On a slower line (2026-10-10, Germany,
+# ~130 ms ping, jittery) a commit took 1320 ms and the Georgian ear missed —
+# every miss pays the batch ear on top. So the wait follows the line: a bit
+# above the slowest recent commit, never under COMMIT_WAIT_S, never over the
+# cap. A miss counts as "slower than we waited", so the next wait grows.
+COMMIT_WAIT_MAX_S = 2.5
+_recent_commit_s: list = []
+
+
+def _note_commit(seconds: float):
+    _recent_commit_s.append(seconds)
+    del _recent_commit_s[:-6]
+
+
+def commit_wait() -> float:
+    if not _recent_commit_s:
+        return COMMIT_WAIT_S
+    return min(COMMIT_WAIT_MAX_S,
+               max(COMMIT_WAIT_S, 1.25 * max(_recent_commit_s)))
 
 # ISO 639-3, which is what the realtime endpoint documents.
 LANG3 = {"ka": "kat", "en": "eng"}
@@ -141,6 +160,7 @@ class Session:
         self.error: str | None = None
         self.ready = asyncio.Event()     # socket open, safe to stream
         self._done = asyncio.Event()     # every commit has been answered
+        self.wait = commit_wait()        # fixed per utterance, follows the line
         self._task = None
         self._closed = False
         self.t_first_partial = 0.0
@@ -214,10 +234,11 @@ class Session:
                 reader = asyncio.create_task(self._read(ws))
                 try:
                     await self._pump(ws)
-                    await asyncio.wait_for(self._done.wait(), COMMIT_WAIT_S)
+                    await asyncio.wait_for(self._done.wait(), self.wait)
                 except asyncio.TimeoutError:
                     if not self.committed:
                         self.error = "no committed transcript in time"
+                        _note_commit(self.wait)   # next wait: 25% longer
                 finally:
                     reader.cancel()
         except Exception as e:  # noqa: BLE001 — a dead ear must not kill a turn
@@ -281,6 +302,7 @@ class Session:
                 # commit's transcript is a piece of the turn, not the end of
                 # it, and returning here would drop whatever he said next.
                 if self._final and self._commits_got >= self._commits_sent:
+                    _note_commit(time.monotonic() - self.t_commit_sent)
                     self._done.set()
                     return
             elif mt == "commit_throttled":
@@ -299,7 +321,7 @@ class Session:
     async def result(self) -> str | None:
         """Committed text, or None to mean 'use the batch ear'."""
         try:
-            await asyncio.wait_for(self._done.wait(), COMMIT_WAIT_S + 0.5)
+            await asyncio.wait_for(self._done.wait(), self.wait + 0.5)
         except asyncio.TimeoutError:
             return None
         if self.error or not self.committed:
@@ -320,7 +342,7 @@ class Session:
         if self.error:
             return f"{self.lang}: {self.error}"
         if not self._done.is_set():
-            return f"{self.lang}: no answer in {COMMIT_WAIT_S + 0.5:.1f}s"
+            return f"{self.lang}: no answer in {self.wait + 0.5:.1f}s"
         return f"{self.lang}: {'empty' if not self.committed else 'blank text'}"
 
 

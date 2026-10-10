@@ -17,6 +17,7 @@ ms, fine at sentence granularity.
 """
 import asyncio
 import io
+import os
 
 import edge_tts
 import numpy as np
@@ -198,6 +199,12 @@ async def _collect_hedged(text: str) -> bytes:
 PERSIST = True
 _REQ_TIMEOUT_S = 2.5     # a live socket answers a clause in well under 1s
 _MAX_BYTES = 3000        # longer text goes the old way (service splits at 4096)
+# Heartbeat (2026-10-10, Germany, 130 ms ping on a guest line): between his
+# sentences the idle socket went stale — 300-470 ms warm, 1530 ms after 30s
+# idle, dead after 75s (the service or the router drops it quietly). A ping
+# every HEARTBEAT_S keeps the route warm and closes a dead socket at once, so
+# prime() re-dials it under his voice instead of a turn waiting it out.
+HEARTBEAT_S = float(os.environ.get("GOAT_TTS_HEARTBEAT", "15"))
 
 
 class _Live:
@@ -234,7 +241,8 @@ class _Live:
             f"&Sec-MS-GEC={DRM.generate_sec_ms_gec()}"
             f"&Sec-MS-GEC-Version={SEC_MS_GEC_VERSION}",
             compress=15, headers=DRM.headers_with_muid(WSS_HEADERS),
-            ssl=C._SSL_CTX, timeout=aiohttp.ClientWSTimeout(ws_close=2.0))
+            ssl=C._SSL_CTX, timeout=aiohttp.ClientWSTimeout(ws_close=2.0),
+            heartbeat=HEARTBEAT_S or None)
         print(f"[tts] voice socket dialled in "
               f"{(asyncio.get_running_loop().time() - t0) * 1000:.0f}ms")
 

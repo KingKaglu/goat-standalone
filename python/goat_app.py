@@ -825,6 +825,20 @@ CLAUDE_RESET_RE = re.compile(
     r"resets?\s+(?:at\s+|around\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
     re.IGNORECASE)
 
+# The CLI's own answer to "/effort X": "Set effort level to low (this session
+# only): …" — as an AssistantMessage, then the same text as the result.
+EFFORT_ECHO_RE = re.compile(r"\s*Set effort level to \w+", re.IGNORECASE)
+
+
+def _is_effort_echo(msg) -> bool:
+    if isinstance(msg, ResultMessage):
+        text = str(getattr(msg, "result", "") or "")
+    elif isinstance(msg, AssistantMessage):
+        text = " ".join(getattr(b, "text", "") for b in msg.content or [])
+    else:
+        return False
+    return bool(EFFORT_ECHO_RE.match(text))
+
 
 async def _close_guard_hook(input_data, tool_use_id, context):
     """PreToolUse on the brain's shells: a close/kill aimed at a window with
@@ -2138,6 +2152,7 @@ class GoatApp:
             self._effort_client = self.client
             self._live_effort = (getattr(self._work_options, "effort", None)
                                  or self.effort)
+            self._effort_late = 0   # an old session's echo never comes
         want = self._turn_effort(text, hard)
         if want == self._live_effort:
             return
@@ -2149,6 +2164,13 @@ class GoatApp:
             self._live_effort = want
         except Exception as e:  # noqa: BLE001 — a missed switch costs speed,
             print(f"[effort] switch to {want} failed: {e!r}")  # never the turn
+            if isinstance(e, asyncio.TimeoutError):
+                # The echo is still coming (2026-10-10, Germany, slow line:
+                # it landed after 3s and was taken for the boot briefing's
+                # own result — the turn ended at "0 steps"). _consume
+                # swallows it when it arrives and counts the switch as made.
+                self._effort_late = getattr(self, "_effort_late", 0) + 1
+                self._effort_late_want = want
         finally:
             self._effort_cmd = None
 
@@ -2265,6 +2287,12 @@ class GoatApp:
                     continue
                 if isinstance(msg, AssistantMessage):
                     continue
+            elif getattr(self, "_effort_late", 0) and _is_effort_echo(msg):
+                if isinstance(msg, ResultMessage):
+                    self._effort_late -= 1
+                    if self.client is getattr(self, "_effort_client", None):
+                        self._live_effort = self._effort_late_want
+                continue
             if isinstance(msg, StreamEvent):
                 ev = msg.event
                 if getattr(self, "_tl_t0", None) is not None:

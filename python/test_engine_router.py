@@ -1000,6 +1000,28 @@ async def main():
     await e._route_effort("Run the tests again", False)
     check("routing: a fresh client is assumed at its build effort",
           e.client.queries == [] and e._live_effort == "high", e.client.queries)
+
+    # Slow line (2026-10-10, Germany): the echo lands AFTER the 3s wait. It
+    # must be swallowed when it comes, not taken for the turn's own result.
+    from claude_agent_sdk import AssistantMessage, TextBlock
+    echo = "Set effort level to low (this session only): Quick"
+    late = MockClient(script=[
+        AssistantMessage(content=[TextBlock(text=echo)], model="m"),
+        result_msg(result=echo)])
+    e.client = late
+    e._effort_client = late
+    e._live_effort = "high"
+    await e._route_effort("What time is it in Tokyo?", False)
+    check("routing: a switch that times out waits for its late echo",
+          late.queries == ["/effort low"] and e._effort_late == 1
+          and e._live_effort == "high", (late.queries, e._effort_late))
+    e.busy = True
+    e.tts.spoken.clear()
+    await e._consume()
+    check("routing: the late echo is swallowed, not the turn's end",
+          e.busy and e._effort_late == 0 and e._live_effort == "low"
+          and not e.tts.spoken, (e.busy, e._effort_late, e.tts.spoken))
+    e.busy = False
     g.EFFORT_ROUTING = False
 
     print(f"\n{PASS} passed, {FAIL} failed")
