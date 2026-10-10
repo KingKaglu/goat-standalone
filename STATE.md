@@ -3,6 +3,24 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Slow line in Germany (2026-10-10 night, his goal: "I'm in Germany, the
+## internet isn't good yet — make GOAT fit the country, fast and good")
+- He is in Essen (NRW) by IP; GOAT measured ~16 Mbps / 130 ms ping. Laptop
+  clock already Berlin. workspace/memory.md (gitignored) tells the brain:
+  local answers for Germany in EUR, his legal details stay Georgian.
+- His log that night: 15.3s to first word, boot briefing lost. Three causes,
+  all fixed in 0a763d1, live since the 00:03 restart:
+  1. Edge voice socket went stale between sentences (300-470 ms warm,
+     1530 ms after 30s idle, dead after 75s). 15s WS heartbeat
+     (GOAT_TTS_HEARTBEAT): 30s idle -> 506 ms, 75s idle -> 658 ms.
+  2. Realtime ear's fixed 1.0s commit wait missed a 1320 ms commit -> batch
+     ear. stt_realtime.commit_wait(): 1.25x slowest of last 6 commits,
+     floor 1.0s, cap 2.5s, a miss grows it 25%. Home speed unchanged.
+  3. /effort echo landing after the 3s wait was taken as the turn's result
+     (turn ended at 0 steps). Now counted in _effort_late and swallowed.
+- Pre-existing, not from this: test_side_talk mid-call bar 36% > 1/3 (fails
+  on the old code too), test_voice_e2e PFP picture (file gone).
+
 ## RAM cut (2026-10-01 late, his order: "cut GOAT's RAM footprint … nothing
 ## may slow GOAT down"; laptop 8 GB at 86-88% used)
 - numpy + scipy each carry OpenBLAS, which reserves a buffer per CPU thread
