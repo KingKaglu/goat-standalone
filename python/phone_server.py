@@ -497,7 +497,7 @@ class PhoneServer:
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(crt, key)
         ctx.sni_callback = self._sni
-        wapp = web.Application(client_max_size=64 * 1024,
+        wapp = web.Application(client_max_size=8 * 1024 * 1024,
                                middlewares=[self._gate])
         wapp.router.add_get("/", self._page)
         wapp.router.add_post("/login", self._login)
@@ -513,6 +513,9 @@ class PhoneServer:
                             self._icon_png)
         wapp.router.add_get("/sw.js", self._sw)
         wapp.router.add_get("/goat.apk", self._apk)
+        wapp.router.add_get("/phone/poll", self._hands_poll)
+        wapp.router.add_post("/phone/result", self._hands_result)
+        wapp.router.add_post("/phone/do", self._hands_do)
         wapp.router.add_get("/push/key", self._push_key)
         wapp.router.add_post("/push/sub", self._push_sub)
         self._runner = web.AppRunner(wapp, access_log=None)
@@ -766,6 +769,52 @@ class PhoneServer:
     def _push_save(self, subs: list):
         with open(os.path.join(DIR, "push.json"), "w", encoding="utf-8") as f:
             json.dump(subs, f)
+
+    # ---- phone hands: the app's accessibility service long-polls for commands
+    async def _hands_poll(self, request):
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401)
+        q = self.__dict__.setdefault("_hq", asyncio.Queue())
+        self._hands_seen = time.monotonic()
+        try:
+            cmd = await asyncio.wait_for(q.get(), 25)
+        except asyncio.TimeoutError:
+            return web.json_response({})
+        return web.json_response({"cmd": cmd})
+
+    async def _hands_result(self, request):
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401)
+        try:
+            r = await request.json()
+        except Exception:
+            return web.Response(status=400)
+        fut = self.__dict__.setdefault("_hw", {}).pop(str(r.get("id")), None)
+        if fut and not fut.done():
+            fut.set_result(r)
+        return web.json_response({"ok": True})
+
+    async def _hands_do(self, request):
+        """Laptop-side entry (phone_hands.py): queue a command, wait for the phone."""
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401)
+        try:
+            cmd = await request.json()
+        except Exception:
+            return web.Response(status=400)
+        cmd["id"] = secrets.token_hex(6)
+        fut = asyncio.get_running_loop().create_future()
+        self.__dict__.setdefault("_hw", {})[cmd["id"]] = fut
+        await self.__dict__.setdefault("_hq", asyncio.Queue()).put(cmd)
+        try:
+            res = await asyncio.wait_for(fut, 20)
+        except asyncio.TimeoutError:
+            self._hw.pop(cmd["id"], None)
+            res = {"ok": False, "error": "phone didn't answer (accessibility on? app online?)"}
+        return web.json_response(res)
 
     async def _push_key(self, request):
         from aiohttp import web
