@@ -388,6 +388,14 @@ class PhoneServer:
         st["q"].put_nowait(json.dumps({"type": "status", "text": "connected"}))
         st["q"].put_nowait(json.dumps(self._snapshot()))
         try:
+            v = await asyncio.to_thread(self._vitals)
+            self.state["vitals"] = v
+            st["q"].put_nowait(json.dumps({
+                "type": "vitals", "now": time.time(),
+                "busy": bool(getattr(self.app, "busy", False)), **v}))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             async for msg in ws:
                 if msg.type == WSMsgType.BINARY:
                     self._utterance(msg.data)
