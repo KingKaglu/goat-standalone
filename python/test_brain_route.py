@@ -35,7 +35,10 @@ CASES = [
     ("What's the capital of Australia?", br.TALK),
     ("No, no, no need to check.", br.TALK),
     # unsure / advice / long rambles -> Sonnet, low (his order 2026-10-17)
-    ("Should I take the job offer or stay where I am?", br.TALK),
+    ("Should I take the job offer or stay where I am?", br.DEEP),
+    ("Overview a code for bugs.", br.DEEP),
+    ("Can you review the phone app?", br.DEEP),
+    ("Look over this script.", br.DEEP),
     ("Explain how the prompt cache works.", br.TALK),
     ("word " * 50, br.TALK),
     # simple tasks -> Sonnet, low

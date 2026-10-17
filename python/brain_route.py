@@ -53,6 +53,10 @@ _CODE_RE = re.compile(
     r"backend|frontend|css|html|json|yaml|python|javascript|typescript|"
     r"rust|java|node|npm|pip|powershell|bash|stack\s*trace|traceback|"
     r"exception|errors?|crash\w*|segfault|readme|fasmetri|"
+    # Reviews of code or a bug (his order 2026-10-18: "when I tell you to
+    # overview a code or bug, do it with the highest model").
+    r"(?:code\s+)?review\w*|overview\w*|audit\w*|glitch\w*|bugfix\w*|broken|"
+    r"(?:look|go)\s+(?:over|through|into)\s+(?:the|this|that|my|your|it|goat)|"
     r"(?:your|goat'?s|the\s+app'?s)\s+(?:own\s+)?(?:code|source|files)|"
     r"(?:un)?install\w*|config\w*|"
     r"(?:fix|build|rebuild|update|upgrade|patch|optimi[sz]e|migrate)\s+"
@@ -84,7 +88,7 @@ _SERIOUS_RE = re.compile(
 # Georgian code words (no \b — Georgian suffixes glue onto the stem).
 _KA_CODE_RE = re.compile(
     r"კოდ[ის]|კოდი|ბაგ|ერორ|შეცდომ|გაასწორ|ფუნქცი|სკრიპტ|რეპო|დეპლო|"
-    r"კომიტ|დაპუშ|ტესტ")
+    r"კომიტ|დაპუშ|ტესტ|მიმოიხილ|გადახედ|ხარვეზ")
 
 # A simple order to the computer: an imperative at the start of a sentence,
 # or "can you / could you <verb>".
