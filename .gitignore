@@ -46,3 +46,6 @@ python/live-shot.png.tmp
 
 # phone client: login token + TLS key, never public
 .phone/
+
+# Voice lock: his voiceprint is biometric data, models are 50MB — never public
+voiceid/

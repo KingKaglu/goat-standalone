@@ -30,6 +30,8 @@ QUIET_WINDOW = 4             # ~128ms window for plain speech detection when
 QUIET_NEEDED = 3
 PREROLL_MS = 300
 DUCK_GAIN = 0.5
+VETO_NO_DUCK_S = 1.0         # after the voice lock vetoes a barge-in, someone
+                             # else's chatter doesn't keep halving GOAT's voice
 VAD_THRESHOLD = 0.5
 UTT_SILENCE_STOP_MS = 500    # quiet that ends a turn whose sentence SOUNDS
                              # FINISHED (or when nothing has been heard yet)
@@ -302,6 +304,12 @@ class DuplexAudio:
         # () -> True/False/None: does what the streaming ear has heard so far
         # sound like a finished sentence? False buys the long hangover.
         self.sentence_state = None
+        # (audio) -> True when the voice lock is sure a barge-in is somebody
+        # else (voice_id.clearly_not_him); GOAT then keeps talking. Runs on
+        # the VAD thread, not the audio callback, so ~40ms is affordable.
+        self.voice_veto = None
+        self._recent = deque(maxlen=120)   # last 1.2s of cleaned mic, for it
+        self._veto_quiet_until = 0.0
         self._utt_soft_sent = False
         self.last_hangover_ms = 0.0
         # Makeup gain for the ears, learned from the last utterance he spoke,
@@ -495,6 +503,7 @@ class DuplexAudio:
             try:
                 cleaned, was_playing, raw_rms = item
                 self._preroll.append(cleaned)
+                self._recent.append(cleaned)
                 # EMA of pre-AEC mic level, purely for the diagnostic meter —
                 # lets us see raw vs cleaned side by side to tell whether the
                 # AEC is actually suppressing anything, instead of only ever
@@ -589,7 +598,8 @@ class DuplexAudio:
         vote = sum(list(self._vote_hist)[-window:])
 
         if was_playing:
-            if voiced and not self._duck_active:
+            if (voiced and not self._duck_active
+                    and time.monotonic() >= self._veto_quiet_until):
                 self._duck_active = True
                 self.duck_gain = DUCK_GAIN
                 self._status("possible interrupt — ducking volume")
@@ -612,6 +622,14 @@ class DuplexAudio:
             self._append_utt(chunk, voiced, chunk_ms)
         elif vote >= needed:
             self._vote_hist.clear()
+            if was_playing and self._vetoed():
+                # Somebody else talking over GOAT: keep the voice going. If it
+                # was him after all, the next vote re-checks fresh audio.
+                self._duck_active = False
+                self.duck_gain = 1.0
+                self._veto_quiet_until = time.monotonic() + VETO_NO_DUCK_S
+                self._status("someone else talking — not stopping")
+                return
             if was_playing:
                 self._status("confirmed interrupt — stopping playback")
                 self.clear_playback()
@@ -630,6 +648,15 @@ class DuplexAudio:
                     self.on_utt_start(self._ear_level(self._utt_chunks[0]))
                 except Exception:  # noqa: BLE001
                     pass
+
+    def _vetoed(self) -> bool:
+        fn = self.voice_veto
+        if fn is None or not self._recent:
+            return False
+        try:
+            return bool(fn(np.concatenate(list(self._recent))))
+        except Exception:  # noqa: BLE001 — a broken check must never block barge-in
+            return False
 
     def _ear_level(self, chunk: np.ndarray) -> np.ndarray:
         """A block at the level the ears want. Audio-thread hot path: when

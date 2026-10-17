@@ -60,7 +60,8 @@ class FakeApp:
     def _lat_start(self):
         pass
 
-    async def _handle_utterance(self, audio, rt=None, gap=None):
+    async def _handle_utterance(self, audio, rt=None, gap=None, source="laptop"):
+        assert source == "phone"   # the voice lock keeps a print per mic
         self.audio.append(audio)
 
     async def _cut_turn(self, then):

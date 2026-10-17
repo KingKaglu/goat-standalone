@@ -46,6 +46,7 @@ import stt_gladia
 import stt_realtime
 import stt_whisper
 import tts_edge
+import voice_id
 from audio_io import EAR_QUIET_PEAK, DuplexAudio
 from tts_piper import PiperResident
 
@@ -410,6 +411,22 @@ WAKE_RE = re.compile(r"\b(goat|goats|goad|goot|gote|ghost|god|coat|goa|go at"
                      r"|გოატ|გოუთ|გოთ|ღოატ)\b",
                      re.IGNORECASE)
 WAKE_WINDOW_S = 120.0
+# ---- voice lock (voice_id.py, 2026-10-18, his order: "recognize only my
+# voice") ----  With the lock on, a turn the voiceprint says is clearly
+# someone else is dropped; an unsure one (very short, or borderline) passes
+# only mid-conversation: while GOAT speaks or within VOICE_ACTIVE_S of a turn
+# that WAS verified as him, or when it says GOAT's name.
+VOICE_ACTIVE_S = 60.0
+VOICE_LEARN_RE = re.compile(
+    r"\b(learn|train|record|enrol+|memori[sz]e|remember|save)\b[\w\s']{0,25}\bmy voice\b",
+    re.IGNORECASE)
+VOICE_FORGET_RE = re.compile(
+    r"\b(forget|delete|erase|wipe)\b[\w\s']{0,12}\bmy voice\b", re.IGNORECASE)
+VOICE_LOCK_RE = re.compile(
+    r"\bvoice[ -]?(?:lock|id)\b[\w\s']{0,12}?\b(on|off)\b"
+    r"|\b(?:turn|switch|put)\b[\w\s']{0,6}?\b(on|off)\b[\w\s']{0,6}\bvoice[ -]?(?:lock|id)\b",
+    re.IGNORECASE)
+VOICE_CANCEL_RE = re.compile(r"\b(cancel|stop|never ?mind|forget it)\b", re.IGNORECASE)
 # Away this long → GOAT opens the conversation itself at boot (Phase 3).
 BRIEFING_AFTER_H = 6.0
 UPDATE_IDLE_S = 20 * 60   # quiet this long before a self-update restart
@@ -1028,6 +1045,13 @@ class GoatApp:
         self.audio.on_utt_soft_end = self._on_utt_soft_end
         self.audio.on_utt_abort = self._on_utt_abort
         self.audio.sentence_state = self._sentence_state
+        # Voice lock. None when the models/cohort are missing: hears everyone.
+        self.vid = voice_id.get()
+        self._voice_ok_t = 0.0
+        if self.vid is not None:
+            self.audio.voice_veto = lambda a: self.vid.clearly_not_him(a, "laptop")
+            if self.vid.locked:   # first check shouldn't pay the model load
+                threading.Thread(target=self.vid.warm, daemon=True).start()
         self._rt: stt_realtime.Session | None = None
         self.tts = TtsPipeline(self.audio, emit)
         self.tts.on_first_audio = self._lat_sounded
@@ -1652,7 +1676,18 @@ class GoatApp:
         self.emit("turnlang", lang)
         self._prewarm_voice()
 
-    async def _handle_utterance(self, audio_np: np.ndarray, rt=None, gap=None):
+    async def _handle_utterance(self, audio_np: np.ndarray, rt=None, gap=None,
+                                source: str = "laptop"):
+        vid = getattr(self, "vid", None)
+        if vid is not None and vid.enrolling(source):
+            await self._enroll_turn(audio_np, rt, source)
+            return
+        # Voiceprint check runs beside the ear (~100ms for 3s of speech vs
+        # ~270ms for the streaming transcript), so the lock costs no latency.
+        vcheck = None
+        if vid is not None and vid.locked:
+            vcheck = asyncio.ensure_future(
+                asyncio.to_thread(vid.check, audio_np, source))
         # The streaming ear has been transcribing since he started speaking,
         # so its answer is usually already in flight. Measured 2026-09-15 on
         # his own captured Georgian: 267-306ms after he stopped, against
@@ -1667,7 +1702,7 @@ class GoatApp:
                 heard = getattr(rt, "lang", "") or self._rt_lang()
                 self._set_turn_lang(heard if heard in ("en", "ka")
                                     else self.turn_lang)
-                await self._heard(text, gap)
+                await self._heard(text, gap, vcheck, source)
                 return
             # The 2026-09-23 first turn fell to the batch ear (1812ms) and the
             # log could not say why — the reason only ever reached the status
@@ -1699,7 +1734,7 @@ class GoatApp:
             text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
             self._set_turn_lang("en")
         self._lat_heard("batch")
-        await self._heard(text, gap)
+        await self._heard(text, gap, vcheck, source)
 
     # Quiet-mic guard (2026-09-15 night, his report: "GOAT cannot hear me in
     # Georgian"). His capture endpoint had been knocked down to 66% and his
@@ -1734,13 +1769,99 @@ class GoatApp:
                 "can't make out the words.")
         return True
 
-    async def _heard(self, text: str | None, gap: float | None = None):
+    async def _voice_gate(self, vcheck, text: str | None) -> bool:
+        """The voice lock's door: True lets the turn through."""
+        try:
+            v = await vcheck
+        except Exception as e:  # noqa: BLE001 — a broken check must not deafen him
+            print(f"[voice-id] check failed, let through: {e!r}")
+            return True
+        if v is None:
+            return True
+        now = time.monotonic()
+        active = (self.audio.is_tts_playing
+                  or now - self._voice_ok_t < VOICE_ACTIVE_S)
+        addressed = bool(text and WAKE_RE.search(text))
+        if not voice_id.allow(v, active, addressed):
+            print(f"[voice-id] not him, ignored: {text!r} ({v.line()})")
+            self.emit("status", "not your voice — ignored")
+            return False
+        print(f"[voice-id] {v.line()}")
+        if v.decision == "me":
+            self._voice_ok_t = now
+            asyncio.get_running_loop().run_in_executor(None, self.vid.adapt, v)
+        return True
+
+    def _voice_command(self, text: str, source: str) -> bool:
+        """"learn my voice" / "voice lock on|off" / "forget my voice", handled
+        here without the brain. (Typed, the brain does it with the voice_id
+        CLI.) True = handled."""
+        vid = getattr(self, "vid", None)
+        if vid is None or len(text.split()) > 10:
+            return False
+        if VOICE_LEARN_RE.search(text):
+            vid.start_enroll(source)
+            self.emit("you", text)
+            self._say_now("Okay. Read me anything out loud for about twenty "
+                          "seconds, and I'll tell you when I've got it.")
+            return True
+        if VOICE_FORGET_RE.search(text):
+            vid.forget(source)
+            self.emit("you", text)
+            self._say_now("Done. I've forgotten your voice on this mic, and "
+                          "the lock is off until you teach me again."
+                          if not vid.locked else
+                          "Done. I've forgotten your voice on this mic.")
+            return True
+        m = VOICE_LOCK_RE.search(text)
+        if m:
+            on = (m.group(1) or m.group(2)).lower() == "on"
+            self.emit("you", text)
+            if on and not (vid.enrolled("laptop") or vid.enrolled(source)):
+                vid.start_enroll(source)
+                self._say_now("I don't know your voice yet. Read me anything "
+                              "for about twenty seconds and I'll lock it in.")
+                return True
+            vid.set_lock(on)
+            if on:
+                self._voice_ok_t = time.monotonic()
+            self._say_now("Voice lock is on. I'll only listen to you."
+                          if on else "Voice lock is off. I'll hear everyone.")
+            return True
+        return False
+
+    async def _enroll_turn(self, audio_np: np.ndarray, rt, source: str):
+        """One utterance of "learn my voice": it's voice to learn, not a
+        message, so it never reaches the brain — unless it's him calling it off."""
+        text = ""
+        if rt is not None:
+            try:
+                text = await rt.result() or ""
+            except Exception:  # noqa: BLE001
+                text = ""
+        if text and VOICE_CANCEL_RE.search(text) and len(text.split()) <= 5:
+            self.vid.cancel_enroll()
+            self._say_now("Okay, cancelled. Nothing changed.")
+            return
+        got, done = await asyncio.to_thread(self.vid.enroll_feed, audio_np, source)
+        if done:
+            self._voice_ok_t = time.monotonic()
+            print(f"[voice-id] enrolled on {source}: {self.vid.status()}")
+            self._say_now("Got it, I know your voice now. Voice lock is on.")
+        else:
+            self.emit("status", f"learning your voice — {got:.0f} of "
+                                f"{voice_id.ENROLL_SPEECH_S:.0f} seconds")
+
+    async def _heard(self, text: str | None, gap: float | None = None,
+                     vcheck=None, source: str = "laptop"):
         """Everything that happens to a transcript once an ear produces one.
 
         Shared by BOTH ears on purpose: when the streaming ear was bolted on
         it briefly had its own shortcut into _talk, which quietly skipped the
         wake-word gate — so GOAT would have started answering the television
         again whenever the fast path won. One door in."""
+        if vcheck is not None and not await self._voice_gate(vcheck, text):
+            return
         if text is None:
             # Hard STT failure — he spoke and his words went nowhere. Say it
             # (once per outage), never just log it: a deaf GOAT looks alive.
@@ -1755,6 +1876,8 @@ class GoatApp:
         if not text:
             return  # silence/junk — normal, stay quiet
         if self._mishearing(text):
+            return
+        if self._voice_command(text, source):
             return
         if ((self.wake_enabled or getattr(self, "_asleep", False)) and not self.busy
                 and not self.audio.is_tts_playing

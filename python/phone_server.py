@@ -736,7 +736,9 @@ class PhoneServer:
     async def _apk(self, request):
         """The Android bubble app (workspace/goat-bubble), for logged-in phones."""
         from aiohttp import web
-        if not self._authed(request):
+        k = request.query.get("k", "")
+        if not self._authed(request) and not (
+                k and hmac.compare_digest(k.encode(), self.token.encode())):
             return web.Response(status=401, text="log in first")
         apk = os.path.join(os.path.dirname(DIR), "workspace", "goat-bubble",
                            "out", "goat-bubble.apk")
@@ -1046,7 +1048,8 @@ class PhoneServer:
         except Exception:  # noqa: BLE001 — the ledger is optional
             pass
         self._from_phone()
-        asyncio.create_task(self.app._handle_utterance(audio, None, None))
+        asyncio.create_task(self.app._handle_utterance(audio, None, None,
+                                                       source="phone"))
 
     def _command(self, st, raw: str):
         try:

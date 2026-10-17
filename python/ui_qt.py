@@ -1934,6 +1934,7 @@ class SettingsPage(QWidget):
             ("voice character", "character", VOICE_CHARACTERS, "set_character_opt"),
             ("language", "lang", list(LANGS), "set_lang_opt"),
             ("wake word", "wake", ["on", "off"], "set_wake_opt"),
+            ("voice lock", "voice_lock", ["on", "off", "learn"], "set_voice_lock_opt"),
             ("microphone", "mic", ["live", "muted"], "set_mic_opt")]),
         ("Appearance", "photo", [
             ("theme", "theme", THEME_ORDER, "set_theme_opt"),
@@ -2056,6 +2057,8 @@ class SettingsPage(QWidget):
                                if abs(v - sc) < 0.001), "")
         goat = self.win.goat
         state["mic"] = "muted" if (goat and goat.mic_muted) else "live"
+        vid = getattr(goat, "vid", None) if goat else None
+        state["voice_lock"] = ("on" if vid is not None and vid.locked else "off")
         for key, btns in self._groups.items():
             active = str(state.get(key, ""))
             for opt, b in btns:
@@ -4716,6 +4719,23 @@ class GoatWindow(QWidget):
         self.cfg["wake"] = opt == "on"
         if self.goat:
             self.goat.wake_enabled = self.cfg["wake"]
+        self._save()
+
+    def set_voice_lock_opt(self, opt: str):
+        """Voice lock (voice_id.py): on = only his voice gets through; learn
+        = the next ~20s he speaks become his voiceprint (then it locks)."""
+        vid = getattr(self.goat, "vid", None) if self.goat else None
+        if vid is None:
+            self._on_event("status", "voice lock unavailable — voiceid models missing")
+        elif opt == "learn" or (opt == "on" and not vid.prints):
+            vid.start_enroll(None)
+            self._on_event("status", "learning your voice — talk or read aloud for ~20s")
+        else:
+            vid.set_lock(opt == "on")
+            if opt == "on":
+                self.goat._voice_ok_t = time.monotonic()
+            self._on_event("status", "voice lock on — only your voice"
+                           if opt == "on" else "voice lock off — hearing everyone")
         self._save()
 
     def set_mic_opt(self, opt: str):
