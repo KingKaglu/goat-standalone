@@ -6,6 +6,7 @@
 workspace/phone-uploads/phone-shot.jpg. Needs the GOAT app's accessibility
 service switched on (Settings > Accessibility > GOAT)."""
 import base64, json, ssl, sys, urllib.request
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
