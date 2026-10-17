@@ -5525,6 +5525,14 @@ def main():
     # the two DOS bitmap fonts (8514oem, Fixedsys) — two warnings at the top
     # of every log, about fonts GOAT never uses.
     os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts.warning=false")
+    # Keep the laptop awake while GOAT runs (his order 2026-10-18) so the
+    # phone can always reach it. Screen may still turn off; ends when GOAT
+    # exits. ES_CONTINUOUS | ES_SYSTEM_REQUIRED, on the main thread.
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+    except Exception:  # noqa: BLE001
+        pass
     app = QApplication(sys.argv)
     app.setApplicationName("GOAT")
     if os.path.exists(ICON):
