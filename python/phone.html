@@ -1105,8 +1105,8 @@ function frame(f) {
   let e = 0; for (let i = 0; i < f.length; i++) e += f[i] * f[i];
   const rms = Math.sqrt(e / f.length);
   if (sources.length) {                      // voice barge-in: loud sustained speech over me
-    bargeN = rms > 0.12 ? bargeN + 1 : 0;
-    if (bargeN >= 7) { bargeN = 0; stopPlayback(); send({type: "cut"}); }
+    bargeN = rms > 0.06 ? bargeN + 1 : 0;
+    if (bargeN >= 6) { bargeN = 0; stopPlayback(); send({type: "cut"}); }
     return;
   }
   bargeN = 0;
