@@ -4,39 +4,174 @@
 <meta name="theme-color" content="#0b0f14">
 <title>GOAT</title>
 <style>
-:root{color-scheme:dark}
-html,body{margin:0;height:100%;background:#0b0f14;color:#e6edf3;
-  font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+:root{color-scheme:dark;--bg:#0b0f14;--card:#11161d;--line:#ffffff14;--dim:#8b949e;
+  --acc:#58a6ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--vio:#bc8cff}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow-x:hidden;background:var(--bg);color:#e6edf3;
+  font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 body{display:flex;flex-direction:column}
-header{display:flex;justify-content:space-between;align-items:center;
-  padding:calc(10px + env(safe-area-inset-top)) 16px 10px;font-weight:600;letter-spacing:.12em}
-#dot{width:9px;height:9px;border-radius:50%;background:#6e7681;display:inline-block;margin-right:8px}
-#dot.on{background:#3fb950}
-#log{flex:1;overflow-y:auto;padding:4px 14px}
-.m{margin:8px 0;padding:9px 13px;border-radius:16px;max-width:85%;
+header{display:flex;align-items:center;gap:8px;
+  padding:calc(8px + env(safe-area-inset-top)) 14px 6px}
+.brand{font-weight:700;letter-spacing:.14em;display:flex;align-items:center}
+#dot{width:9px;height:9px;border-radius:50%;background:#6e7681;margin-right:8px}
+#dot.on{background:var(--ok)}
+.chips{margin-left:auto;display:flex;gap:6px;overflow:hidden;min-width:0}
+.chip{font-size:12px;padding:3px 9px;border-radius:20px;background:#ffffff0d;
+  border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.chip.hot{color:#fff;border-color:#58a6ff66;background:#1f6feb33}
+.chip.busy{color:#fff;border-color:#bc8cff77;background:#8957e533}
+nav{display:flex;gap:4px;padding:2px 12px 6px}
+nav button{flex:1;background:none;border:none;color:var(--dim);font-size:14px;
+  padding:7px 0;border-bottom:2px solid transparent;position:relative}
+nav button.sel{color:#fff;border-color:var(--acc)}
+nav .badge{position:absolute;top:5px;margin-left:4px;width:7px;height:7px;border-radius:50%;
+  background:var(--vio);display:none}
+nav .badge.on{display:inline-block;animation:blink 1.2s infinite}
+@keyframes blink{50%{opacity:.25}}
+main{flex:1;min-height:0;position:relative}
+.pane{position:absolute;inset:0;overflow-y:auto;padding:4px 12px 10px;display:none}
+.pane.sel{display:block}
+.m{margin:8px 0;padding:9px 13px;border-radius:16px;max-width:86%;
   white-space:pre-wrap;overflow-wrap:anywhere}
 .you{margin-left:auto;background:#1f6feb2e;border:1px solid #1f6feb55}
 .goat{background:#ffffff0b;border:1px solid #ffffff1c}
-#status{text-align:center;color:#8b949e;font-size:14px;min-height:20px;padding:2px 12px}
-#orbwrap{display:flex;justify-content:center;padding:10px}
-#orb{width:92px;height:92px;border-radius:50%;border:none;outline:none;
+.old{opacity:.55}
+.note{margin:8px auto;max-width:92%;font-size:13px;color:var(--warn);text-align:center}
+#nowcard{position:sticky;top:0;z-index:2;display:none;margin:4px 0 8px;padding:8px 12px;
+  border-radius:12px;background:#161b22f2;border:1px solid #8957e566;font-size:13px}
+#nowcard.on{display:block}
+#nowcard b{color:var(--vio);font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:11px 13px;margin:8px 0}
+.card h3{margin:0 0 8px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--dim);font-weight:600;display:flex;justify-content:space-between}
+.row{display:flex;justify-content:space-between;gap:10px;font-size:14px;margin:3px 0}
+.row span:last-child{color:var(--dim);text-align:right}
+.bar{height:7px;border-radius:5px;background:#ffffff12;overflow:hidden;margin:4px 0 9px}
+.bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .4s}
+.bar i.warn{background:var(--warn)}.bar i.bad{background:var(--bad)}.bar i.ok{background:var(--ok)}
+#task{font-size:15px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:7.5em;overflow:hidden}
+#taskstate{font-size:12px}
+.run{color:var(--vio)}.done{color:var(--ok)}.fail{color:var(--bad)}
+#think{font-size:13px;color:#c9d1d9b0;font-style:italic;white-space:pre-wrap;
+  max-height:32vh;overflow-y:auto;overflow-wrap:anywhere}
+#steps{list-style:none;margin:0;padding:0;font-size:13px}
+#steps li{display:flex;gap:8px;padding:5px 0;border-top:1px solid var(--line)}
+#steps li:first-child{border-top:none}
+#steps li .t{color:var(--dim);min-width:38px;font-variant-numeric:tabular-nums}
+#steps li .x{flex:1;overflow-wrap:anywhere}
+#steps li.cur .x{color:#fff}
+#steps li.cur .t::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--vio);margin-right:5px;animation:blink 1s infinite}
+.btn{background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:10px;
+  padding:7px 13px;font-size:13px}
+.btn.red{background:#da363322;border-color:#f8514966;color:#ffa198}
+img.shot{width:100%;border-radius:10px;border:1px solid var(--line);display:block;margin-top:6px}
+details{border-top:1px solid var(--line);padding:6px 0;font-size:13px}
+details:first-of-type{border-top:none}
+summary{cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.small{font-size:12px;color:var(--dim)}
+.list div{font-size:13px;padding:4px 0;border-top:1px solid var(--line);display:flex;gap:8px}
+.list div:first-child{border-top:none}
+.list .a{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list .b{color:var(--dim);white-space:nowrap}
+.empty{color:var(--dim);font-size:13px;text-align:center;padding:14px 0}
+footer{border-top:1px solid var(--line)}
+#status{text-align:center;color:var(--dim);font-size:13px;min-height:18px;padding:5px 12px 0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#orbwrap{display:flex;justify-content:center;padding:6px}
+#orb{width:72px;height:72px;border-radius:50%;border:none;outline:none;
   -webkit-tap-highlight-color:transparent;transition:transform .12s;
   background:radial-gradient(circle at 35% 35%,#58a6ff,#1f6feb 60%,#0d2b5e)}
 #orb.live{animation:pulse 1.8s infinite}
 #orb.hear{transform:scale(1.12);background:radial-gradient(circle at 35% 35%,#7ee787,#2ea043 60%,#0f3d1d)}
 #orb.speak{background:radial-gradient(circle at 35% 35%,#d2a8ff,#8957e5 60%,#2d1660)}
-@keyframes pulse{0%{box-shadow:0 0 0 0 #58a6ff70}70%{box-shadow:0 0 0 22px #58a6ff00}100%{box-shadow:0 0 0 0 #58a6ff00}}
-form{display:flex;gap:8px;padding:6px 12px calc(12px + env(safe-area-inset-bottom))}
+#orb.work:not(.speak):not(.hear){box-shadow:0 0 0 3px #bc8cff55}
+@keyframes pulse{0%{box-shadow:0 0 0 0 #58a6ff70}70%{box-shadow:0 0 0 20px #58a6ff00}100%{box-shadow:0 0 0 0 #58a6ff00}}
+form{display:flex;gap:8px;padding:4px 12px calc(10px + env(safe-area-inset-bottom))}
 #t{flex:1;min-width:0;background:#161b22;border:1px solid #30363d;color:inherit;
-  border-radius:22px;padding:11px 15px;font-size:16px}
-#send{background:#1f6feb;border:none;color:#fff;border-radius:22px;padding:0 18px;font-size:16px}
+  border-radius:22px;padding:10px 15px;font-size:16px}
+#send{background:#1f6feb;border:none;color:#fff;border-radius:22px;padding:0 18px;font-size:15px}
 </style></head>
 <body>
-<header><span><span id="dot"></span>GOAT</span></header>
-<div id="log"></div>
-<div id="status">Tap the orb to talk</div>
-<div id="orbwrap"><button id="orb" aria-label="Talk"></button></div>
-<form id="f"><input id="t" placeholder="Type to GOAT" autocomplete="off"><button id="send">Send</button></form>
+<header>
+  <span class="brand"><span id="dot"></span>GOAT</span>
+  <div class="chips"><span class="chip" id="cmodel">—</span><span class="chip" id="cstate">idle</span></div>
+</header>
+<nav>
+  <button data-p="chat" class="sel">Chat</button>
+  <button data-p="work">Work<span class="badge" id="wbadge"></span></button>
+  <button data-p="sys">Laptop</button>
+</nav>
+<main>
+  <section class="pane sel" id="p-chat">
+    <div id="nowcard"><b>Working</b> · <span id="nowtxt"></span> · <span id="nowtime"></span></div>
+    <div id="log"></div>
+  </section>
+
+  <section class="pane" id="p-work">
+    <div class="card">
+      <h3><span>Now</span><span id="taskstate" class="small">idle</span></h3>
+      <div id="task" class="small">Nothing running.</div>
+      <div class="row" style="margin-top:8px"><span id="taskbrain" class="small"></span>
+        <span><button class="btn red" id="stopbtn" style="display:none">Stop</button></span></div>
+    </div>
+    <div class="card" id="thinkcard" style="display:none">
+      <h3><span>Thinking</span></h3><div id="think"></div>
+    </div>
+    <div class="card">
+      <h3><span>Steps</span><span id="stepcount" class="small"></span></h3>
+      <ul id="steps"><li class="empty" style="justify-content:center;border:none">No steps yet.</li></ul>
+    </div>
+    <div class="card" id="shotcard" style="display:none">
+      <h3><span>What I last looked at</span></h3>
+      <img class="shot" id="shot" alt="">
+    </div>
+    <div class="card">
+      <h3><span>Context</span><span id="ctxtxt" class="small">—</span></h3>
+      <div class="bar"><i id="ctxbar"></i></div>
+      <div class="small">Fills as the conversation grows; past the line I compact it.</div>
+    </div>
+    <div class="card">
+      <h3><span>Earlier</span></h3><div id="done"><div class="empty">Nothing yet this session.</div></div>
+    </div>
+  </section>
+
+  <section class="pane" id="p-sys">
+    <div class="card">
+      <h3><span>Claude plan</span><span id="planstate" class="small"></span></h3>
+      <div class="row"><span>5-hour</span><span id="fhtxt">—</span></div>
+      <div class="bar"><i id="fhbar"></i></div>
+      <div class="row"><span>Weekly</span><span id="wktxt">—</span></div>
+      <div class="bar"><i id="wkbar"></i></div>
+      <div class="row"><span>This session</span><span id="toktxt">—</span></div>
+      <div class="row"><span>Last reply started in</span><span id="lattxt">—</span></div>
+    </div>
+    <div class="card">
+      <h3><span>Laptop</span><span id="uptxt" class="small"></span></h3>
+      <div class="row"><span>CPU</span><span id="cputxt">—</span></div>
+      <div class="bar"><i id="cpubar"></i></div>
+      <div class="row"><span>RAM</span><span id="ramtxt">—</span></div>
+      <div class="bar"><i id="rambar"></i></div>
+      <div class="row"><span>Battery</span><span id="battxt">—</span></div>
+      <div class="bar"><i id="batbar"></i></div>
+      <div class="row"><span>Disk C free</span><span id="disktxt">—</span></div>
+      <div class="row"><span>GOAT itself</span><span id="goattxt">—</span></div>
+    </div>
+    <div class="card">
+      <h3><span>Screen</span><button class="btn" id="scrbtn">Show screen</button></h3>
+      <img class="shot" id="scr" alt="" style="display:none">
+      <div class="small" id="scrnote">A fresh capture of the laptop's screen. Tap it to refresh.</div>
+    </div>
+    <div class="card"><h3><span>Open windows</span></h3><div class="list" id="wins"><div class="empty">—</div></div></div>
+    <div class="card"><h3><span>Busiest processes</span></h3><div class="list" id="procs"><div class="empty">—</div></div></div>
+  </section>
+</main>
+<footer>
+  <div id="status">Tap the orb to talk</div>
+  <div id="orbwrap"><button id="orb" aria-label="Talk"></button></div>
+  <form id="f"><input id="t" placeholder="Type to GOAT" autocomplete="off"><button id="send">Send</button></form>
+</footer>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -44,16 +179,212 @@ const logEl = $("log"), statusEl = $("status"), orb = $("orb"), dot = $("dot");
 const SR = 16000, FRAME = 320;            // 20 ms frames at 16 kHz
 let ws = null, ctx = null, stream = null, srcNode = null, tap = null, wake = null;
 let live = false, sources = [], playEnd = 0, quietUntil = 0, goatBubble = null;
+let skew = 0, task = null, busy = false, pane = "chat", booted = 0;
 
-function add(cls, text) {
+function add(cls, text, where) {
   const d = document.createElement("div");
   d.className = "m " + cls; d.textContent = text;
-  logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; return d;
+  (where || logEl).appendChild(d); stick(); return d;
 }
+function stick() { const p = $("p-chat"); if (pane === "chat") p.scrollTop = p.scrollHeight; }
 function setStatus(s) { statusEl.textContent = s; }
 function send(o) {
   if (!ws || ws.readyState !== 1) return false;
   ws.send(o instanceof ArrayBuffer ? o : JSON.stringify(o)); return true;
+}
+const now = () => Date.now() / 1000 + skew;
+function ago(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return Math.floor(sec / 60) + "m " + String(sec % 60).padStart(2, "0") + "s";
+  return Math.floor(sec / 3600) + "h " + Math.floor(sec % 3600 / 60) + "m";
+}
+function bar(id, pct, warnAt, badAt, invert) {
+  const el = $(id); pct = Math.max(0, Math.min(100, +pct || 0));
+  el.style.width = pct + "%"; el.className = "";
+  const v = invert ? 100 - pct : pct;
+  if (badAt != null && v >= badAt) el.classList.add("bad");
+  else if (warnAt != null && v >= warnAt) el.classList.add("warn");
+  else if (invert) el.classList.add("ok");
+}
+const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
+
+// ---- tabs ----
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => show(b.dataset.p));
+function show(p) {
+  pane = p;
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("sel", b.dataset.p === p));
+  document.querySelectorAll(".pane").forEach(s => s.classList.toggle("sel", s.id === "p-" + p));
+  if (p === "chat") stick();
+}
+$("nowcard").onclick = () => show("work");
+
+// ---- work mirror ----
+function setBusy(on) {
+  busy = on;
+  orb.classList.toggle("work", on);
+  $("wbadge").classList.toggle("on", on);
+  $("nowcard").classList.toggle("on", on && !!task);
+  $("stopbtn").style.display = on ? "" : "none";
+  const cs = $("cstate");
+  if (on) { cs.textContent = "working"; cs.className = "chip busy"; }
+  else if (!sources.length) { cs.textContent = live ? "listening" : "idle"; cs.className = "chip"; }
+}
+function setBrain(model, effort, tier) {
+  const c = $("cmodel");
+  c.textContent = (model || "—") + (effort ? " · " + effort : "");
+  c.className = "chip" + (tier && tier !== "talk" ? " hot" : "");
+}
+function renderTask() {
+  const st = $("steps");
+  if (!task) {
+    $("task").textContent = "Nothing running."; $("task").className = "small";
+    $("taskstate").textContent = "idle"; $("taskstate").className = "small";
+    $("taskbrain").textContent = ""; $("thinkcard").style.display = "none";
+    st.innerHTML = '<li class="empty" style="justify-content:center;border:none">No steps yet.</li>';
+    $("stepcount").textContent = ""; return;
+  }
+  $("task").textContent = task.text; $("task").className = "";
+  const b = task.brain || [];
+  $("taskbrain").textContent = [task.model, b[2] ? b[2] + " effort" : "", b[1]].filter(Boolean).join(" · ");
+  $("think").textContent = task.think || "";
+  $("thinkcard").style.display = task.think ? "" : "none";
+  st.innerHTML = "";
+  if (!task.steps.length) st.innerHTML = '<li class="empty" style="justify-content:center;border:none">' +
+    (task.state === "run" ? "Thinking it through…" : "No tools needed.") + "</li>";
+  task.steps.forEach((s, i) => addStepEl(s, i === task.steps.length - 1 && task.state === "run"));
+  $("stepcount").textContent = task.steps.length ? task.steps.length + " step" + (task.steps.length > 1 ? "s" : "") : "";
+  tick();
+}
+function addStepEl(s, cur) {
+  const li = document.createElement("li");
+  if (cur) li.className = "cur";
+  li.innerHTML = '<span class="t"></span><span class="x"></span>';
+  li.querySelector(".t").textContent = "+" + ago(s[1] - task.t);
+  li.querySelector(".x").textContent = s[0];
+  $("steps").appendChild(li);
+}
+function tick() {
+  if (!task) return;
+  const end = task.state === "run" ? now() : (task.end || now());
+  const label = { run: "running", done: "done", fail: "failed" }[task.state] || task.state;
+  $("taskstate").textContent = label + " · " + ago(end - task.t);
+  $("taskstate").className = task.state;
+  if (task.state === "run") {
+    const last = task.steps.length ? task.steps[task.steps.length - 1][0] : "thinking";
+    $("nowtxt").textContent = last; $("nowtime").textContent = ago(end - task.t);
+  }
+}
+setInterval(() => { tick(); if (booted) $("uptxt").textContent = "GOAT up " + ago(now() - booted); }, 1000);
+function renderDone(list) {
+  const el = $("done"); el.innerHTML = "";
+  if (!list.length) { el.innerHTML = '<div class="empty">Nothing yet this session.</div>'; return; }
+  list.forEach(d => {
+    const x = document.createElement("details"), s = document.createElement("summary");
+    s.textContent = (d.state === "fail" ? "✕ " : "✓ ") + d.text;
+    s.className = d.state === "fail" ? "fail" : "";
+    const p = document.createElement("div"); p.className = "small";
+    const when = new Date((d.t - skew) * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    p.textContent = when + " · " + (d.model || "") + " · " + d.steps + " steps · " +
+      ago((d.end || d.t) - d.t) + (d.fail ? " · " + d.fail : "");
+    x.append(s, p); el.appendChild(x);
+  });
+}
+let doneList = [];
+function onWork(m) {
+  if (m.ev === "start") { task = m.task; renderTask(); setBusy(true); }
+  else if (!task) return;
+  else if (m.ev === "step") {
+    task.steps.push(m.step); renderTask();
+  }
+  else if (m.ev === "think") {
+    task.think = (task.think + m.text).slice(-2000);
+    $("think").textContent = task.think; $("thinkcard").style.display = "";
+    $("think").scrollTop = $("think").scrollHeight;
+  }
+  else if (m.ev === "done" || m.ev === "fail") {
+    if (task.state === "run") {
+      task.state = m.ev; task.end = m.t; if (m.ev === "fail") task.fail = m.text;
+      doneList.unshift({text: task.text, model: task.model, t: task.t, end: m.t,
+        state: m.ev, steps: task.steps.length, fail: task.fail});
+      doneList = doneList.slice(0, 8); renderDone(doneList);
+    }
+    renderTask(); setBusy(false);
+    if (m.ev === "fail" && m.text) add("note", m.text);
+  }
+}
+function setPlan(p) {
+  if (!p) return;
+  $("fhtxt").textContent = Math.round(p.fh) + "%" + (p.reset ? " · resets " + p.reset : "");
+  $("wktxt").textContent = Math.round(p.wk) + "%";
+  bar("fhbar", p.fh, 70, 90); bar("wkbar", p.wk, 70, 90);
+}
+function setCtx(used, trim) {
+  if (!trim) return;
+  $("ctxtxt").textContent = fmtTok(used) + " / " + fmtTok(trim);
+  bar("ctxbar", used / trim * 100, 75, 95);
+}
+function setClaude(s) {
+  const out = String(s || "").startsWith("out");
+  $("planstate").textContent = out ? "out of usage" + (s.split("|")[1] ? " · back " + s.split("|")[1] : "") : "";
+  $("planstate").className = out ? "small fail" : "small";
+}
+function setVitals(v) {
+  $("cputxt").textContent = Math.round(v.cpu) + "%"; bar("cpubar", v.cpu, 70, 90);
+  $("ramtxt").textContent = Math.round(v.ram) + "%" + (v.ram_gb ? " · " + v.ram_gb[0] + " / " + v.ram_gb[1] + " GB" : "");
+  bar("rambar", v.ram, 80, 92);
+  if (v.bat != null) {
+    $("battxt").textContent = v.bat + "% · " + (v.plugged ? "charging" : "on battery");
+    bar("batbar", v.bat, 75, 90, true);
+  }
+  if (v.disk_free_gb != null) $("disktxt").textContent = v.disk_free_gb + " GB" + (v.disk_free_gb < 30 ? " · low" : "");
+  if (v.goat_mb != null) $("goattxt").textContent = v.goat_mb + " MB RAM";
+  if (v.windows) list("wins", v.windows.map(w => [w[0], w[1] + (w[2] ? " · min" : "")]));
+  if (v.top) list("procs", v.top.map(p => [p[0], p[1] + "% · " + p[2] + " MB"]));
+}
+function list(id, rows) {
+  const el = $(id); el.innerHTML = "";
+  if (!rows.length) { el.innerHTML = '<div class="empty">—</div>'; return; }
+  rows.forEach(r => {
+    const d = document.createElement("div");
+    d.innerHTML = '<span class="a"></span><span class="b"></span>';
+    d.querySelector(".a").textContent = r[0]; d.querySelector(".b").textContent = r[1];
+    el.appendChild(d);
+  });
+}
+function loadShot(v) {
+  const img = $("shot");
+  img.onload = () => { $("shotcard").style.display = ""; };
+  img.src = "/shot?v=" + v + "&r=" + Date.now();
+}
+function loadScreen() {
+  $("scrnote").textContent = "Capturing…";
+  const img = $("scr");
+  img.onload = () => { img.style.display = ""; $("scrnote").textContent = "Captured " + new Date().toLocaleTimeString() + ". Tap it to refresh."; };
+  img.onerror = () => { $("scrnote").textContent = "Capture failed."; };
+  img.src = "/screen?r=" + Date.now();
+}
+$("scrbtn").onclick = loadScreen; $("scr").onclick = loadScreen;
+$("shot").onclick = () => window.open($("shot").src, "_blank");
+$("stopbtn").onclick = () => { stopPlayback(); send({type: "cut"}); setStatus("stopping"); };
+
+function onSnapshot(m) {
+  skew = m.now - Date.now() / 1000; booted = m.booted;
+  const s = m.state;
+  if (s.brain) setBrain(s.brain[0], s.brain[2], s.brain[1]);
+  else if (s.model) setBrain(s.model, s.effort);
+  task = s.task; renderTask();
+  setBusy(!!(m.busy && task && task.state === "run"));
+  doneList = m.done || []; renderDone(doneList);
+  setPlan(s.plan); if (s.ctx) setCtx(s.ctx[0], s.ctx[1]);
+  if (s.usage) $("toktxt").textContent = fmtTok(s.usage[0]) + " in · " + fmtTok(s.usage[1]) + " out";
+  if (s.latency) $("lattxt").textContent = (s.latency / 1000).toFixed(1) + " s";
+  setClaude(s.claude);
+  if (s.vitals) setVitals(s.vitals);
+  if (s.shot) loadShot(s.shot);
+  if (!logEl.children.length && m.history.length) {
+    m.history.forEach(h => { add("you old", h[0]); if (h[1]) add("goat old", h[1]); });
+  }
 }
 
 // ---- link ----
@@ -70,11 +401,26 @@ function connect() {
     else if (m.type === "say") {
       if (!goatBubble) goatBubble = add("goat", "");
       goatBubble.textContent += (goatBubble.textContent ? " " : "") + m.text;
-      logEl.scrollTop = logEl.scrollHeight;
+      stick();
     }
     else if (m.type === "turn_done") { goatBubble = null; }
     else if (m.type === "status") { if (!sources.length) setStatus(m.text); }
     else if (m.type === "cancel") { stopPlayback(); }
+    else if (m.type === "snapshot") onSnapshot(m);
+    else if (m.type === "work") onWork(m);
+    else if (m.type === "brain") setBrain(m.model, m.effort, m.tier);
+    else if (m.type === "model") { if (!busy) setBrain(m.name, ""); }
+    else if (m.type === "ctx") setCtx(m.used, m.trim);
+    else if (m.type === "plan") setPlan(m);
+    else if (m.type === "usage") $("toktxt").textContent = fmtTok(m.in) + " in · " + fmtTok(m.out) + " out";
+    else if (m.type === "latency") $("lattxt").textContent = (m.ms / 1000).toFixed(1) + " s";
+    else if (m.type === "claude") setClaude(m.state);
+    else if (m.type === "notice") add("note", m.text);
+    else if (m.type === "shot") loadShot(m.v);
+    else if (m.type === "vitals") {
+      skew = m.now - Date.now() / 1000; setVitals(m);
+      if (busy && !m.busy) setBusy(false);
+    }
   };
 }
 
@@ -106,8 +452,12 @@ function stopPlayback() {
 }
 function setSpeaking(on) {
   orb.classList.toggle("speak", on);
-  if (on) { resetVad(); setStatus("tap to cut me off"); }
-  else { quietUntil = performance.now() + 350; setStatus(live ? "listening" : "Tap the orb to talk"); }
+  const cs = $("cstate");
+  if (on) { resetVad(); setStatus("tap to cut me off"); cs.textContent = "speaking"; cs.className = "chip hot"; }
+  else {
+    quietUntil = performance.now() + 350; setStatus(live ? "listening" : "Tap the orb to talk");
+    setBusy(busy);
+  }
 }
 
 // ---- voice in: 16 kHz, energy endpointing ----
@@ -190,6 +540,7 @@ async function setLive(on) {
   live = on; orb.classList.toggle("live", on);
   send({type: "live", on});
   setStatus(on ? "listening" : "Tap the orb to talk");
+  setBusy(busy);
   try {
     if (on && navigator.wakeLock) wake = await navigator.wakeLock.request("screen");
     else if (wake) { wake.release(); wake = null; }
@@ -204,13 +555,14 @@ orb.onclick = () => {
 $("f").onsubmit = ev => {
   ev.preventDefault(); ensureCtx();
   const t = $("t").value.trim(); if (!t) return;
-  if (send({type: "text", text: t})) $("t").value = ""; else setStatus("not connected");
+  if (send({type: "text", text: t})) { $("t").value = ""; show("chat"); } else setStatus("not connected");
 };
 document.addEventListener("visibilitychange", () => {
   if (!live) return;
   if (document.hidden) send({type: "live", on: false});
   else { send({type: "live", on: true}); ensureCtx(); }
 });
+if (["work", "sys"].includes(location.hash.slice(1))) show(location.hash.slice(1));
 connect();
 </script>
 </body></html>
