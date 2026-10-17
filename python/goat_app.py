@@ -1072,6 +1072,10 @@ class GoatApp:
         self.usage_out = 0
         self.claude_out = False               # True once Claude quota is spent
         self.claude_reset = ""                # reset clock from the limit error
+        self.claude_reset_at = 0.0            # same, as a time.time() epoch
+        self._limit_hit_at = 0.0
+        self._resume_text = ""                # the order the limit cut off
+        self._resume_watch = None             # task that waits for the reset
         # token economy: last work-turn context size, rolling exchange log for
         # rotation handoffs, and the rotation flags.
         self._last_ctx = 0
@@ -2024,6 +2028,11 @@ class GoatApp:
             self.emit("work_add", text[:120])
             await self.client.query(text)
             return
+        if self.claude_out and self._limit_expired():
+            # The reset time has passed (or a probe is due): just try. If the
+            # quota is still gone the turn fails again and sets it back.
+            self.claude_out = False
+            self.emit("claude", "ok")
         if self.claude_out:
             # Quota's gone. One brain now, so say it plainly — the reflex
             # lane (open, close, volume, media, time) still works without it.
@@ -2471,6 +2480,7 @@ class GoatApp:
                     self._last_work_summary = ("it hit Claude's usage limit "
                                                "mid-job; the job waits for "
                                                "the reset")
+                    self._arm_resume()
                     self.emit("work_fail", "Claude ran out of usage"
                               + (f" — resets {self.claude_reset}"
                                  if self.claude_reset else "")
@@ -2490,6 +2500,7 @@ class GoatApp:
                     if self.claude_out:
                         self.claude_out = False  # a turn landed — quota's back
                         self.emit("claude", "ok")
+                    self._resume_text = ""
                     self._work_failed = False
                     self._last_work_summary = self._reply_acc.strip()[-250:]
                     # Turn done — log the exchange for future handoffs and
@@ -2626,6 +2637,92 @@ class GoatApp:
                 pass
             await asyncio.sleep(60)
 
+    @staticmethod
+    def _reset_epoch(text: str) -> float:
+        """When the quota comes back, as a time.time() epoch; 0 if unknown.
+        Handles the old "|<unix>" form and "resets 2:30am (Asia/Tbilisi)" —
+        the zone in the message wins over the laptop's own clock."""
+        m = re.search(r"\|(\d{9,11})", text)
+        if m:
+            return float(m.group(1))
+        m = CLAUDE_RESET_RE.search(text)
+        if not m:
+            return 0.0
+        h = int(m.group(1)) % 24
+        mnt = int(m.group(2) or 0)
+        ap = (m.group(3) or "").lower()
+        if ap == "pm" and h != 12:
+            h += 12
+        elif ap == "am" and h == 12:
+            h = 0
+        tz = None
+        z = re.search(r"\(([A-Za-z_]+/[A-Za-z_/]+)\)", text)
+        if z:
+            try:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(z.group(1))
+            except Exception:  # noqa: BLE001 — no tzdata: fall back to local
+                tz = None
+        now = datetime.datetime.now(tz)
+        t = now.replace(hour=h, minute=mnt, second=0, microsecond=0)
+        if t <= now:
+            t += datetime.timedelta(days=1)
+        return t.timestamp()
+
+    def _limit_expired(self) -> bool:
+        """True once the quota is probably back: the reset time passed, or (no
+        usable reset time) 20 minutes since the limit hit. A wrong guess costs
+        one failed turn, never a stuck state."""
+        now = time.time()
+        if self.claude_reset_at:
+            return now >= self.claude_reset_at
+        return now - self._limit_hit_at >= 20 * 60
+
+    def _arm_resume(self):
+        """The limit cut a job off: remember it and wake up at the reset to
+        carry on from where it stopped — no restart, no re-asking."""
+        task = (self._current_task or "").strip()
+        if task and not task.startswith("[auto-resume]"):
+            self._resume_text = task
+        old = self._resume_watch
+        if old is not None and not old.done() \
+                and old is not asyncio.current_task():
+            old.cancel()
+        self._resume_watch = asyncio.create_task(self._resume_after_reset())
+
+    async def _resume_after_reset(self):
+        try:
+            while True:
+                if self.claude_reset_at:
+                    wait = self.claude_reset_at - time.time() + 45
+                else:
+                    wait = 20 * 60
+                await asyncio.sleep(max(30.0, wait))
+                for _ in range(120):          # let a running turn finish
+                    if not self.busy:
+                        break
+                    await asyncio.sleep(5)
+                if not self._resume_text:
+                    return                    # a newer turn already landed
+                self.claude_out = False
+                self.emit("claude", "ok")
+                task = self._resume_text
+                print(f"[limit] quota window over — resuming: {task[:80]!r}")
+                self._say_now("Usage is back. Picking up where I left off.")
+                await self._work(
+                    "[auto-resume] Claude's usage limit just reset and cut you "
+                    "off mid-job. Continue exactly where you left off on this "
+                    "order — check what is already done, don't redo it:\n"
+                    + task)
+                if not self.claude_out:
+                    return                    # it ran; done
+                # Still limited: _track_usage re-armed a fresh watcher.
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"[limit] resume failed: {e}")
+
     def _track_usage(self, msg: ResultMessage) -> bool:
         """Accumulate session Claude token totals for the UI meter, and detect
         the out-of-usage error. Returns True when the quota is exhausted."""
@@ -2655,6 +2752,8 @@ class GoatApp:
                     reset = f"{h:02d}:{mnt:02d}"
             if reset:
                 self.claude_reset = reset
+            self._limit_hit_at = time.time()
+            self.claude_reset_at = self._reset_epoch(text)
             self.emit("claude", "out|" + reset)  # UI meter
             # Spoken heads-up comes through the talk lane's voice (once).
             # NEVER the raw CLI error — GOAT's own words only.
