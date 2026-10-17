@@ -74,7 +74,14 @@ _SERIOUS_RE = re.compile(
     r"interface|layout|theme|styling|look\s+and\s+feel|polish|prototype|mockup|"
     r"website|web\s*page|phone\s+(?:page|app|client)|feature|"
     r"make\s+sure|important|consider\s+everything|"
-    r"(?:higher|bigger|better|smarter)\s+model|opus|escalate|"
+    r"(?:high|big|good|smart|strong|great)est\s+(?:model|brain)|top\s+(?:model|brain)|"
+    r"(?:higher|bigger|better|smarter|stronger)\s+(?:model|brain)|opus|escalate|"
+    # Complaints about how GOAT itself behaves are bug reports in plain
+    # speech (2026-10-18: "you stop but you're not hearing me" stayed on
+    # Sonnet because no code word was in it).
+    r"interrupt\w*|barge\w*|talk(?:ing)?\s+over|cut(?:s|ting)?\s+(?:you|me|in)\b|"
+    r"(?:not|don'?t|doesn'?t|didn'?t|can'?t|won'?t|never|no\s+longer)\s+(?:\w+\s+)?(?:hear\w*|listen\w*|respond\w*|react\w*|work\w*)|"
+    r"(?:ignor\w+|miss\w+|lose|lost|losing)\s+(?:what\s+i|my\s+words|me\b)|"
     r"step\s+by\s+step|think\s+(?:it\s+)?through|"
     r"diagnos\w*|investigat\w*|troubleshoot\w*|analy[sz]\w*|research\w*|"
     r"figure\s+(?:it|this|that)\s+out|what'?s\s+wrong|not\s+working|"
