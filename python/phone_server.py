@@ -43,6 +43,7 @@ import numpy as np
 
 PORT = 8797
 HERE = os.path.dirname(os.path.abspath(__file__))
+BOOT_GRACE_S = 90   # after a restart, wait this long for the phone to return
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
 PAGE = os.path.join(HERE, "phone.html")
 COOKIE = "goat_k"
@@ -491,6 +492,8 @@ class PhoneServer:
     async def start(self) -> list:
         from aiohttp import web
         self.loop = asyncio.get_running_loop()
+        self._sync_route()   # boot grace: laptop quiet if phone was last
+        self.loop.call_later(BOOT_GRACE_S + 1, self._sync_route)
         ips = local_ips()
         self.token = load_token()
         crt, key = await asyncio.to_thread(ensure_cert, ips)
@@ -1101,6 +1104,12 @@ class PhoneServer:
         otherwise the laptop. Never both (his order 2026-10-17). The Control
         tab can pin it to one device."""
         if not self.clients:
+            # just restarted and the phone hasn't reconnected yet: keep the
+            # laptop quiet for a short grace if the phone was his device
+            app = self.app
+            if time.time() - getattr(app, "boot_t", 0) < BOOT_GRACE_S:
+                return (self.pref == "phone" or (self.pref == "auto" and
+                        getattr(app, "reply_to", "laptop") == "phone"))
             return False
         if self.pref in ("phone", "laptop"):
             return self.pref == "phone"

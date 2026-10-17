@@ -373,6 +373,32 @@ ONE BRAIN, WITH EYES: there is no other brain or lane. Every message opens with 
 MODEL TRUTH: GOAT runs two Claude models on one conversation, picked per turn: Sonnet 5.5 for talk, his working brain (Opus 5.5 unless switched) for orders, code and serious questions. If asked which is answering, a "[this turn: ...]" note names it. Never announce the switching.
 """.strip()
 
+ROUTE_FILE = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), ".phone", "route.json")
+
+
+def _load_route() -> str:
+    """Device he used last, if within 10 minutes (so a restart ordered from
+    the phone answers on the phone, his order 2026-10-18)."""
+    try:
+        with open(ROUTE_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        if d.get("to") == "phone" and time.time() - float(d.get("t", 0)) < 600:
+            return "phone"
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return "laptop"
+
+
+def _save_route(to: str):
+    try:
+        os.makedirs(os.path.dirname(ROUTE_FILE), exist_ok=True)
+        with open(ROUTE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"to": to, "t": time.time()}, f)
+    except OSError:
+        pass
+
+
 def _greeting() -> str:
     """Boot line, time-aware — JARVIS never said the same hello twice a day.
     Also the AEC warm-up audio, so it must stay a full spoken sentence."""
@@ -1179,7 +1205,9 @@ class GoatApp:
         # Which device he last spoke/typed on. Replies are voiced ONLY there:
         # phone in -> phone speaks, laptop silent; laptop in -> the reverse
         # (his order 2026-10-17). on_route lets the phone bridge re-sync.
-        self.reply_to = "laptop"
+        # Survives a restart: ordered from the phone -> answers on the phone.
+        self.reply_to = _load_route()
+        self.boot_t = time.time()
         self.on_route = None
 
     def _route(self, origin, mic=False):
@@ -1196,6 +1224,7 @@ class GoatApp:
             except Exception:  # noqa: BLE001
                 pass
         self.reply_to = "phone" if origin == "phone" else "laptop"
+        _save_route(self.reply_to)
         cb = self.on_route
         if cb:
             try:
@@ -3111,7 +3140,8 @@ class GoatApp:
         self.audio.start()
         self.emit("status", "calibrating — stay quiet for 2 seconds")
         await asyncio.to_thread(self.audio.calibrate, 2.0)
-        if self.quiet_boot:
+        if self.quiet_boot or self.reply_to == "phone":
+            # phone was his device before the restart: no laptop greeting
             tts_edge.prime()
             asyncio.create_task(self._warm_on_first_reply())
         else:
