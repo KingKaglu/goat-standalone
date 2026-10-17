@@ -3,6 +3,24 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Phone Control tab + one-voice routing (2026-10-17 ~20:45, c35fd86)
+- python/phone_ctl.py: volume/mute (pycaw endpoint), brightness (WMI via
+  PowerShell, cached, background refresh), now playing (winrt
+  Windows.Media.Control, installed 3.2.1), windows list/focus/minimize,
+  allow-listed chords (no Alt+F4), Unicode typing via screen_hands.type_text.
+- phone_server: GET /ctl state; /act gains vol, bright, key, focus, min,
+  screenoff, speaks (pref auto|phone|laptop in .phone/voice.json); /screen?w=&q=
+  and the pointer is drawn into every grab. "route" ws message + snapshot.
+  Audio goes only to the live/last-used phone page. Pinned to laptop + laptop
+  mid-sentence -> phone-mic utterance dropped (echo).
+- goat_app: tts.muted_until (phone voicing + 1.5s tail, reset on cancel);
+  _phone_voicing() blocks laptop barge-in and laptop utterances that start
+  then; thinking hum off while the phone is the voice; submit_text(origin=None)
+  for GOAT's own notes (language switch) keeps the route.
+- Verified: test_phone_server 52/52; CDP phone emulation (412x915, touch):
+  tap/double-tap/hold/two-finger scroll/pinch-zoomed tap all map exactly.
+- Next (his order): Android floating bubble app (native; PWA can't overlay).
+
 ## Latency pass (2026-10-17 ~01:20, his ask: cut time to first word)
 - Measured: first word 7.3-13.7s = endpoint 704ms + ear 220-400ms + think/voice
   6-12.5s. Model first token ~2.3s; the rest = ~2s prep + 4-5s tools per turn.
