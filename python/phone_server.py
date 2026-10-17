@@ -512,6 +512,7 @@ class PhoneServer:
         wapp.router.add_get("/icon-{size:192|512}{mask:(?:-maskable)?}.png",
                             self._icon_png)
         wapp.router.add_get("/sw.js", self._sw)
+        wapp.router.add_get("/goat.apk", self._apk)
         wapp.router.add_get("/push/key", self._push_key)
         wapp.router.add_post("/push/sub", self._push_sub)
         self._runner = web.AppRunner(wapp, access_log=None)
@@ -728,6 +729,20 @@ class PhoneServer:
                 bool(request.match_info["mask"]))
         return web.Response(body=cache[key], content_type="image/png",
                             headers={"Cache-Control": "max-age=86400"})
+
+    async def _apk(self, request):
+        """The Android bubble app (workspace/goat-bubble), for logged-in phones."""
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401, text="log in first")
+        apk = os.path.join(os.path.dirname(DIR), "workspace", "goat-bubble",
+                           "out", "goat-bubble.apk")
+        if not os.path.exists(apk):
+            return web.Response(status=404, text="not built yet")
+        return web.FileResponse(apk, headers={
+            "Content-Type": "application/vnd.android.package-archive",
+            "Content-Disposition": 'attachment; filename="goat-bubble.apk"',
+            "Cache-Control": "no-store"})
 
     # ---- web push: pings his phone when a task ends, even with the app closed
     def _vapid(self):
