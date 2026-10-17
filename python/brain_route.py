@@ -60,12 +60,17 @@ _CODE_RE = re.compile(
     r"\w+\.(?:py|js|ts|tsx|json|md|ps1|bat|toml|yml|yaml|css|html))\b",
     re.IGNORECASE)
 
-# Planning — the only non-code thing that earns the big brain (his order
-# 2026-10-17: "only escalate to Opus when this clearly involves code or
-# planning"). Advice, health, money and the rest stay on Sonnet.
+# Planning and design — the non-code things that earn the big brain (his
+# orders 2026-10-17: "only escalate to Opus when this clearly involves code or
+# planning", then "code changes, design and important stuff always by the
+# higher model"). Advice, health, money and the rest stay on Sonnet.
 _SERIOUS_RE = re.compile(
     r"\b(?:plan(?:s|ned|ning)?|(?:make|draw\s+up|write)\s+(?:me\s+)?(?:a|the)\s+plan|"
-    r"strateg\w*|roadmap|architecture|design\s+(?:a|an|the|my)|"
+    r"strateg\w*|roadmap|architecture|design\w*|redesign\w*|ui|ux|ui\s*/\s*ux|"
+    r"interface|layout|theme|styling|look\s+and\s+feel|polish|prototype|mockup|"
+    r"website|web\s*page|phone\s+(?:page|app|client)|feature|"
+    r"make\s+sure|important|consider\s+everything|"
+    r"(?:higher|bigger|better|smarter)\s+model|opus|escalate|"
     r"step\s+by\s+step|think\s+(?:it\s+)?through|"
     r"გეგმ\w*|დაფიქრდი)\b",
     re.IGNORECASE)

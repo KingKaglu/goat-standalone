@@ -227,7 +227,7 @@ def icon_png(size: int, maskable: bool = False) -> bytes:
     s = size * k
     im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    bg = (11, 15, 20, 255)
+    bg = (14, 14, 15, 255)
     if maskable:
         d.rectangle((0, 0, s, s), fill=bg)
     else:
@@ -235,9 +235,9 @@ def icon_png(size: int, maskable: bool = False) -> bytes:
     c, f = s / 2, s / 512
     r1, w = 150 * f, 28 * f
     d.ellipse((c - r1 - w / 2, c - r1 - w / 2, c + r1 + w / 2, c + r1 + w / 2),
-              outline=(31, 111, 235, 255), width=int(w))
+              outline=(240, 180, 41, 255), width=int(w))
     r2 = 70 * f
-    d.ellipse((c - r2, c - r2, c + r2, c + r2), fill=(88, 166, 255, 255))
+    d.ellipse((c - r2, c - r2, c + r2, c + r2), fill=(236, 234, 228, 255))
     out = io.BytesIO()
     im.resize((size, size), Image.LANCZOS).save(out, "PNG")
     return out.getvalue()
@@ -342,17 +342,17 @@ def do_action(d: dict) -> str:
 _LOGIN = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GOAT</title><style>
-html,body{margin:0;height:100%;background:#0b0f14;color:#e6edf3;
+html,body{margin:0;height:100%;background:#0e0e0f;color:#eceae4;
 font:16px system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 body{display:flex;align-items:center;justify-content:center}
 form{display:flex;flex-direction:column;gap:12px;width:80%;max-width:320px}
 h1{margin:0 0 8px;letter-spacing:.12em;font-size:22px;text-align:center}
-input{background:#161b22;border:1px solid #30363d;color:inherit;
+input{background:#161618;border:1px solid #ffffff1f;color:inherit;
 border-radius:12px;padding:14px;font-size:20px;text-align:center;
 letter-spacing:.15em}
-button{background:#1f6feb;border:none;color:#fff;border-radius:12px;
+button{background:#f0b429;border:none;color:#1a1405;border-radius:12px;
 padding:14px;font-size:17px}
-p{color:#f85149;text-align:center;min-height:20px;margin:0}
+p{color:#ff7a6b;text-align:center;min-height:20px;margin:0}
 </style></head><body><form method="post" action="/login">
 <h1>GOAT</h1><input name="k" placeholder="login token" autocomplete="off"
 autocapitalize="off" autocorrect="off" spellcheck="false" autofocus>
@@ -595,7 +595,7 @@ class PhoneServer:
             "name": "GOAT", "short_name": "GOAT", "start_url": "/",
             "id": "/", "scope": "/", "description": "Talk to GOAT, your laptop's AI",
             "display": "standalone", "orientation": "portrait",
-            "background_color": "#0b0f14", "theme_color": "#0b0f14",
+            "background_color": "#0e0e0f", "theme_color": "#0e0e0f",
             "icons": [
                 {"src": "/icon-192.png", "sizes": "192x192",
                  "type": "image/png", "purpose": "any"},
@@ -625,10 +625,10 @@ class PhoneServer:
     async def _icon(self, request):
         from aiohttp import web
         svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
-               '<rect width="512" height="512" rx="110" fill="#0b0f14"/>'
-               '<circle cx="256" cy="256" r="150" fill="none" stroke="#1f6feb" '
+               '<rect width="512" height="512" rx="110" fill="#0e0e0f"/>'
+               '<circle cx="256" cy="256" r="150" fill="none" stroke="#f0b429" '
                'stroke-width="28"/><circle cx="256" cy="256" r="70" '
-               'fill="#58a6ff"/></svg>')
+               'fill="#eceae4"/></svg>')
         return web.Response(text=svg, content_type="image/svg+xml")
 
     async def _upload(self, request):
