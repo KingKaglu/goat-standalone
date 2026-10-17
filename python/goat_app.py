@@ -1060,6 +1060,23 @@ class GoatApp:
         self._rotate_only = False
         self._pending_handoff = ""
         self._compacting = False  # a /compact turn is in flight (mute it)
+        # 2026-10-17 (ideas from fullstack-agent): a soft pulse while the brain
+        # works, and other apps' music ducked while GOAT talks. Both are
+        # daemon threads that restore/stop on their own; failures are logged.
+        reflex.ENGINE = self
+        try:
+            from music_duck import MusicDucker
+            from thinking_sound import ThinkingSound
+            self._ducker = MusicDucker(
+                lambda: self.audio.is_tts_playing or self.tts.speaking())
+            self._ducker.start()
+            self._thinker = ThinkingSound(
+                lambda: (self.busy and not self._warming
+                         and not self._compacting and not self.suppressed),
+                lambda: self.audio.is_tts_playing or self.tts.speaking())
+            self._thinker.start()
+        except Exception as e:  # noqa: BLE001 — extras never block the boot
+            print(f"[extras] {type(e).__name__}: {e}")
         self._limit_warned = False
         self._stt_warned = False  # gates the spoken "transcriber down" warning
         self._quiet_warned = False  # gates the spoken "mic is too quiet" one

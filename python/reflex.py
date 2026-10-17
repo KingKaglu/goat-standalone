@@ -166,6 +166,37 @@ _WORKISH_RE = re.compile(
     re.IGNORECASE)
 
 
+ENGINE = None   # set by the app: lets a voice command reach the live session
+
+_EFFORT_RE = re.compile(
+    r"^(?:please\s+)?(?:set|change|switch|put)\s+(?:the\s+)?(?:thinking\s+|effort\s+)?"
+    r"(?:effort|thinking(?:\s+level)?)\s+(?:level\s+)?(?:to|at)\s+"
+    r"(?P<lv>low|medium|high|extra\s*high|x\s*high|max(?:imum)?)\W*$", re.IGNORECASE)
+_USAGE_RE = re.compile(
+    r"^(?:please\s+)?(?:give\s+me\s+|what(?:'s|\s+is)\s+)?(?:the\s+|my\s+)?"
+    r"(?:(?:claude|plan)\s+)?usage(?:\s+(?:report|status|meter))?\W*$", re.IGNORECASE)
+
+
+def _usage_line() -> str:
+    import json
+    import os
+    try:
+        d = json.load(open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), ".plan_usage.json"), encoding="utf-8"))
+        return (f"You're at {int(d['five_hour'])} percent of the five-hour window, "
+                f"resetting at {d.get('five_hour_resets', 'soon')}, and "
+                f"{int(d['seven_day'])} percent of the week.")
+    except Exception:  # noqa: BLE001
+        return "I don't have a usage reading yet. It updates after my next work turn."
+
+
+def _set_effort(level: str) -> str:
+    if ENGINE is None:
+        return "ERROR: engine not ready"
+    ENGINE.set_effort(level)
+    return f"effort {level}"
+
+
 class Reflex:
     """One matched command: what to run, and what GOAT says while it runs."""
 
@@ -935,6 +966,15 @@ def match(text: str, lang: str = "en") -> Reflex | None:
     if re.search(r"\b(?:and\s+then|then\s+tell|and\s+tell|and\s+explain|"
                  r"შემდეგ\s+კი|და\s+მიპასუხ)\b", t, re.IGNORECASE):
         return None
+
+    m = _EFFORT_RE.match(t)
+    if m:
+        lv = re.sub(r"\s+", "", m.group("lv").lower())
+        lv = {"extrahigh": "xhigh", "maximum": "max"}.get(lv, lv)
+        return Reflex("effort", lv, lambda l=lv: _set_effort(l),
+                      speak=f"Thinking set to {lv}.")
+    if _USAGE_RE.match(t):
+        return Reflex("answer", "usage", lambda: "", speak=_usage_line())
 
     if _TIME_RE.match(t):
         return Reflex("answer", "time", lambda: "", speak=_clock(lang))
