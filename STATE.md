@@ -3,6 +3,51 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Latency pass (2026-10-17 ~01:20, his ask: cut time to first word)
+- Measured: first word 7.3-13.7s = endpoint 704ms + ear 220-400ms + think/voice
+  6-12.5s. Model first token ~2.3s; the rest = ~2s prep + 4-5s tools per turn.
+- DONE (on disk, preflight PASS, NOT yet live — waiting for his restart call):
+  audio_io hangovers 480->300 (short) / 700->500 (long); live_view CPU scan
+  (1.65s, one psutil syscall per process) moved to a 5s background thread,
+  note() reads the cache in ~6ms -> prep ~2s -> ~0.3s.
+- Lesson: run self_check with GOAT's own Python
+  (AppData/Local/Programs/Python/Python313) — bare `python` lacks soundfile
+  and gives a false FAIL.
+- OPEN, his idea, not built: voice turns get a lighter tool list, speak first,
+  parallel calls only when needed, file index preloaded in memory so
+  searches take ms. He decides after the conversation whether to build it/restart.
+
+## Orders on Opus + Live window (2026-10-16, his ask: "I want to SEE what the
+## model is doing when I give it a task — and Opus should do the tasks")
+- goat_app._work: only TALK goes to Sonnet 5.5 now; TASK (orders) and DEEP
+  run on his working brain (Opus 5.5). TASK keeps medium effort, so a
+  simple order is still quick. Persona MODEL TRUTH + tests updated.
+- ui_qt.LiveWindow ("GOAT live"): floats bottom-right while a work turn has
+  taken a step AND the main window is off screen (stand_aside minimizes it
+  for screen work, which is exactly when the Activity card vanished).
+  Shows brain · state · clock, the task, the last screenshot the brain
+  looked at, the current step, its thinking, the last 5 steps. Stays 5s
+  after work_done/work_fail; a cut turn (no work_done) is closed by
+  _sync_live when goat.busy drops. cfg live_window = "off" disables it.
+- It never gets in the brain's way: WindowTransparentForInput (clicks pass
+  through), SetWindowDisplayAffinity WDA_EXCLUDEFROMCAPTURE (verified: a
+  real capture of its rectangle shows the desktop under it, 0 card pixels),
+  skipped by screen_hands._own_windows / self_window and live_view.
+- Feed: screen_tools._show_shot writes python/live-shot.png (tmp + replace,
+  gitignored) and emits work_shot; steps/thinking reuse work_tool/work_think.
+- Tests: test_engine_router 123/0, test_brain_route 34/0. Needs a GOAT
+  restart to go live (not restarted: he was mid-session).
+- 2026-10-17 fix ("busy turns push it down off my right, let me drag it"):
+  adjustSize() under-measured wrapped labels and Qt grew the card downward
+  off screen. Now text is capped (task/step 110, history 54/line, thinking
+  220), height = layout.totalHeightForWidth, setFixedHeight, clamped inside
+  availableGeometry every relayout (shot dropped first if the screen is
+  short), relayouts coalesced 80ms. Draggable: no longer
+  WindowTransparentForInput; cfg live_pos remembers his spot, double-click
+  resets to the corner. screen_hands._live_glass sets WS_EX_TRANSPARENT on
+  "GOAT live" only during click/drag/scroll (verified by WindowFromPoint:
+  card before, not during, card after).
+
 ## Slow line in Germany (2026-10-10 night, his goal: "I'm in Germany, the
 ## internet isn't good yet — make GOAT fit the country, fast and good")
 - He is in Essen (NRW) by IP; GOAT measured ~16 Mbps / 130 ms ping. Laptop
@@ -20,6 +65,64 @@ Current design: ONE Claude brain that speaks and sees (see first section). Older
      (turn ended at 0 steps). Now counted in _effort_late and swallowed.
 - Pre-existing, not from this: test_side_talk mid-call bar 36% > 1/3 (fails
   on the old code too), test_voice_e2e PFP picture (file gone).
+
+## Auto brain (2026-10-01 night, his goal: "the speaking GOAT and simple
+## tasks by Sonnet 5.5, hard code / serious questions by the big one —
+## naturally, without me noticing; the UI shows it")
+- brain_route.classify(text, hard, last_tier, since_last) -> talk | task |
+  deep. talk = Sonnet 5.5 at QUICK_EFFORT (low); task (an order to the
+  computer, EN imperative or KA stem) = Sonnet 5.5 at TASK_EFFORT (medium);
+  deep (code words, serious topics — advice, money, health, law, analysis —
+  >40 words, explicit "hard", or an order / "try again" within 180s of a
+  deep turn) = his working brain (Opus 5.5) at his dial. One session:
+  set_model per turn, no reconnect. _turn_effort now takes the same tier.
+  GOAT_BRAIN_ROUTE=off / GOAT_TASK_EFFORT=... to change.
+- Sonnet 5.5 (claude-sonnet-5-5) verified on his account: `claude -p`
+  answers, modelUsage names it. Bench on a fork of his live session (GOAT
+  persona + tools), first spoken text: Opus low 3.55/0.80/1.78/0.86s vs
+  Sonnet low 3.86/1.06/1.58/1.04s — same to the ear. First switch writes
+  Sonnet's cache once (~45k); switching back reads it warm.
+- The session now OPENS on Sonnet 5.5 (warm-up primes the talk brain); the
+  first deep turn pays its own cold prefill inside a slow answer.
+- His 411 history lines: 36 deep (9%), the rest on Sonnet.
+- Log line [claude-code:unrecognized_model] claude-sonnet-5-5 is COSMETIC:
+  the SDK's bundled CLI (2.1.281, SDK 0.2.159) lacks the id's metadata but
+  passes it through — AssistantMessage.model and modelUsage both say
+  claude-sonnet-5-5, and set_model back and forth works (verified live).
+  SDK 0.2.163 exists; not upgraded (out of scope, nothing broken).
+- Live since 23:47 restart: engine --model claude-sonnet-5-5.
+- UI: Active brain card = brain answering now + "Auto · talking / simple
+  task / code & serious work" + this turn's depth pill; the model chip stays
+  his pick. Activity line = brain · this turn's depth · state. Each reply's
+  tooltip = "answered by …". Engine event: "brain" = "name|tier|effort".
+  Log: one [brain] line per turn.
+- Persona MODEL TRUTH rewritten: two models, picked per turn, never
+  announced; "which model?" gets a [this turn: …] note.
+- test_brain_route.py (classifier on his real lines + offscreen UI);
+  test_engine_router.py: model routing + updated effort cases.
+- Known env failures, not code: test_screen stand_aside on-top check;
+  test_voice_e2e "open the PFP picture" (pfp.jpg is gone from his desktop).
+
+## Side talk (2026-10-01 ~22:28: his call with his dad was transcribed and
+## answered fragment by fragment, "Standing by." "Still standing by.")
+- side_talk.py. Normal mode unchanged: every line still reaches the brain.
+  Persona SIDE TALK rule: a line clearly not for GOAT gets exactly
+  [[quiet]]. _speak_delta holds the opening text until it is the token
+  (swallow the whole reply: no voice, no label via "reply_drop", no
+  transcript/exchange log) or can't become it (spoken whole). A quiet reply
+  starts side-talk mode; so does him announcing a call (enters_call).
+- Side-talk mode (SIDE_QUIET_S=30s, renewed by every side line): a LOCAL gate,
+  no brain call, no cut of the running turn. Addressed (wake word, reflex,
+  order, device word, Georgian imperative stem) -> pass and leave the mode;
+  question while idle -> probe turn (PROBE_NOTE in front, no filler);
+  anything else -> ignored, status "on a call? say GOAT".
+- Filler: no "Okay." during side mode, on probe turns, on a [[quiet]] reply,
+  or on a plain statement (looks_aside) in normal mode.
+- test_side_talk.py: his real call fragments silent, his orders pass; his 405
+  history lines: 32% would drop IF said mid-call (bar <= 1/3); quiet filter
+  fed token by token. Not yet tried live with a real call.
+- python/local_llm.py in the tree is an untracked rollback copy of the
+  removed Gemini lane — nothing imports it.
 
 ## RAM cut (2026-10-01 late, his order: "cut GOAT's RAM footprint … nothing
 ## may slow GOAT down"; laptop 8 GB at 86-88% used)
@@ -410,3 +513,9 @@ VERIFIED: test_message_pop.py 19/19, test_bubble.py 40/40, preflight PASS.
 
 - 2026-09-27 00:45 LESSON: never send alt+f4 via computer tool to close an app - it closed GOAT itself. Close apps by process/taskkill. Also: start-goat-app.vbs relaunch silently failed twice (restart-goat logged BOOT CRASH + rollback, no python spawned); direct 'py -3.13 -u ui_qt.py' worked. Launcher needs a look.
 - 2026-09-27 00:56 FIXED (launcher + alt+f4): root cause of the failed relaunch = orphaned engine claude.exe held goat-app.log (inherited >> handle) -> launcher MoveFile 'Permission denied' -> vbs died before launch -> watchdog rolled back innocent code. Now: child_guard.py puts every engine in a kill-on-close Job Object (engine dies with GOAT, apps it opened survive); launcher kills orphan engines + logs to goat-app.<stamp>.log if the log is still held; restart-goat.ps1 kills orphans, treats 'never started' as a launch failure (retry, no rollback), verifies the rollback relaunch; screen_hands refuses alt+f4/ctrl+f4 while GOAT's own window has focus, even with confirm=true. Tests: test_child_guard.py.
+
+- 2026-10-17 02:2x: (CORRECTION 11:30 — the 500->1000 / 300->600 endpoint change recorded here NEVER reached the code; disk said 500/300 the whole time. Superseded by the smart endpoint below.) "Okay/Got it" backchannel default OFF, bare "Goat." held for the sentence after.
+
+- 2026-10-17 LESSON: bare 'python' = 3.12 (no soundfile/PySide6); GOAT runs on py -3.13. self_check.py now re-execs itself under 3.13 whoever calls it, so preflight can't false-fail again.
+
+- 2026-10-17 11:30 SMART ENDPOINT + MERGE WINDOW (his order; preflight PASS; on disk, live after restart): turn end is now decided by what the streaming ear heard. python/endpoint.py sounds_finished(text) -> True/False/None. audio_io: sentence_state callback; finished/unknown = 500ms quiet, trailing sentence ("and", "I want to", comma/dash, bare "Goat.") = 1200ms; old 300ms short-command path REMOVED (constants UTT_SILENCE_STOP_SHORT_MS/UTT_SHORT_VOICED_MS gone). goat_app: _sentence_state hook; MERGE_WINDOW_S=1.5 — a new utterance starting <=1.5s after the last one ended, while the brain is busy on a plain (non-reflex) turn, is joined into that turn (log: [merge]); spoken stop and reflex-matching fragments never merge. endpoint.py added to self_check CORE. Tests: test_voice_latency.py 56 pass, test_engine_router.py 129 pass.

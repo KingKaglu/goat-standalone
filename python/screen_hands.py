@@ -25,6 +25,7 @@ Design notes that matter:
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.wintypes as wt
 import io
@@ -304,6 +305,31 @@ def capture(region: tuple[int, int, int, int] | None = None,
 # Hands — mouse
 # --------------------------------------------------------------------------
 
+WS_EX_TRANSPARENT, WS_EX_LAYERED = 0x00000020, 0x00080000
+LIVE_TITLE = "GOAT live"   # ui_qt.LiveWindow
+
+
+@contextlib.contextmanager
+def _live_glass():
+    """The live card is draggable for him (2026-10-17), so it takes clicks.
+    For GOAT's own mouse it must be glass, or a click aimed at the app under
+    it lands on the card. Click-through only for the length of the action."""
+    hwnd = _user32.FindWindowW(None, LIVE_TITLE)
+    old = _user32.GetWindowLongW(hwnd, GWL_EXSTYLE) if hwnd else None
+    if old is not None and not old & WS_EX_TRANSPARENT:
+        _user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                               old | WS_EX_TRANSPARENT | WS_EX_LAYERED)
+    else:
+        old = None
+    try:
+        yield
+    finally:
+        if old is not None:
+            time.sleep(0.05)   # SendInput is queued: let the hit-test happen first
+            if _user32.IsWindow(hwnd):
+                _user32.SetWindowLongW(hwnd, GWL_EXSTYLE, old)
+
+
 def move(x: int, y: int) -> tuple[int, int]:
     """Put the pointer at real pixel (x, y) and confirm it landed there."""
     _guard()
@@ -329,7 +355,7 @@ def click(x: int | None = None, y: int | None = None, button: str = "left",
     _guard()
     if button not in _BUTTONS:
         raise ValueError(f"button must be one of {sorted(_BUTTONS)}")
-    with _LOCK:
+    with _LOCK, _live_glass():
         if x is not None and y is not None:
             move(x, y)
             time.sleep(0.03)  # let hover/focus settle before the press lands
@@ -351,7 +377,7 @@ def drag(x1: int, y1: int, x2: int, y2: int, button: str = "left",
     _guard()
     if button not in _BUTTONS:
         raise ValueError(f"button must be one of {sorted(_BUTTONS)}")
-    with _LOCK:
+    with _LOCK, _live_glass():
         down, up = _BUTTONS[button]
         move(x1, y1)
         time.sleep(0.05)
@@ -370,7 +396,7 @@ def scroll(clicks: int, x: int | None = None, y: int | None = None,
            horizontal: bool = False) -> tuple[int, int]:
     """Wheel notches: positive = up / right, negative = down / left."""
     _guard()
-    with _LOCK:
+    with _LOCK, _live_glass():
         if x is not None and y is not None:
             move(x, y)
             time.sleep(0.03)
@@ -723,7 +749,8 @@ def _own_windows(pid: int) -> tuple[dict | None, list[dict]]:
         if w["pid"] != pid or w["width"] <= 0 or w["height"] <= 0:
             continue
         if w["title"] == "GOAT live":
-            # ui_qt.LiveWindow: click-through and invisible to capture, and
+            # ui_qt.LiveWindow: glass to our clicks (_live_glass), invisible
+            # to capture, and
             # it is how he watches the work — it stays up (2026-10-16).
             continue
         if _user32.GetWindowLongW(w["hwnd"], GWL_EXSTYLE) & WS_EX_TOOLWINDOW:

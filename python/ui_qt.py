@@ -2887,20 +2887,35 @@ class LiveWindow(QWidget):
     the step in progress, its thinking, and the steps before.
 
     It must never get in the brain's way, so it is
-      - click-through (WindowTransparentForInput): a click aimed at the app
-        underneath lands there, not here;
+      - click-through for GOAT's own mouse (screen_hands._live_glass): a
+        click aimed at the app underneath lands there, not here. His mouse
+        can drag it anywhere; double-click puts it back in the corner;
       - left out of every screen capture (WDA_EXCLUDEFROMCAPTURE): the
         brain's screenshots show the desktop, never this window;
       - skipped by stand_aside and live_view (LIVE_TITLE).
     """
 
+    moved = Signal()  # he dropped it somewhere: remember the spot
+
     HISTORY = 5
     HOLD_MS = 5000    # stays up this long after the turn ends
+    # Text caps keep the card a bounded size: a busy turn used to grow it past
+    # the bottom of the screen (2026-10-17, "it gets weirdly down on my right").
+    TASK_MAX = 110    # ~2 lines
+    STEP_MAX = 110    # ~2 lines
+    HIST_MAX = 54     # one line per past step
+    THINK_MAX = 220   # ~4 lines
+    EDGE = 16
 
     def __init__(self, theme: dict):
+        # Not WindowTransparentForInput any more: he drags it (2026-10-17).
+        # screen_hands._live_glass makes it click-through for GOAT's own mouse.
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-                         | Qt.Tool | Qt.WindowTransparentForInput)
+                         | Qt.Tool)
         self.setWindowTitle(LIVE_TITLE)
+        self.setCursor(Qt.SizeAllCursor)
+        self.pos_saved = None     # [x, y] top-left he chose; None = corner
+        self._press = None
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.active = False       # a work turn is running (or just ended)
@@ -2939,7 +2954,18 @@ class LiveWindow(QWidget):
         self._end = QTimer(self)
         self._end.setSingleShot(True)
         self._end.timeout.connect(self._finish)
+        # Thinking streams in tiny pieces; coalesce the re-layouts so the card
+        # doesn't thrash (it looked stuck under a flood of updates).
+        self._lay = QTimer(self)
+        self._lay.setSingleShot(True)
+        self._lay.setInterval(80)
+        self._lay.timeout.connect(self._relayout_now)
         self.set_theme(theme)
+
+    @staticmethod
+    def _clip(text: str, n: int) -> str:
+        s = " ".join((text or "").split())
+        return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
     # ---- look ----
     def set_theme(self, t: dict):
@@ -2977,7 +3003,7 @@ class LiveWindow(QWidget):
         self._steps = []
         self._shot_path = ""
         self.shot.hide()
-        self.task.setText(" ".join(task.split())[:140])
+        self.task.setText(self._clip(task, self.TASK_MAX))
         self.cur.setText("")
         self.think.setText("")
         self.hist.setText("")
@@ -2989,17 +3015,19 @@ class LiveWindow(QWidget):
             self.worked = True
         prev = self.cur.text()
         if prev:
-            self._steps.append("✓ " + prev.removeprefix("▸ "))
+            self._steps.append("✓ " + self._clip(prev.removeprefix("▸ "),
+                                                 self.HIST_MAX))
             self._steps = self._steps[-self.HISTORY:]
             self.hist.setText("\n".join(reversed(self._steps)))
-        self.cur.setText("▸ " + desc)
+        self.cur.setText(("▸ " + self._clip(desc, self.STEP_MAX)) if desc else "")
         self.think.setText("")
         self._relayout()
 
     def thinking(self, piece: str):
-        txt = (self.think.text() + piece)[-400:]
+        n = self.THINK_MAX
+        txt = (self.think.text().removeprefix("…") + piece)[-n:]
         # The tail of a long thought, from a word boundary.
-        if len(txt) >= 400 and " " in txt[:60]:
+        if len(txt) >= n and " " in txt[:40]:
             txt = "…" + txt[txt.find(" ") + 1:]
         self.think.setText(txt)
         self._relayout()
@@ -3036,17 +3064,79 @@ class LiveWindow(QWidget):
 
     # ---- placement ----
     def _relayout(self):
+        if self.isVisible():
+            self._lay.start()      # coalesced; restarts while updates flood in
+        else:
+            self._relayout_now()
+
+    def _fit_height(self) -> int:
+        lay = self.layout()
+        lay.activate()
+        if lay.hasHeightForWidth():
+            return lay.totalHeightForWidth(self.width())
+        return lay.totalSizeHint().height()
+
+    def _relayout_now(self):
+        self._lay.stop()
         self.cur.setVisible(bool(self.cur.text()))
         self.think.setVisible(bool(self.think.text()))
         self.hist.setVisible(bool(self.hist.text()))
-        self.adjustSize()
         area = QApplication.primaryScreen().availableGeometry()
-        self.move(area.right() - self.width() - 16,
-                  area.bottom() - self.height() - 16)
+        room = max(120, area.height() - 2 * self.EDGE)
+        h = self._fit_height()
+        if h > room and not self.shot.isHidden():
+            self.shot.hide()       # a short screen drops the picture first
+            h = self._fit_height()
+        # adjustSize() under-measured wrapped labels; Qt then grew the window
+        # downward from a fixed top, off the bottom of the screen. A fixed
+        # height measured for the fixed width, anchored bottom-right, can't.
+        h = min(h, room)
+        self.setFixedHeight(h)
+        if self._press is not None:
+            return                 # mid-drag: size only, his hand moves it
+        p = self.pos_saved
+        if (isinstance(p, (list, tuple)) and len(p) == 2
+                and all(isinstance(n, (int, float)) for n in p)):
+            x, y = int(p[0]), int(p[1])
+        else:
+            x = area.right() - self.width() - self.EDGE
+            y = area.bottom() - h - self.EDGE
+        # Clamped every time: growing never pushes it off the bottom.
+        x = min(max(x, area.left()), area.right() - self.width() + 1)
+        y = min(max(y, area.top()), area.bottom() - h + 1)
+        self.move(x, y)
+
+    # ---- drag anywhere; double-click sends it back to the corner ----
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._press = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            ev.accept()
+
+    def mouseMoveEvent(self, ev):
+        if self._press is not None and ev.buttons() & Qt.LeftButton:
+            self.move(ev.globalPosition().toPoint() - self._press)
+            ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.LeftButton and self._press is not None:
+            self._press = None
+            self.pos_saved = [self.x(), self.y()]
+            self._relayout_now()   # clamps a drop past the edge
+            self.pos_saved = [self.x(), self.y()]
+            self.moved.emit()
+            ev.accept()
+
+    def mouseDoubleClickEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._press = None
+            self.pos_saved = None
+            self._relayout_now()
+            self.moved.emit()
+            ev.accept()
 
     def reveal(self, on: bool):
         if on and not self.isVisible():
-            self._relayout()
+            self._relayout_now()
             self.show()
             _exclude_from_capture(self)
             pin_topmost(self)
@@ -3238,6 +3328,8 @@ class GoatWindow(QWidget):
         # window can leave by stand_aside, collapse or his own minimize.
         self.live = LiveWindow({**THEMES.get(self._theme_name, THEMES["midnight"]),
                                 **(self.cfg.get("colors") or {})})
+        self.live.pos_saved = self.cfg.get("live_pos")
+        self.live.moved.connect(self._save_live_pos)
         self._live_check = QTimer(self)
         self._live_check.setInterval(600)
         self._live_check.timeout.connect(self._sync_live)
@@ -4326,6 +4418,13 @@ class GoatWindow(QWidget):
 
     def _save_bubble_pos(self):
         self.cfg["bubble"] = [self.bubble.x(), self.bubble.y()]
+        save_ui_config(self.cfg)
+
+    def _save_live_pos(self):
+        if self.live.pos_saved is None:
+            self.cfg.pop("live_pos", None)
+        else:
+            self.cfg["live_pos"] = list(self.live.pos_saved)
         save_ui_config(self.cfg)
 
     def changeEvent(self, ev):
