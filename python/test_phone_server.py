@@ -41,11 +41,19 @@ class FakeApp:
         self.busy = False
         self.cuts = 0
         self._exchanges = [("what's up", "Not much."), ("[warm-up] x", "OK")]
+        self.reply_to = "laptop"
+        self.on_route = None
+
+    def _route(self, origin):          # same contract as GoatApp._route
+        self.reply_to = "phone" if origin == "phone" else "laptop"
+        if self.on_route:
+            self.on_route()
 
     def emit(self, kind, data=""):
         self.events.append((kind, data))
 
-    def submit_text(self, text):
+    def submit_text(self, text, origin="laptop"):
+        self._route(origin)
         self.texts.append(text)
         self.emit("you", text)
 
@@ -136,6 +144,30 @@ async def main():
             check("GOAT's sentence arrives as text then audio",
                   m["type"] == "say" and m["text"] == "Hi there."
                   and len(b.data) == 1600)
+            # One device speaks, never both (his order 2026-10-17).
+            await ws.send_str(json.dumps({"type": "live", "on": False}))
+            await asyncio.sleep(0.1)
+            check("mic off, last input phone -> laptop stays silent",
+                  not app.phone_live and app.tts.local_mute)
+            app._route("laptop")       # he talks/types on the laptop
+            check("laptop input -> laptop speaks", not app.tts.local_mute)
+            app.tts.on_sentence("Laptop reply.", np.zeros(800, dtype=np.float32) + 0.25)
+            m = await recv(ws, "say")
+            app.emit("status", "marker")
+            nxt = await recv(ws, "status")
+            check("laptop turn -> phone gets text, no audio",
+                  m["text"] == "Laptop reply." and m["audio"] is False
+                  and not isinstance(nxt, aiohttp.WSMessage)
+                  and nxt.get("text") == "marker")
+            await ws.send_str(json.dumps({"type": "text", "text": "typed on phone"}))
+            await recv(ws, "you")
+            check("phone typing -> laptop silent again",
+                  app.reply_to == "phone" and app.tts.local_mute)
+            app.tts.on_sentence("Phone reply.", np.zeros(800, dtype=np.float32) + 0.25)
+            m = await recv(ws, "say")
+            b = await recv(ws, "-")
+            check("phone turn -> phone gets audio",
+                  m["audio"] is True and len(b.data) == 1600)
             await ws.send_str(json.dumps({"type": "stop"}))
             m = await recv(ws, "cancel")
             check("tap-to-stop cancels the voice",

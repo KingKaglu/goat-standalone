@@ -1143,6 +1143,20 @@ class GoatApp:
         self._last_work_summary = ""  # short tail of the last work reply
         self.phone = None             # phone_server.PhoneServer once up
         self.phone_live = False       # a phone's mic is live: laptop mic off
+        # Which device he last spoke/typed on. Replies are voiced ONLY there:
+        # phone in -> phone speaks, laptop silent; laptop in -> the reverse
+        # (his order 2026-10-17). on_route lets the phone bridge re-sync.
+        self.reply_to = "laptop"
+        self.on_route = None
+
+    def _route(self, origin: str):
+        self.reply_to = "phone" if origin == "phone" else "laptop"
+        cb = self.on_route
+        if cb:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001 — routing must never break input
+                pass
 
     # ---- audio-thread callbacks ----
     def _on_interrupt(self, _preroll):
@@ -1356,6 +1370,7 @@ class GoatApp:
         if self.mic_muted or self.phone_live:
             return   # phone live: the laptop mic would hear him twice
         if self.loop:
+            self._route("laptop")
             asyncio.run_coroutine_threadsafe(
                 self._handle_utterance(audio_np, rt, gap), self.loop)
 
@@ -1528,16 +1543,17 @@ class GoatApp:
         if lang:
             self._set_turn_lang(lang)
 
-    def submit_text(self, text: str):
+    def submit_text(self, text: str, origin: str = "laptop"):
         """Plain typed/spoken input — goes to the TALKING brain (middle lane).
         Thread-safe."""
         if self.loop is None or self.loop.is_closed():
             self.emit("status", "engine is down — check python\\goat-app.log")
             return
+        self._route(origin)
         self._typed_lang(text)
         asyncio.run_coroutine_threadsafe(self._talk(text), self.loop)
 
-    def submit_work(self, text: str, hard: bool = False):
+    def submit_work(self, text: str, hard: bool = False, origin: str = "laptop"):
         """Explicit work order from the UI (work button / Ctrl+Enter, or the
         hard button / Ctrl+Shift+Enter) — goes to the WORKING brain on the
         left panel, or the hard-task brain when hard=True. This is the only
@@ -1545,16 +1561,18 @@ class GoatApp:
         if self.loop is None or self.loop.is_closed():
             self.emit("status", "engine is down — check python\\goat-app.log")
             return
+        self._route(origin)
         self._typed_lang(text)
         asyncio.run_coroutine_threadsafe(self._work(text, hard=hard), self.loop)
 
-    def submit_files(self, paths: list, note: str = ""):
+    def submit_files(self, paths: list, note: str = "", origin: str = "laptop"):
         """Files/images from the UI (drop, Ctrl+O, or pasted image) — a work
         order (looking at files needs the Read tool), so they run on the
         working brain's left lane. Thread-safe."""
         if self.loop is None or self.loop.is_closed():
             self.emit("status", "engine is down — check python\\goat-app.log")
             return
+        self._route(origin)
         text = ((note + "\n") if note else "") + "[files from Giorgi]\n" + "\n".join(paths)
         # His line + thumbnails in the chat, so he can see what he sent.
         self.emit("you", note or ", ".join(os.path.basename(p) for p in paths))

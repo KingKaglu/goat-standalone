@@ -534,6 +534,7 @@ class PhoneServer:
         await ws.prepare(request)
         st = {"q": asyncio.Queue(maxsize=400), "live": False}
         self.clients[ws] = st
+        self._sync_route()
         writer = asyncio.create_task(self._writer(ws, st["q"]))
         st["q"].put_nowait(json.dumps({"type": "status", "text": "connected"}))
         st["q"].put_nowait(json.dumps(self._snapshot()))
@@ -666,7 +667,7 @@ class PhoneServer:
                 paths.append(fp)
         if not paths:
             return web.json_response({"ok": False, "err": "no file"})
-        self.app.submit_files(paths, note)
+        self.app.submit_files(paths, note, origin="phone")
         return web.json_response({"ok": True, "n": len(paths)})
 
     async def _act(self, request):
@@ -766,6 +767,7 @@ class PhoneServer:
             self.app._lat_start()
         except Exception:  # noqa: BLE001 — the ledger is optional
             pass
+        self._from_phone()
         asyncio.create_task(self.app._handle_utterance(audio, None, None))
 
     def _command(self, st, raw: str):
@@ -777,12 +779,14 @@ class PhoneServer:
         if kind == "text":
             text = str(m.get("text", "")).strip()[:4000]
             if text:
-                self.app.submit_text(text)
+                self.app.submit_text(text, origin="phone")
         elif kind == "stop":
             self.app.tts.cancel()
             self.app._say_buf = ""
         elif kind == "live":
             st["live"] = bool(m.get("on"))
+            if st["live"]:
+                self._from_phone()   # mic on = he's on the phone now
             self._sync_live()
         elif kind == "cut":
             # The phone's Stop button: end the running turn, like talking
@@ -797,9 +801,28 @@ class PhoneServer:
         """While the phone's mic is live the laptop stops listening and goes
         silent; otherwise its mic hears him twice and its speaker barges
         into the phone's turn."""
-        live = any(c["live"] for c in self.clients.values())
-        self.app.phone_live = live
-        self.app.tts.local_mute = live
+        self.app.phone_live = any(c["live"] for c in self.clients.values())
+        self._sync_route()
+
+    def _from_phone(self):
+        route = getattr(self.app, "_route", None)
+        if route is not None:
+            route("phone")
+        else:
+            self.app.reply_to = "phone"
+            self._sync_route()
+
+    def _phone_speaks(self) -> bool:
+        """Replies are voiced on ONE device: the phone while its mic is live
+        or when he last spoke/typed there (and it's still connected);
+        otherwise the laptop. Never both (his order 2026-10-17)."""
+        if not self.clients:
+            return False
+        return bool(getattr(self.app, "phone_live", False)
+                    or getattr(self.app, "reply_to", "laptop") == "phone")
+
+    def _sync_route(self):
+        self.app.tts.local_mute = self._phone_speaks()
 
     # ---- GOAT -> phone ----
     def _post(self, items):
@@ -841,6 +864,7 @@ class PhoneServer:
 
         self.app.emit = emit
         self.app.tts.on_sentence = self._on_sentence
+        self.app.on_route = self._sync_route
         self.app.tts.on_cancel = lambda: self._send(json.dumps({"type": "cancel"}))
 
     def _mirror(self, kind: str, data: str):
@@ -929,9 +953,11 @@ class PhoneServer:
     def _on_sentence(self, text: str, samples):
         if not self.clients:
             return
-        items = [json.dumps({"type": "say", "text": text,
-                             "audio": samples is not None and len(samples) > 0})]
-        if samples is not None and len(samples):
+        # Laptop's turn: the phone still shows the words, but stays silent.
+        voiced = (self._phone_speaks() and samples is not None
+                  and len(samples) > 0)
+        items = [json.dumps({"type": "say", "text": text, "audio": voiced})]
+        if voiced:
             items.append((np.clip(samples, -1.0, 1.0) * 32767)
                          .astype("<i2").tobytes())
         self._send(*items)
