@@ -4,6 +4,7 @@ import asyncio
 import json
 import ssl
 import sys
+import tempfile
 
 import numpy as np
 
@@ -88,6 +89,7 @@ async def main():
 
     app = FakeApp()
     ps.VITALS_S = 0.3
+    ps.ts_cert = lambda: None   # never touch the real tailnet from a test
     srv = ps.PhoneServer(app, port=PORT)
     urls = await srv.start()
     check("server up with LAN url", any("192.168." in u or "10." in u for u in urls))
@@ -175,7 +177,76 @@ async def main():
     async with aiohttp.ClientSession() as s:
         async with s.get(base + "/screen", ssl=sslc) as r:
             check("screen without login refused", r.status == 403)
+        # Installable app: Chrome wants PNG icons, a service worker, a manifest.
+        async with s.get(base + "/manifest.json", ssl=sslc) as r:
+            man = await r.json(content_type=None)
+            sizes = {i["sizes"] for i in man["icons"] if i["type"] == "image/png"}
+            check("manifest has 192+512 PNG icons and an id",
+                  {"192x192", "512x512"} <= sizes and man.get("id") == "/")
+        for path in ("/icon-192.png", "/icon-512.png", "/icon-512-maskable.png"):
+            async with s.get(base + path, ssl=sslc) as r:
+                data = await r.read()
+                check(f"{path} is a PNG", r.status == 200 and data[:4] == b"\x89PNG")
+        async with s.get(base + "/icon-64.png", ssl=sslc) as r:
+            check("odd icon size 404s", r.status == 404)
+        async with s.get(base + "/sw.js", ssl=sslc) as r:
+            body = await r.text()
+            check("service worker served as JS with a fetch handler",
+                  "javascript" in r.headers.get("Content-Type", "")
+                  and '"fetch"' in body)
+
+    # Real-cert address: SNI with the Tailscale name gets that certificate,
+    # a bare IP keeps the self-signed one.
+    tmp = tempfile.mkdtemp()
+    name = "goat.tailtest.ts.net"
+    crt, key = make_cert(tmp, name)
+    check("fresh cert recognised", ps._cert_fresh(crt, key, name))
+    check("wrong-name cert not fresh", not ps._cert_fresh(crt, key, "other.ts.net"))
+    srv.use_ts_cert(name, crt, key)
+    check("ts url listed first", srv.urls[0] == f"https://{name}:{PORT}")
+    check("SNI with ts name -> real cert", name in await served_names(name))
+    check("bare IP -> self-signed cert", name not in await served_names(None))
     await srv.stop()
+
+
+def make_cert(d, name):
+    import datetime
+    import os
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    k = ec.generate_private_key(ec.SECP256R1())
+    n = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    c = (x509.CertificateBuilder().subject_name(n).issuer_name(n)
+         .public_key(k.public_key()).serial_number(x509.random_serial_number())
+         .not_valid_before(now - datetime.timedelta(days=1))
+         .not_valid_after(now + datetime.timedelta(days=89))
+         .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), False)
+         .sign(k, hashes.SHA256()))
+    crt, key = os.path.join(d, "c.pem"), os.path.join(d, "k.pem")
+    with open(crt, "wb") as f:
+        f.write(c.public_bytes(serialization.Encoding.PEM))
+    with open(key, "wb") as f:
+        f.write(k.private_bytes(serialization.Encoding.PEM,
+                                serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption()))
+    return crt, key
+
+
+async def served_names(sni):
+    from cryptography import x509
+    c = ssl.create_default_context()
+    c.check_hostname = False
+    c.verify_mode = ssl.CERT_NONE
+    _r, w = await asyncio.open_connection("127.0.0.1", PORT, ssl=c,
+                                          server_hostname=sni)
+    der = w.get_extra_info("ssl_object").getpeercert(binary_form=True)
+    w.close()
+    cert = x509.load_der_x509_certificate(der)
+    return cert.extensions.get_extension_for_class(
+        x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
 
 
 if __name__ == "__main__":

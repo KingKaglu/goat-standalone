@@ -630,7 +630,9 @@ function buzz() {
 document.addEventListener("click", () => {
   if (window.Notification && Notification.permission === "default") Notification.requestPermission();
 }, {once: true});
-if ("serviceWorker" in navigator) {}
+// Registers only on the real-certificate address (Tailscale name); on a bare
+// IP with the self-signed cert Chrome refuses, which is harmless.
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 $("f").onsubmit = ev => {
   ev.preventDefault(); ensureCtx();
   const t = $("t").value.trim(); if (!t) return;

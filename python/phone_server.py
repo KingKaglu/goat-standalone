@@ -159,6 +159,107 @@ def ensure_cert(ips: list) -> tuple:
     return crt, key
 
 
+TS_EXE = r"C:\Program Files\Tailscale\tailscale.exe"
+TS_RECHECK_S = 12 * 3600      # renew well before Let's Encrypt's 90 days
+
+
+def _cert_fresh(crt: str, key: str, name: str, days: int = 30) -> bool:
+    """True if `crt` names `name` and is good for at least `days` more."""
+    from cryptography import x509
+    try:
+        with open(crt, "rb") as f:
+            c = x509.load_pem_x509_certificate(f.read())
+        names = c.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+        until = getattr(c, "not_valid_after_utc", None) or \
+            c.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return os.path.exists(key) and name in names and \
+            until > now + datetime.timedelta(days=days)
+    except Exception:  # noqa: BLE001 — missing/odd file = not fresh
+        return False
+
+
+def ts_cert():
+    """(name, crt, key): a real Let's Encrypt certificate for this laptop's
+    Tailscale name, so Chrome sees a proper secure site (installable app,
+    service worker). A self-signed cert only ever gets "Add to Home screen".
+    None until HTTPS Certificates are on for the tailnet (admin > DNS)."""
+    import shutil
+    import subprocess
+    exe = TS_EXE if os.path.exists(TS_EXE) else shutil.which("tailscale")
+    if not exe:
+        return None
+    nowin = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        r = subprocess.run([exe, "status", "--json"], capture_output=True,
+                           timeout=15, creationflags=nowin)
+        st = json.loads(r.stdout or b"{}")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    name = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".").lower()
+    domains = [d.rstrip(".").lower() for d in (st.get("CertDomains") or [])]
+    if not name or name not in domains:
+        return None
+    crt, key = os.path.join(DIR, "ts.crt"), os.path.join(DIR, "ts.key")
+    if not _cert_fresh(crt, key, name):
+        os.makedirs(DIR, exist_ok=True)
+        try:
+            r = subprocess.run([exe, "cert", "--cert-file", crt,
+                                "--key-file", key, name], capture_output=True,
+                               timeout=180, creationflags=nowin)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"[phone] tailscale cert failed: {e}")
+            return None
+        if not _cert_fresh(crt, key, name, days=1):
+            msg = (r.stderr or r.stdout or b"").decode(errors="replace").strip()
+            print(f"[phone] tailscale cert failed: {msg[:200]}")
+            return None
+    return name, crt, key
+
+
+def icon_png(size: int, maskable: bool = False) -> bytes:
+    """The orb icon as PNG. Android wants 192/512 PNGs to build a real app;
+    the maskable one is full-bleed with the orb inside the 80% safe zone."""
+    import io
+    from PIL import Image, ImageDraw
+    k = 4                                  # draw big, shrink = smooth edges
+    s = size * k
+    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    bg = (11, 15, 20, 255)
+    if maskable:
+        d.rectangle((0, 0, s, s), fill=bg)
+    else:
+        d.rounded_rectangle((0, 0, s - 1, s - 1), radius=int(s * 0.215), fill=bg)
+    c, f = s / 2, s / 512
+    r1, w = 150 * f, 28 * f
+    d.ellipse((c - r1 - w / 2, c - r1 - w / 2, c + r1 + w / 2, c + r1 + w / 2),
+              outline=(31, 111, 235, 255), width=int(w))
+    r2 = 70 * f
+    d.ellipse((c - r2, c - r2, c + r2, c + r2), fill=(88, 166, 255, 255))
+    out = io.BytesIO()
+    im.resize((size, size), Image.LANCZOS).save(out, "PNG")
+    return out.getvalue()
+
+
+_SW = """// GOAT phone service worker: makes the page an installable app and shows
+// a calm note instead of Chrome's dino when the laptop is out of reach.
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
+self.addEventListener("fetch", e => {
+  if (e.request.mode !== "navigate") return;
+  e.respondWith(fetch(e.request).catch(() => new Response(
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<body style="margin:0;background:#0b0f14;color:#c9d1d9;font:16px system-ui;' +
+    'display:grid;place-items:center;height:100vh;text-align:center">' +
+    '<div>GOAT is out of reach.<br><small style="color:#8b949e">Check Wi-Fi or ' +
+    'Tailscale, then pull down to retry.</small></div>',
+    {headers: {"Content-Type": "text/html; charset=utf-8"}})));
+});
+"""
+
+
 def _read_plan():
     """Last plan-usage reading GOAT saved (goat_app._pull_plan_usage)."""
     try:
@@ -269,6 +370,10 @@ class PhoneServer:
         self._fails = {}       # ip -> [count, first_fail_time]
         self._runner = None
         self._vitals_task = None
+        self._ts_task = None
+        self._ts_ctx = None    # real cert for the Tailscale name, once issued
+        self.ts_host = None
+        self._lan_urls = []
         self._names = {}       # pid -> process name, for the window list
         self._think_buf = ""
         self._think_due = False
@@ -290,6 +395,7 @@ class PhoneServer:
         crt, key = await asyncio.to_thread(ensure_cert, ips)
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(crt, key)
+        ctx.sni_callback = self._sni
         wapp = web.Application(client_max_size=64 * 1024,
                                middlewares=[self._gate])
         wapp.router.add_get("/", self._page)
@@ -301,25 +407,66 @@ class PhoneServer:
         wapp.router.add_post("/upload", self._upload)
         wapp.router.add_get("/manifest.json", self._manifest)
         wapp.router.add_get("/icon.svg", self._icon)
+        wapp.router.add_get("/icon-{size:192|512}{mask:(?:-maskable)?}.png",
+                            self._icon_png)
+        wapp.router.add_get("/sw.js", self._sw)
         self._runner = web.AppRunner(wapp, access_log=None)
         await self._runner.setup()
         await web.TCPSite(self._runner, "0.0.0.0", self.port,
                           ssl_context=ctx).start()
-        self.urls = [f"https://{a}:{self.port}" for a in ips]
+        self._lan_urls = [f"https://{a}:{self.port}" for a in ips]
+        self.urls = list(self._lan_urls)
         self._hook()
         self._vitals_task = asyncio.create_task(self._vitals_loop())
+        self._ts_task = asyncio.create_task(self._ts_loop())
+        self._write_urls()
+        print(f"[phone] ready on {', '.join(self.urls) or 'no LAN address'}")
+        return self.urls
+
+    def _write_urls(self):
         try:
             with open(os.path.join(DIR, "url.txt"), "w", encoding="utf-8") as f:
                 f.write("\n".join(self.urls) + f"\ntoken: {self.token}\n")
         except OSError:
             pass
-        print(f"[phone] ready on {', '.join(self.urls) or 'no LAN address'}")
-        return self.urls
+
+    def _sni(self, sock, server_name, _ctx):
+        """Same port, two certificates: the Tailscale name gets the real one,
+        bare IPs keep the self-signed one."""
+        if server_name and self._ts_ctx is not None \
+                and server_name.lower() == self.ts_host:
+            sock.context = self._ts_ctx
+        return None
+
+    def use_ts_cert(self, name: str, crt: str, key: str):
+        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ctx.load_cert_chain(crt, key)
+        self._ts_ctx, self.ts_host = ctx, name
+        self.urls = [f"https://{name}:{self.port}"] + self._lan_urls
+        self._write_urls()
+
+    async def _ts_loop(self):
+        """Pick up (and keep renewing) the real Tailscale certificate. Runs in
+        the background so a slow first issue never delays GOAT's boot."""
+        announced = None
+        while True:
+            try:
+                got = await asyncio.to_thread(ts_cert)
+            except Exception as e:  # noqa: BLE001
+                got = None
+                print(f"[phone] tailscale cert check failed: {e}")
+            if got:
+                self.use_ts_cert(*got)
+                if announced != got[0]:
+                    announced = got[0]
+                    print(f"[phone] installable app at https://{got[0]}:{self.port}")
+            await asyncio.sleep(TS_RECHECK_S if got else 120)
 
     async def stop(self):
-        if self._vitals_task is not None:
-            self._vitals_task.cancel()
-            self._vitals_task = None
+        for t in (self._vitals_task, self._ts_task):
+            if t is not None:
+                t.cancel()
+        self._vitals_task = self._ts_task = None
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
@@ -446,10 +593,34 @@ class PhoneServer:
         from aiohttp import web
         return web.json_response({
             "name": "GOAT", "short_name": "GOAT", "start_url": "/",
-            "display": "standalone", "background_color": "#0b0f14",
-            "theme_color": "#0b0f14",
-            "icons": [{"src": "/icon.svg", "sizes": "any",
-                       "type": "image/svg+xml", "purpose": "any"}]})
+            "id": "/", "scope": "/", "description": "Talk to GOAT, your laptop's AI",
+            "display": "standalone", "orientation": "portrait",
+            "background_color": "#0b0f14", "theme_color": "#0b0f14",
+            "icons": [
+                {"src": "/icon-192.png", "sizes": "192x192",
+                 "type": "image/png", "purpose": "any"},
+                {"src": "/icon-512.png", "sizes": "512x512",
+                 "type": "image/png", "purpose": "any"},
+                {"src": "/icon-512-maskable.png", "sizes": "512x512",
+                 "type": "image/png", "purpose": "maskable"},
+                {"src": "/icon.svg", "sizes": "any",
+                 "type": "image/svg+xml", "purpose": "any"}]})
+
+    async def _icon_png(self, request):
+        from aiohttp import web
+        key = request.match_info["size"] + request.match_info["mask"]
+        cache = self.__dict__.setdefault("_png_cache", {})
+        if key not in cache:
+            cache[key] = await asyncio.to_thread(
+                icon_png, int(request.match_info["size"]),
+                bool(request.match_info["mask"]))
+        return web.Response(body=cache[key], content_type="image/png",
+                            headers={"Cache-Control": "max-age=86400"})
+
+    async def _sw(self, request):
+        from aiohttp import web
+        return web.Response(text=_SW, content_type="application/javascript",
+                            headers={"Cache-Control": "no-cache"})
 
     async def _icon(self, request):
         from aiohttp import web
