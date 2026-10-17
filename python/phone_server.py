@@ -184,6 +184,60 @@ def grab_screen(max_w: int = 1280) -> bytes:
     return buf.getvalue()
 
 
+_VK = {"volup": 0xAF, "voldown": 0xAE, "mute": 0xAD, "playpause": 0xB3,
+       "next": 0xB0, "prev": 0xB1, "enter": 0x0D, "esc": 0x1B, "tab": 0x09,
+       "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28, "back": 0x08,
+       "space": 0x20, "pgup": 0x21, "pgdn": 0x22}
+
+
+def _key(vk: int, times: int = 1):
+    import ctypes
+    u = ctypes.windll.user32
+    for _ in range(times):
+        u.keybd_event(vk, 0, 0, 0)
+        u.keybd_event(vk, 0, 2, 0)
+
+
+def do_action(d: dict) -> str:
+    """Run one phone-remote action on the laptop."""
+    import ctypes
+    u = ctypes.windll.user32
+    a = str(d.get("a", ""))
+    if a in _VK:
+        _key(_VK[a], 5 if a in ("volup", "voldown") else 1)
+        return a
+    if a == "lock":
+        u.LockWorkStation()
+        return "locked"
+    if a in ("click", "dclick", "rclick"):
+        w, h = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+        x = int(max(0.0, min(1.0, float(d["x"]))) * (w - 1))
+        y = int(max(0.0, min(1.0, float(d["y"]))) * (h - 1))
+        u.SetCursorPos(x, y)
+        dn, up = (0x8, 0x10) if a == "rclick" else (0x2, 0x4)
+        for _ in range(2 if a == "dclick" else 1):
+            u.mouse_event(dn, 0, 0, 0, 0)
+            u.mouse_event(up, 0, 0, 0, 0)
+            time.sleep(0.05)
+        return f"{a} {x},{y}"
+    if a == "scroll":
+        u.mouse_event(0x800, 0, 0, int(d.get("dy", 0)) * 120, 0)
+        return "scroll"
+    if a == "type":
+        import subprocess
+        txt = str(d.get("text", ""))[:500]
+        subprocess.run(["powershell", "-NoProfile", "-Command",
+                        "Set-Clipboard -Value $env:GT"],
+                       env={**os.environ, "GT": txt}, timeout=10,
+                       creationflags=0x08000000)
+        u.keybd_event(0x11, 0, 0, 0)
+        u.keybd_event(0x56, 0, 0, 0)
+        u.keybd_event(0x56, 0, 2, 0)
+        u.keybd_event(0x11, 0, 2, 0)
+        return "typed"
+    raise ValueError("unknown action")
+
+
 _LOGIN = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GOAT</title><style>
@@ -243,6 +297,7 @@ class PhoneServer:
         wapp.router.add_get("/ws", self._ws)
         wapp.router.add_get("/shot", self._shot)
         wapp.router.add_get("/screen", self._screen)
+        wapp.router.add_post("/act", self._act)
         self._runner = web.AppRunner(wapp, access_log=None)
         await self._runner.setup()
         await web.TCPSite(self._runner, "0.0.0.0", self.port,
@@ -375,6 +430,18 @@ class PhoneServer:
             return web.Response(status=500, text=f"capture failed: {e}")
         return web.Response(body=data, content_type="image/jpeg",
                             headers={"Cache-Control": "no-store"})
+
+    async def _act(self, request):
+        """Remote control: quick actions, tap-to-click, typing."""
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=403)
+        try:
+            d = await request.json()
+            r = await asyncio.to_thread(do_action, d)
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"ok": False, "err": str(e)})
+        return web.json_response({"ok": True, "msg": r})
 
     def _snapshot(self) -> dict:
         hist = []

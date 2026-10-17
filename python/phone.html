@@ -92,6 +92,7 @@ form{display:flex;gap:8px;padding:4px 12px calc(10px + env(safe-area-inset-botto
 #t{flex:1;min-width:0;background:#161b22;border:1px solid #30363d;color:inherit;
   border-radius:22px;padding:10px 15px;font-size:16px}
 #send{background:#1f6feb;border:none;color:#fff;border-radius:22px;padding:0 18px;font-size:15px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.grid .btn{padding:14px 4px;font-size:16px}
 </style></head>
 <body>
 <header>
@@ -102,6 +103,7 @@ form{display:flex;gap:8px;padding:4px 12px calc(10px + env(safe-area-inset-botto
   <button data-p="chat" class="sel">Chat</button>
   <button data-p="work">Work<span class="badge" id="wbadge"></span></button>
   <button data-p="sys">Laptop</button>
+  <button data-p="ctl">Control</button>
 </nav>
 <main>
   <section class="pane sel" id="p-chat">
@@ -137,6 +139,26 @@ form{display:flex;gap:8px;padding:4px 12px calc(10px + env(safe-area-inset-botto
     </div>
   </section>
 
+  <section class="pane" id="p-ctl">
+    <div class="card">
+      <h3><span>Quick</span><span id="ctlmsg" class="small"></span></h3>
+      <div class="grid">
+        <button class="btn" data-a="voldown">Vol −</button><button class="btn" data-a="mute">Mute</button><button class="btn" data-a="volup">Vol +</button>
+        <button class="btn" data-a="prev">⏮</button><button class="btn" data-a="playpause">⏯</button><button class="btn" data-a="next">⏭</button>
+        <button class="btn" data-a="lock">Lock</button><button class="btn" data-a="esc">Esc</button><button class="btn" data-a="enter">Enter</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3><span>Remote screen</span><span class="small"><label><input type="checkbox" id="live"> live</label></span></h3>
+      <img class="shot" id="rscr" alt="" style="display:none">
+      <div class="small">Tap = click. Hold = right click. Two-finger swipe on it = scroll.</div>
+      <div class="grid" style="margin-top:8px">
+        <button class="btn" data-a="up">↑</button><button class="btn" data-a="pgup">PgUp</button><button class="btn" data-a="tab">Tab</button>
+        <button class="btn" data-a="down">↓</button><button class="btn" data-a="pgdn">PgDn</button><button class="btn" data-a="back">⌫</button>
+      </div>
+      <form id="tf" style="display:flex;gap:6px;margin-top:8px"><input id="tt" placeholder="Type on laptop" autocomplete="off" style="flex:1"><button class="btn">Type</button></form>
+    </div>
+  </section>
   <section class="pane" id="p-sys">
     <div class="card">
       <h3><span>Claude plan</span><span id="planstate" class="small"></span></h3>
@@ -364,6 +386,36 @@ function loadScreen() {
   img.onerror = () => { $("scrnote").textContent = "Capture failed."; };
   img.src = "/screen?r=" + Date.now();
 }
+
+function act(o) {
+  return fetch("/act", {method: "POST", body: JSON.stringify(o)}).then(r => r.json())
+    .then(j => { $("ctlmsg").textContent = j.ok ? j.msg : "failed: " + j.err; return j; })
+    .catch(() => { $("ctlmsg").textContent = "no link"; });
+}
+document.querySelectorAll("#p-ctl [data-a]").forEach(b => b.onclick = () => act({a: b.dataset.a}));
+const rs = $("rscr");
+function rload() { rs.onload = () => { rs.style.display = ""; }; rs.src = "/screen?r=" + Date.now(); }
+let liveT = null;
+$("live").onchange = () => { clearInterval(liveT); if ($("live").checked) { rload(); liveT = setInterval(rload, 1500); } };
+let pt = null, held = false, ty = null;
+function rel(e) { const b = rs.getBoundingClientRect(); const t = e.touches ? (e.changedTouches[0]) : e;
+  return {x: (t.clientX - b.left) / b.width, y: (t.clientY - b.top) / b.height}; }
+rs.addEventListener("touchstart", e => {
+  if (e.touches.length === 2) { ty = e.touches[0].clientY; return; }
+  held = false; pt = setTimeout(() => { held = true; act(Object.assign({a: "rclick"}, rel(e))); }, 600);
+}, {passive: true});
+rs.addEventListener("touchmove", e => {
+  clearTimeout(pt);
+  if (e.touches.length === 2 && ty !== null) { const dy = e.touches[0].clientY - ty;
+    if (Math.abs(dy) > 25) { act({a: "scroll", dy: dy > 0 ? 3 : -3}); ty = e.touches[0].clientY; } }
+}, {passive: true});
+rs.addEventListener("touchend", e => {
+  clearTimeout(pt);
+  if (held || ty !== null) { if (e.touches.length === 0) ty = null; return; }
+  act(Object.assign({a: "click"}, rel(e))).then(() => setTimeout(rload, 400));
+});
+rs.addEventListener("contextmenu", e => e.preventDefault());
+$("tf").onsubmit = e => { e.preventDefault(); const v = $("tt").value; if (v) act({a: "type", text: v}).then(() => { $("tt").value = ""; setTimeout(rload, 400); }); };
 $("scrbtn").onclick = loadScreen; $("scr").onclick = loadScreen;
 $("shot").onclick = () => window.open($("shot").src, "_blank");
 $("stopbtn").onclick = () => { stopPlayback(); send({type: "cut"}); setStatus("stopping"); };
