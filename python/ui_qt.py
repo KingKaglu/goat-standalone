@@ -2209,6 +2209,13 @@ class WorkPanel(QWidget):
         bits.append(tail)
         return " · ".join(b for b in bits if b)
 
+    def set_turn_effort(self, level: str):
+        """The auto brain's depth for THIS turn (talk runs low, simple tasks
+        medium, deep work at his dial) — the sub line shows what is really
+        running, not just the dial."""
+        if level:
+            self._effort = level
+
     def set_effort(self, level: str):
         self._effort = level
         self.sub.setText(self._sub("working · " + self._elapsed_str()
@@ -2860,6 +2867,201 @@ def _read_skills() -> list:
     return out
 
 
+LIVE_TITLE = "GOAT live"   # screen_hands / live_view skip a window by this title
+
+
+class LiveWindow(QWidget):
+    """What the working brain is doing, while GOAT's own window is away.
+
+    His ask, 2026-10-16: "when I give it a task I want to SEE what the model is
+    doing — I don't think we have a section or a window for that." The
+    Activity card exists, but screen work minimizes GOAT (stand_aside), so the
+    card vanishes exactly when there is most to watch.
+
+    This floats bottom-right while a work turn runs and the main window is
+    not on screen: brain + clock, the last screenshot the brain looked at,
+    the step in progress, its thinking, and the steps before.
+
+    It must never get in the brain's way, so it is
+      - click-through (WindowTransparentForInput): a click aimed at the app
+        underneath lands there, not here;
+      - left out of every screen capture (WDA_EXCLUDEFROMCAPTURE): the
+        brain's screenshots show the desktop, never this window;
+      - skipped by stand_aside and live_view (LIVE_TITLE).
+    """
+
+    HISTORY = 5
+    HOLD_MS = 5000    # stays up this long after the turn ends
+
+    def __init__(self, theme: dict):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+                         | Qt.Tool | Qt.WindowTransparentForInput)
+        self.setWindowTitle(LIVE_TITLE)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.active = False       # a work turn is running (or just ended)
+        self.worked = False       # it has taken at least one step
+        self._t0 = 0.0
+        self._model = ""
+        self._state = ""
+        self._steps: list[str] = []
+        self._shot_path = ""
+        self._t = dict(theme)
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(6)
+        self.head = QLabel("")
+        self.task = QLabel("")
+        self.task.setWordWrap(True)
+        self.shot = QLabel()
+        self.shot.setAlignment(Qt.AlignCenter)
+        self.shot.hide()
+        self.cur = QLabel("")
+        self.cur.setWordWrap(True)
+        self.think = QLabel("")
+        self.think.setWordWrap(True)
+        self.hist = QLabel("")
+        self.hist.setWordWrap(True)
+        for w in (self.head, self.task, self.shot, self.cur, self.think, self.hist):
+            if w is not self.shot:
+                w.setTextFormat(Qt.PlainText)
+            col.addWidget(w)
+        self.setFixedWidth(380)
+
+        self._tick = QTimer(self)
+        self._tick.setInterval(1000)
+        self._tick.timeout.connect(self._paint_head)
+        self._end = QTimer(self)
+        self._end.setSingleShot(True)
+        self._end.timeout.connect(self._finish)
+        self.set_theme(theme)
+
+    # ---- look ----
+    def set_theme(self, t: dict):
+        self._t = dict(t)
+        paper = t.get("paper", "#e9eefa")
+        dim = t.get("dim", "#8e9ab4")
+        acc = t.get("accent2", t.get("accent", "#6fb3ff"))
+        base = "background: transparent; font-family: 'Segoe UI Variable Text', 'Segoe UI';"
+        self.head.setStyleSheet(f"{base} color: {acc}; font-size: 12px; font-weight: 600;")
+        self.task.setStyleSheet(f"{base} color: {paper}; font-size: 13px; font-weight: 600;")
+        self.cur.setStyleSheet(f"{base} color: {paper}; font-size: 13px;")
+        self.think.setStyleSheet(f"{base} color: {dim}; font-size: 12px; font-style: italic;")
+        self.hist.setStyleSheet(f"{base} color: {dim}; font-size: 12px;")
+        self.update()
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        bg = QColor(self._t.get("card", self._t.get("bg_bot", "#0f1a2e")))
+        bg.setAlpha(235)
+        line = QColor(self._t.get("accent", "#3b8bff"))
+        line.setAlpha(150)
+        p.setPen(QPen(line, 1))
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
+
+    # ---- feed (same events as the Activity card) ----
+    def start(self, model: str, task: str):
+        self._end.stop()
+        self.active = True
+        self.worked = False       # talk turns never use a tool: no window
+        self._t0 = time.time()
+        self._model = model
+        self._state = "working"
+        self._steps = []
+        self._shot_path = ""
+        self.shot.hide()
+        self.task.setText(" ".join(task.split())[:140])
+        self.cur.setText("")
+        self.think.setText("")
+        self.hist.setText("")
+        self._tick.start()
+        self._paint_head()
+
+    def step(self, desc: str):
+        if desc:
+            self.worked = True
+        prev = self.cur.text()
+        if prev:
+            self._steps.append("✓ " + prev.removeprefix("▸ "))
+            self._steps = self._steps[-self.HISTORY:]
+            self.hist.setText("\n".join(reversed(self._steps)))
+        self.cur.setText("▸ " + desc)
+        self.think.setText("")
+        self._relayout()
+
+    def thinking(self, piece: str):
+        txt = (self.think.text() + piece)[-400:]
+        # The tail of a long thought, from a word boundary.
+        if len(txt) >= 400 and " " in txt[:60]:
+            txt = "…" + txt[txt.find(" ") + 1:]
+        self.think.setText(txt)
+        self._relayout()
+
+    def set_shot(self, path: str):
+        pm = QPixmap(path)
+        if pm.isNull():
+            return
+        self._shot_path = path
+        self.shot.setPixmap(pm.scaled(352, 220, Qt.KeepAspectRatio,
+                                      Qt.SmoothTransformation))
+        self.shot.show()
+        self._relayout()
+
+    def done(self, failed: str = ""):
+        self._state = ("failed: " + failed[:60]) if failed else "done"
+        if self.cur.text():
+            self.step("")              # moves the last step into history
+            self.cur.setText("")
+        self._tick.stop()
+        self._paint_head()
+        self._end.start(self.HOLD_MS)
+
+    def _finish(self):
+        self.active = False
+        self.hide()
+
+    def _paint_head(self):
+        bits = ["GOAT", self._model or "", self._state]
+        if self._t0:
+            up = int(time.time() - self._t0)
+            bits.append(f"{up // 60}:{up % 60:02d}")
+        self.head.setText("  ·  ".join(b for b in bits if b))
+
+    # ---- placement ----
+    def _relayout(self):
+        self.cur.setVisible(bool(self.cur.text()))
+        self.think.setVisible(bool(self.think.text()))
+        self.hist.setVisible(bool(self.hist.text()))
+        self.adjustSize()
+        area = QApplication.primaryScreen().availableGeometry()
+        self.move(area.right() - self.width() - 16,
+                  area.bottom() - self.height() - 16)
+
+    def reveal(self, on: bool):
+        if on and not self.isVisible():
+            self._relayout()
+            self.show()
+            _exclude_from_capture(self)
+            pin_topmost(self)
+        elif not on and self.isVisible():
+            self.hide()
+
+
+def _exclude_from_capture(w: QWidget):
+    """WDA_EXCLUDEFROMCAPTURE (Windows 10 2004+): screenshots, BitBlt and
+    screen recorders see straight through this window. Best effort."""
+    if QGuiApplication.platformName() != "windows":
+        return
+    try:
+        ctypes.windll.user32.SetWindowDisplayAffinity(
+            ctypes.wintypes.HWND(int(w.winId())), 0x11)
+    except Exception:  # noqa: BLE001 — older Windows: it just shows in shots
+        pass
+
+
 class QuoteCard(QFrame):
     """Today, at the foot of the right rail: the clock, the date and a line,
     over a small painted range — the concept's quote card, made useful."""
@@ -2954,6 +3156,7 @@ class GoatWindow(QWidget):
         self._statew = "booting"
         self._status_hold = 0.0  # until this time, hud_tick may not stomp
         self._usage = ""
+        self._plan = ""
         self._claude_out = False
         self._turnlang = ""
         self._claude_reset = ""
@@ -3026,6 +3229,14 @@ class GoatWindow(QWidget):
         self._keeper = QTimer(self)
         self._keeper.setInterval(1500)
         self._keeper.timeout.connect(self._keep_bubble_up)
+        # Live window (2026-10-16): the work turn, watchable while the main
+        # window is away. A slow check decides when it shows — the main
+        # window can leave by stand_aside, collapse or his own minimize.
+        self.live = LiveWindow({**THEMES.get(self._theme_name, THEMES["midnight"]),
+                                **(self.cfg.get("colors") or {})})
+        self._live_check = QTimer(self)
+        self._live_check.setInterval(600)
+        self._live_check.timeout.connect(self._sync_live)
         # The greeting follows the clock (evening → late → morning).
         self._hello_timer = QTimer(self)
         self._hello_timer.setInterval(60_000)
@@ -3871,18 +4082,31 @@ class GoatWindow(QWidget):
 
     def _refresh_side(self):
         """Active brain + System pills from the live config/engine."""
-        name = (self._work_model or self.cfg.get("work_model", "opus 5.5")).strip()
+        # Auto brain (2026-10-01): the card names the brain answering NOW
+        # (Sonnet 5.5 for talk and simple tasks, his pick for code and
+        # serious questions); the chip stays his pick — it is a selector.
+        pick = self.cfg.get("work_model", "opus 5.5").strip()
+        name = (self._work_model or pick).strip()
         self.model_name.setText(name.title() if name.islower() else name)
         eff = self.cfg.get("effort", "high")
-        self.model_pill.setText(eff)
-        bits = [f"Thinks at {eff}"]
-        if self.cfg.get("hard_model"):
+        live = getattr(self, "_turn_brain", None)
+        self.model_pill.setText(live[2] if live else eff)
+        if live:
+            big = pick.title().replace(" ", "\u00a0")   # never split a name
+            bits = [{"talk": "Auto · talking",
+                     "task": "Auto · simple task",
+                     "deep": "Auto · code & serious work"}.get(live[1], "Auto")]
+            if live[1] != "deep":
+                bits.append(f"{big} takes the hard work")
+        else:
+            bits = [f"Thinks at {eff}"]
+        if self.cfg.get("hard_model") and not live:
             bits.append(f"hard tasks: {self.cfg['hard_model'].title()}")
         if self._claude_out:
             bits = ["Out of usage" + (f" — back at {self._claude_reset}"
                                       if self._claude_reset else "")]
         self.model_sub.setText(" · ".join(bits))
-        self.chip_model.setText("  " + (name.title() if name.islower() else name) + "  ▾")
+        self.chip_model.setText("  " + (pick.title() if pick.islower() else pick) + "  ▾")
         self.chip_effort.setText(f"  {eff}  ▾" if getattr(self, "_chips_compact", False)
                                  else f"  Thinking: {eff}  ▾")
         lang = next((l for l, c in LANGS.items() if c == self.cfg.get("lang")), "english")
@@ -4041,6 +4265,22 @@ class GoatWindow(QWidget):
     def toggle_bubble(self):
         self.expand() if self.bubble.isVisible() else self.collapse()
 
+    def _sync_live(self):
+        """Live window up while a work turn runs and the main window is off
+        screen (aside, collapsed, minimized); down otherwise. Off entirely
+        with cfg live_window = "off"."""
+        live = self.live
+        if not live.active:
+            live.reveal(False)
+            self._live_check.stop()
+            return
+        if (live._state == "working" and self.goat is not None
+                and not self.goat.busy):
+            live.done()           # a cut turn never sends work_done
+        main_shown = self.isVisible() and not self.isMinimized()
+        live.reveal(self.cfg.get("live_window", "on") != "off" and live.worked
+                    and not main_shown)
+
     def _keep_bubble_up(self):
         if not self.bubble.isVisible():
             self._keeper.stop()
@@ -4141,6 +4381,8 @@ class GoatWindow(QWidget):
         if hasattr(self, "pop"):
             self.pop.set_theme(t)
             self.pop.set_scale(float(self.cfg.get("scale", 1.0)))
+        if hasattr(self, "live"):
+            self.live.set_theme(t)
         self.panel.set_theme(t)
         self.panel.refresh()
         self._apply_metrics()
@@ -4745,6 +4987,8 @@ class GoatWindow(QWidget):
             claude = f" · {self._usage}"
         else:
             claude = ""
+        if self._plan and not self._claude_out:
+            claude += f" · {self._plan}"
         # In bilingual mode the ear can flip per sentence — show which
         # language the last turn landed in, so a mishearing is visible.
         heard = (f" · hearing {self._turnlang}"
@@ -4922,6 +5166,14 @@ class GoatWindow(QWidget):
             self._work_model = data  # the brain actually answering
             self.work_panel.set_model(data)
             self._refresh_side()
+        elif kind == "brain":
+            # "sonnet 5.5|talk|low" — the auto brain's pick for this turn.
+            parts = (data.split("|") + ["", "", ""])[:3]
+            self._turn_brain = parts
+            self.work_panel.set_turn_effort(parts[2])
+            if self._reply_label is not None:
+                self._reply_label.setToolTip(f"answered by {parts[0]}")
+            self._refresh_side()
         elif kind == "claude":
             # Claude usage meter: "ok" or "out|HH:MM".
             if data == "ok":
@@ -4951,6 +5203,12 @@ class GoatWindow(QWidget):
             try:
                 tin, tout = (int(x) for x in data.split("|"))
                 self._usage = f"{_fmt_tok(tin)} in / {_fmt_tok(tout)} out"
+            except ValueError:
+                pass
+        elif kind == "plan":
+            try:
+                fh, wk, rs = data.split("|")
+                self._plan = f"plan {fh}% (resets {rs}) · week {wk}%"
             except ValueError:
                 pass
         elif kind == "limit":
@@ -4991,6 +5249,17 @@ class GoatWindow(QWidget):
             # revealed by update_spoken(), synced to actual playback.
             if self._reply_label is None:
                 self._reply_label = self._add_line("", "replyNow")
+                tb = getattr(self, "_turn_brain", None)
+                if tb:
+                    self._reply_label.setToolTip(f"answered by {tb[0]}")
+        elif kind == "reply_drop":
+            # The brain answered [[quiet]] (side talk, see side_talk.py):
+            # take away the reply label it opened, if nothing reached it.
+            lbl = self._reply_label
+            if lbl is not None and not lbl.text().strip():
+                self._reply_label = None
+                lbl.hide()
+                lbl.deleteLater()
         elif kind == "tool":
             # Keep _reply_label — the whole turn reveals into ONE label
             # (spoken_text() is cumulative; a second label would duplicate).
@@ -4998,10 +5267,17 @@ class GoatWindow(QWidget):
         elif kind == "work_start":
             model, _, task = data.partition("|")
             self.work_panel.start(model.strip(), task)
+            self.live.start(model.strip(), task)
+            self._live_check.start()
             if not self._side_pinned:
                 self._show_side("activity")
         elif kind == "work_tool" or kind == "work_step":
             self.work_panel.step(data)
+            self.live.step(data)
+            self._sync_live()
+        elif kind == "work_shot":
+            # The screenshot the brain just looked at (screen_tools).
+            self.live.set_shot(data)
         elif kind == "work_text":
             self.work_panel.text(data)
         elif kind == "turnlang":
@@ -5019,6 +5295,7 @@ class GoatWindow(QWidget):
                 pass
         elif kind == "work_think":
             self.work_panel.think(data)
+            self.live.thinking(data)
         elif kind == "effort":
             self.cfg["effort"] = data if data in EFFORT_OPTS else "max"
             self.work_panel.set_effort(self.cfg["effort"])
@@ -5032,11 +5309,13 @@ class GoatWindow(QWidget):
             self.work_panel.files(paths)
         elif kind == "work_done":
             self.work_panel.done()
+            self.live.done()
             self._recent_timer.start(1500)
             if not self._side_pinned:
                 QTimer.singleShot(4000, self._auto_side)
         elif kind == "work_fail":
             self.work_panel.fail(data)
+            self.live.done(failed=data)
         elif kind == "turn_done":
             # Do NOT drop _reply_label here: the model finishes generating
             # seconds before the voice finishes speaking (often before it
