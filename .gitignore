@@ -41,3 +41,8 @@ ui-config.json
 # Raw mic captures from STT debugging — voice recordings never leave the machine
 python/stt-debug/
 python/screen-actions.jsonl
+python/live-shot.png
+python/live-shot.png.tmp
+
+# phone client: login token + TLS key, never public
+.phone/

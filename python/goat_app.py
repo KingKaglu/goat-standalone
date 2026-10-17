@@ -815,6 +815,12 @@ class TtsPipeline:
         self.on_first_audio = None   # latency ledger hook
         self.on_filler_audio = None  # ledger: a backchannel noise, not the answer
         self._sounded = False        # has this turn made a sound yet?
+        # Phone client taps (phone_server.py): every sentence's text+audio,
+        # and barge-in. local_mute keeps the playback clock (the reveal)
+        # running while the laptop speaker stays silent.
+        self.on_sentence = None
+        self.on_cancel = None
+        self.local_mute = False
         threading.Thread(target=self._worker, daemon=True).start()
 
     def prewarm(self, lines):
@@ -864,6 +870,12 @@ class TtsPipeline:
                 except queue.Empty:
                     break
         self.audio.clear_playback()
+        cb = getattr(self, "on_cancel", None)
+        if cb:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001
+                pass
         # Trim the reveal to where the voice actually stopped, and resync
         # the queue clock (the cleared buffer's samples will never play).
         # Bump epoch so any partial segments already started don't leak into
@@ -938,6 +950,7 @@ class TtsPipeline:
                 # not read aloud, but still shown — zero-length segment
                 # appears the moment playback reaches this point
                 self._register(text, 0, epoch)
+                self._tap(text, None)
                 continue
             key = (tts_edge.VOICE, text)
             samples = self._synth_cache.get(key)
@@ -947,6 +960,7 @@ class TtsPipeline:
                 except Exception as e:  # noqa: BLE001 — TTS must never kill the app
                     print("[tts] synth failed:", e)
                     self._register(text, 0, epoch)  # voice lost it; text must survive
+                    self._tap(text, None)
                     continue
                 if len(text) <= 48 and len(self._synth_cache) < 40:
                     self._synth_cache[key] = samples
@@ -969,7 +983,18 @@ class TtsPipeline:
                         self.on_first_audio()
                     except Exception:  # noqa: BLE001
                         pass
+                self._tap(text, samples)
+                if getattr(self, "local_mute", False):
+                    samples = np.zeros_like(samples)
                 self.audio.queue_playback(samples)
+
+    def _tap(self, text: str, samples):
+        cb = getattr(self, "on_sentence", None)
+        if cb:
+            try:
+                cb(text, samples)
+            except Exception:  # noqa: BLE001 — the phone must never break the voice
+                pass
 
 
 class GoatApp:
@@ -1116,10 +1141,12 @@ class GoatApp:
         self._work_done_at = 0.0      # monotonic time the last work turn ended
         self._work_failed = False     # last work turn errored / hit the limit
         self._last_work_summary = ""  # short tail of the last work reply
+        self.phone = None             # phone_server.PhoneServer once up
+        self.phone_live = False       # a phone's mic is live: laptop mic off
 
     # ---- audio-thread callbacks ----
     def _on_interrupt(self, _preroll):
-        if self.mic_muted:
+        if self.mic_muted or self.phone_live:
             return
         # Voice barge-in affects only the talking lane's VOICE — the work lane
         # is silent and keeps running. Cut GOAT off mid-sentence; his next
@@ -1290,7 +1317,7 @@ class GoatApp:
 
     def _on_utt_start(self, preroll):
         self._utt_began = time.monotonic()
-        if self.mic_muted or not self.loop:
+        if self.mic_muted or self.phone_live or not self.loop:
             return
         # Dial (or re-dial) the voice socket while he is still talking, so
         # the answer's first clause doesn't pay the connection. Non-blocking.
@@ -1326,8 +1353,8 @@ class GoatApp:
         began = getattr(self, "_utt_began", now)
         gap = (began - prev_end) if prev_end is not None else None
         self._prev_utt_end = now - getattr(self.audio, "last_hangover_ms", 0.0) / 1000.0
-        if self.mic_muted:
-            return
+        if self.mic_muted or self.phone_live:
+            return   # phone live: the laptop mic would hear him twice
         if self.loop:
             asyncio.run_coroutine_threadsafe(
                 self._handle_utterance(audio_np, rt, gap), self.loop)
@@ -2689,8 +2716,19 @@ class GoatApp:
             await asyncio.sleep(0.1)
         self.audio.warming_up = False
 
+    async def _start_phone(self):
+        """Phone client (home Wi-Fi / tailnet). Failure leaves GOAT intact."""
+        try:
+            import phone_server
+            self.phone = phone_server.PhoneServer(self)
+            await self.phone.start()
+        except Exception as e:  # noqa: BLE001
+            self.phone = None
+            print(f"[phone] not started: {e}")
+
     async def run(self):
         self.loop = asyncio.get_running_loop()
+        asyncio.create_task(self._start_phone())
         # Away-time, read BEFORE this boot's init overwrites the session
         # file: its mtime is when the LAST session was live.
         away_h = None

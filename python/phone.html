@@ -1,0 +1,216 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<title>GOAT</title>
+<style>
+:root{color-scheme:dark}
+html,body{margin:0;height:100%;background:#0b0f14;color:#e6edf3;
+  font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+body{display:flex;flex-direction:column}
+header{display:flex;justify-content:space-between;align-items:center;
+  padding:calc(10px + env(safe-area-inset-top)) 16px 10px;font-weight:600;letter-spacing:.12em}
+#dot{width:9px;height:9px;border-radius:50%;background:#6e7681;display:inline-block;margin-right:8px}
+#dot.on{background:#3fb950}
+#log{flex:1;overflow-y:auto;padding:4px 14px}
+.m{margin:8px 0;padding:9px 13px;border-radius:16px;max-width:85%;
+  white-space:pre-wrap;overflow-wrap:anywhere}
+.you{margin-left:auto;background:#1f6feb2e;border:1px solid #1f6feb55}
+.goat{background:#ffffff0b;border:1px solid #ffffff1c}
+#status{text-align:center;color:#8b949e;font-size:14px;min-height:20px;padding:2px 12px}
+#orbwrap{display:flex;justify-content:center;padding:10px}
+#orb{width:92px;height:92px;border-radius:50%;border:none;outline:none;
+  -webkit-tap-highlight-color:transparent;transition:transform .12s;
+  background:radial-gradient(circle at 35% 35%,#58a6ff,#1f6feb 60%,#0d2b5e)}
+#orb.live{animation:pulse 1.8s infinite}
+#orb.hear{transform:scale(1.12);background:radial-gradient(circle at 35% 35%,#7ee787,#2ea043 60%,#0f3d1d)}
+#orb.speak{background:radial-gradient(circle at 35% 35%,#d2a8ff,#8957e5 60%,#2d1660)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 #58a6ff70}70%{box-shadow:0 0 0 22px #58a6ff00}100%{box-shadow:0 0 0 0 #58a6ff00}}
+form{display:flex;gap:8px;padding:6px 12px calc(12px + env(safe-area-inset-bottom))}
+#t{flex:1;min-width:0;background:#161b22;border:1px solid #30363d;color:inherit;
+  border-radius:22px;padding:11px 15px;font-size:16px}
+#send{background:#1f6feb;border:none;color:#fff;border-radius:22px;padding:0 18px;font-size:16px}
+</style></head>
+<body>
+<header><span><span id="dot"></span>GOAT</span></header>
+<div id="log"></div>
+<div id="status">Tap the orb to talk</div>
+<div id="orbwrap"><button id="orb" aria-label="Talk"></button></div>
+<form id="f"><input id="t" placeholder="Type to GOAT" autocomplete="off"><button id="send">Send</button></form>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const logEl = $("log"), statusEl = $("status"), orb = $("orb"), dot = $("dot");
+const SR = 16000, FRAME = 320;            // 20 ms frames at 16 kHz
+let ws = null, ctx = null, stream = null, srcNode = null, tap = null, wake = null;
+let live = false, sources = [], playEnd = 0, quietUntil = 0, goatBubble = null;
+
+function add(cls, text) {
+  const d = document.createElement("div");
+  d.className = "m " + cls; d.textContent = text;
+  logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; return d;
+}
+function setStatus(s) { statusEl.textContent = s; }
+function send(o) {
+  if (!ws || ws.readyState !== 1) return false;
+  ws.send(o instanceof ArrayBuffer ? o : JSON.stringify(o)); return true;
+}
+
+// ---- link ----
+function connect() {
+  ws = new WebSocket("wss://" + location.host + "/ws");
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { dot.classList.add("on"); if (live) send({type: "live", on: true}); };
+  ws.onclose = () => { dot.classList.remove("on"); setTimeout(connect, 1500); };
+  ws.onmessage = e => {
+    if (typeof e.data !== "string") { play(e.data); return; }
+    const m = JSON.parse(e.data);
+    if (m.type === "you") { add("you", m.text); goatBubble = null; }
+    else if (m.type === "reply") { goatBubble = null; }
+    else if (m.type === "say") {
+      if (!goatBubble) goatBubble = add("goat", "");
+      goatBubble.textContent += (goatBubble.textContent ? " " : "") + m.text;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    else if (m.type === "turn_done") { goatBubble = null; }
+    else if (m.type === "status") { if (!sources.length) setStatus(m.text); }
+    else if (m.type === "cancel") { stopPlayback(); }
+  };
+}
+
+// ---- voice out ----
+function ensureCtx() {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+function play(buf) {
+  if (!ctx) return;                        // no tap yet: text only
+  const pcm = new Int16Array(buf);
+  if (!pcm.length) return;
+  const ab = ctx.createBuffer(1, pcm.length, SR), ch = ab.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+  const s = ctx.createBufferSource(); s.buffer = ab; s.connect(ctx.destination);
+  const t = Math.max(ctx.currentTime + 0.04, playEnd);
+  s.start(t); playEnd = t + ab.duration;
+  sources.push(s);
+  s.onended = () => {
+    sources = sources.filter(x => x !== s);
+    if (!sources.length) setSpeaking(false);
+  };
+  setSpeaking(true);
+}
+function stopPlayback() {
+  sources.forEach(s => { try { s.stop(); } catch (e) {} });
+  sources = []; playEnd = 0; setSpeaking(false);
+}
+function setSpeaking(on) {
+  orb.classList.toggle("speak", on);
+  if (on) { resetVad(); setStatus("tap to cut me off"); }
+  else { quietUntil = performance.now() + 350; setStatus(live ? "listening" : "Tap the orb to talk"); }
+}
+
+// ---- voice in: 16 kHz, energy endpointing ----
+const WORKLET = "class T extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];" +
+  "if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor('tap',T)";
+let rsLeft = new Float32Array(0), rsPhase = 0, pend = [];
+let floor = 0.003, inSpeech = false, voiced = 0, silent = 0, above = 0;
+let pre = [], utt = [];
+function resetVad() { inSpeech = false; voiced = silent = above = 0; pre = []; utt = []; orb.classList.remove("hear"); }
+
+function resample(f32) {
+  const r = ctx.sampleRate / SR;
+  const inp = new Float32Array(rsLeft.length + f32.length);
+  inp.set(rsLeft); inp.set(f32, rsLeft.length);
+  let pos = rsPhase;
+  while (pos + r <= inp.length) {
+    const a = Math.floor(pos), b = Math.max(a + 1, Math.floor(pos + r));
+    let s = 0; for (let k = a; k < b; k++) s += inp[k];
+    pend.push(s / (b - a)); pos += r;
+  }
+  const keep = Math.floor(pos);
+  rsLeft = inp.slice(keep); rsPhase = pos - keep;
+  while (pend.length >= FRAME) frame(Float32Array.from(pend.splice(0, FRAME)));
+}
+
+function frame(f) {
+  if (sources.length || performance.now() < quietUntil) return;   // half duplex
+  let e = 0; for (let i = 0; i < f.length; i++) e += f[i] * f[i];
+  const rms = Math.sqrt(e / f.length);
+  if (!inSpeech) {
+    floor = Math.min(0.05, Math.max(0.002, floor * 0.995 + rms * 0.005));
+    pre.push(f); if (pre.length > 15) pre.shift();          // 300 ms pre-roll
+    above = rms > Math.max(0.012, floor * 3.5) ? above + 1 : 0;
+    if (above >= 3) { inSpeech = true; utt = pre.slice(); voiced = 3; silent = 0; orb.classList.add("hear"); setStatus("hearing you"); }
+    return;
+  }
+  utt.push(f);
+  if (rms > Math.max(0.008, floor * 2)) { voiced++; silent = 0; } else silent++;
+  if (silent >= 40 || utt.length >= 1500) endUtterance();   // 800 ms quiet or 30 s
+}
+
+function endUtterance() {
+  const frames = utt, enough = voiced >= 10;
+  resetVad();
+  if (!enough) { setStatus("listening"); return; }
+  const pcm = new Int16Array(frames.length * FRAME);
+  frames.forEach((f, j) => { for (let i = 0; i < FRAME; i++) pcm[j * FRAME + i] = Math.max(-1, Math.min(1, f[i])) * 32767; });
+  setStatus(send(pcm.buffer) ? "thinking" : "not connected");
+}
+
+async function startMic() {
+  if (!navigator.mediaDevices || !window.isSecureContext) {
+    setStatus("The mic needs the https page."); return false;
+  }
+  ensureCtx();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: {
+      echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1}});
+  } catch (e) { setStatus("Mic blocked: " + e.name); return false; }
+  if (!tap) {
+    const url = URL.createObjectURL(new Blob([WORKLET], {type: "application/javascript"}));
+    await ctx.audioWorklet.addModule(url);
+  }
+  srcNode = ctx.createMediaStreamSource(stream);
+  tap = new AudioWorkletNode(ctx, "tap");
+  tap.port.onmessage = e => resample(e.data);
+  srcNode.connect(tap);
+  const sink = ctx.createGain(); sink.gain.value = 0; tap.connect(sink).connect(ctx.destination);
+  return true;
+}
+function stopMic() {
+  try { srcNode && srcNode.disconnect(); tap && tap.disconnect(); } catch (e) {}
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null; srcNode = null; resetVad();
+}
+
+async function setLive(on) {
+  if (on && !(await startMic())) return;
+  if (!on) stopMic();
+  live = on; orb.classList.toggle("live", on);
+  send({type: "live", on});
+  setStatus(on ? "listening" : "Tap the orb to talk");
+  try {
+    if (on && navigator.wakeLock) wake = await navigator.wakeLock.request("screen");
+    else if (wake) { wake.release(); wake = null; }
+  } catch (e) {}
+}
+
+orb.onclick = () => {
+  ensureCtx();
+  if (sources.length) { stopPlayback(); send({type: "stop"}); return; }
+  setLive(!live);
+};
+$("f").onsubmit = ev => {
+  ev.preventDefault(); ensureCtx();
+  const t = $("t").value.trim(); if (!t) return;
+  if (send({type: "text", text: t})) $("t").value = ""; else setStatus("not connected");
+};
+document.addEventListener("visibilitychange", () => {
+  if (!live) return;
+  if (document.hidden) send({type: "live", on: false});
+  else { send({type: "live", on: true}); ensureCtx(); }
+});
+connect();
+</script>
+</body></html>

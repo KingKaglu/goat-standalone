@@ -70,11 +70,12 @@ CORE = [
     "dsp.py",
     "stt_gladia.py",
     "endpoint.py",
+    "phone_server.py",
 ]
 
 # goat_doctor runs its probes at import time (it's a script), so it is
 # compile-checked but excluded from the import smoke test.
-IMPORT_TEST = "import goat_paths, stt_whisper, tts_edge, tts_piper, audio_io, goat_app, ui_qt, child_guard, fast_hands, close_guard, dsp, endpoint"
+IMPORT_TEST = "import goat_paths, stt_whisper, tts_edge, tts_piper, audio_io, goat_app, ui_qt, child_guard, fast_hands, close_guard, dsp, endpoint, phone_server"
 
 # Things the app dies or goes deaf/mute without.
 ASSETS = [
