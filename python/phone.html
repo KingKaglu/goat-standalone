@@ -1100,10 +1100,17 @@ function resample(f32) {
   while (pend.length >= FRAME) frame(Float32Array.from(pend.splice(0, FRAME)));
 }
 
+let bargeN = 0;
 function frame(f) {
-  if (sources.length || performance.now() < quietUntil) return;   // half duplex
   let e = 0; for (let i = 0; i < f.length; i++) e += f[i] * f[i];
   const rms = Math.sqrt(e / f.length);
+  if (sources.length) {                      // voice barge-in: loud sustained speech over me
+    bargeN = rms > 0.12 ? bargeN + 1 : 0;
+    if (bargeN >= 7) { bargeN = 0; stopPlayback(); send({type: "cut"}); }
+    return;
+  }
+  bargeN = 0;
+  if (performance.now() < quietUntil) return;
   if (!inSpeech) {
     floor = Math.min(0.15, Math.max(0.002, floor * 0.995 + rms * 0.005));
     pre.push(f); if (pre.length > 15) pre.shift();          // 300 ms pre-roll
@@ -1166,7 +1173,7 @@ async function setLive(on) {
 
 orb.onclick = () => {
   ensureCtx();
-  if (sources.length) { stopPlayback(); send({type: "stop"}); return; }
+  if (sources.length || busy) { stopPlayback(); send({type: "cut"}); return; }
   setLive(!live);
 };
 
