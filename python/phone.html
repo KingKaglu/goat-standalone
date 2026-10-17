@@ -2,6 +2,9 @@
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0f14">
+<link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
 <title>GOAT</title>
 <style>
 :root{color-scheme:dark;--bg:#0b0f14;--card:#11161d;--line:#ffffff14;--dim:#8b949e;
@@ -192,7 +195,7 @@ form{display:flex;gap:8px;padding:4px 12px calc(10px + env(safe-area-inset-botto
 <footer>
   <div id="status">Tap the orb to talk</div>
   <div id="orbwrap"><button id="orb" aria-label="Talk"></button></div>
-  <form id="f"><input id="t" placeholder="Type to GOAT" autocomplete="off"><button id="send">Send</button></form>
+  <form id="f"><button type="button" class="btn" id="attach" aria-label="Attach" style="padding:0 12px">📎</button><input type="file" id="fi" accept="image/*,application/pdf,.txt,.doc,.docx" multiple hidden><input id="t" placeholder="Type to GOAT" autocomplete="off"><button id="send">Send</button></form>
 </footer>
 <script>
 "use strict";
@@ -331,7 +334,7 @@ function onWork(m) {
         state: m.ev, steps: task.steps.length, fail: task.fail});
       doneList = doneList.slice(0, 8); renderDone(doneList);
     }
-    renderTask(); setBusy(false);
+    renderTask(); setBusy(false); buzz();
     if (m.ev === "fail" && m.text) add("note", m.text);
   }
 }
@@ -604,6 +607,30 @@ orb.onclick = () => {
   if (sources.length) { stopPlayback(); send({type: "stop"}); return; }
   setLive(!live);
 };
+
+$("attach").onclick = () => $("fi").click();
+$("fi").onchange = async () => {
+  const fs = $("fi").files; if (!fs.length) return;
+  const fd = new FormData(); for (const f of fs) fd.append("file", f);
+  fd.append("note", $("t").value.trim());
+  setStatus("sending " + fs.length + " file" + (fs.length > 1 ? "s" : "") + "…");
+  try {
+    const j = await (await fetch("/upload", {method: "POST", body: fd})).json();
+    if (j.ok) { $("t").value = ""; add("you", "📎 " + j.n + " file" + (j.n > 1 ? "s" : "")); show("chat"); setStatus("sent"); }
+    else setStatus(j.err || "upload failed");
+  } catch (e) { setStatus("upload failed"); }
+  $("fi").value = "";
+};
+function buzz() {
+  if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+  if (document.hidden && window.Notification && Notification.permission === "granted") {
+    try { new Notification("GOAT", {body: "Done."}); } catch (e) {}
+  }
+}
+document.addEventListener("click", () => {
+  if (window.Notification && Notification.permission === "default") Notification.requestPermission();
+}, {once: true});
+if ("serviceWorker" in navigator) {}
 $("f").onsubmit = ev => {
   ev.preventDefault(); ensureCtx();
   const t = $("t").value.trim(); if (!t) return;

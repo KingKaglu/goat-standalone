@@ -298,6 +298,9 @@ class PhoneServer:
         wapp.router.add_get("/shot", self._shot)
         wapp.router.add_get("/screen", self._screen)
         wapp.router.add_post("/act", self._act)
+        wapp.router.add_post("/upload", self._upload)
+        wapp.router.add_get("/manifest.json", self._manifest)
+        wapp.router.add_get("/icon.svg", self._icon)
         self._runner = web.AppRunner(wapp, access_log=None)
         await self._runner.setup()
         await web.TCPSite(self._runner, "0.0.0.0", self.port,
@@ -438,6 +441,62 @@ class PhoneServer:
             return web.Response(status=500, text=f"capture failed: {e}")
         return web.Response(body=data, content_type="image/jpeg",
                             headers={"Cache-Control": "no-store"})
+
+    async def _manifest(self, request):
+        from aiohttp import web
+        return web.json_response({
+            "name": "GOAT", "short_name": "GOAT", "start_url": "/",
+            "display": "standalone", "background_color": "#0b0f14",
+            "theme_color": "#0b0f14",
+            "icons": [{"src": "/icon.svg", "sizes": "any",
+                       "type": "image/svg+xml", "purpose": "any"}]})
+
+    async def _icon(self, request):
+        from aiohttp import web
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+               '<rect width="512" height="512" rx="110" fill="#0b0f14"/>'
+               '<circle cx="256" cy="256" r="150" fill="none" stroke="#1f6feb" '
+               'stroke-width="28"/><circle cx="256" cy="256" r="70" '
+               'fill="#58a6ff"/></svg>')
+        return web.Response(text=svg, content_type="image/svg+xml")
+
+    async def _upload(self, request):
+        """Photos/files from the phone go straight to GOAT as an order."""
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=403)
+        up = os.path.join(os.path.dirname(HERE), "workspace", "phone-uploads")
+        os.makedirs(up, exist_ok=True)
+        paths, note, total = [], "", 0
+        reader = await request.multipart()
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name == "note":
+                note = (await part.text())[:1000]
+            elif part.name == "file" and part.filename:
+                ext = os.path.splitext(part.filename)[1][:8]
+                ext = "".join(c for c in ext if c.isalnum() or c == ".")
+                fp = os.path.join(up, time.strftime("%Y%m%d-%H%M%S-")
+                                  + f"{len(paths)}{ext}")
+                with open(fp, "wb") as f:
+                    while True:
+                        ch = await part.read_chunk(1 << 16)
+                        if not ch:
+                            break
+                        total += len(ch)
+                        if total > 40 << 20:
+                            f.close()
+                            os.remove(fp)
+                            return web.json_response(
+                                {"ok": False, "err": "too big (40 MB max)"})
+                        f.write(ch)
+                paths.append(fp)
+        if not paths:
+            return web.json_response({"ok": False, "err": "no file"})
+        self.app.submit_files(paths, note)
+        return web.json_response({"ok": True, "n": len(paths)})
 
     async def _act(self, request):
         """Remote control: quick actions, tap-to-click, typing."""
