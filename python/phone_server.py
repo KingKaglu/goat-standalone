@@ -33,6 +33,7 @@ import json
 import os
 import secrets
 import socket
+import subprocess
 import ssl
 import time
 from collections import deque
@@ -157,6 +158,34 @@ def ensure_cert(ips: list) -> tuple:
     with open(crt, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
     return crt, key
+
+
+FW_RULE = "GOAT phone 8797"
+
+
+def ensure_firewall(port: int):
+    """Windows blocks inbound on Private networks (Tailscale counts as one)
+    unless a rule allows the port. Make sure that rule exists; if not, ask
+    once for admin and create it. Persistent, so this is normally a no-op."""
+    if os.name != "nt":
+        return
+    try:
+        ok = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={FW_RULE}"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=0x08000000).returncode == 0
+        if ok:
+            return
+        cmd = (f"New-NetFirewallRule -DisplayName '{FW_RULE}' -Direction Inbound "
+               f"-Protocol TCP -LocalPort {port} -Action Allow -Profile Any "
+               "-RemoteAddress 192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10")
+        subprocess.run(["powershell", "-NoProfile", "-Command",
+                        f"Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait "
+                        f"-ArgumentList '-NoProfile','-Command',\"{cmd}\""],
+                       timeout=120, creationflags=0x08000000)
+        print("[phone] firewall rule created")
+    except Exception as e:  # noqa: BLE001
+        print(f"[phone] firewall check failed: {e}")
 
 
 TS_EXE = r"C:\Program Files\Tailscale\tailscale.exe"
@@ -477,6 +506,7 @@ class PhoneServer:
         self._lan_urls = [f"https://{a}:{self.port}" for a in ips]
         self.urls = list(self._lan_urls)
         self._hook()
+        asyncio.create_task(asyncio.to_thread(ensure_firewall, self.port))
         self._vitals_task = asyncio.create_task(self._vitals_loop())
         self._ts_task = asyncio.create_task(self._ts_loop())
         self._write_urls()
