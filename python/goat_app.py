@@ -1182,9 +1182,19 @@ class GoatApp:
         self.reply_to = "laptop"
         self.on_route = None
 
-    def _route(self, origin):
+    def _route(self, origin, mic=False):
         if origin is None:
             return   # GOAT's own note, not him: the voice stays where it is
+        if mic and origin == "laptop" and self.reply_to == "phone":
+            # laptop MIC alone must not steal the voice from a phone he used
+            # in the last 2 minutes (the mic hears the room/phone speaker)
+            try:
+                ph = self.phone
+                if ph and any(time.time() - c.get("t_in", 0) < 120
+                              for c in ph.clients.values()):
+                    return
+            except Exception:  # noqa: BLE001
+                pass
         self.reply_to = "phone" if origin == "phone" else "laptop"
         cb = self.on_route
         if cb:
@@ -1417,7 +1427,7 @@ class GoatApp:
             print("[route] laptop mic heard the phone's voice — dropped")
             return
         if self.loop:
-            self._route("laptop")
+            self._route("laptop", mic=True)
             asyncio.run_coroutine_threadsafe(
                 self._handle_utterance(audio_np, rt, gap), self.loop)
 
