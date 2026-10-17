@@ -2576,6 +2576,19 @@ class GoatApp:
         except Exception as e:  # noqa: BLE001
             print(f"[plan-usage] {type(e).__name__}: {str(e)[:120]}")
 
+    async def _plan_watch(self) -> None:
+        """Keep the plan meter live. It used to refresh only after a work
+        job finished, so the phone/footer showed a number minutes old (57
+        while Claude itself said 64, 2026-10-17). get_usage costs no tokens,
+        so poll it every minute regardless of what I'm doing."""
+        await asyncio.sleep(5)
+        while True:
+            try:
+                await self._pull_plan_usage()
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(60)
+
     def _track_usage(self, msg: ResultMessage) -> bool:
         """Accumulate session Claude token totals for the UI meter, and detect
         the out-of-usage error. Returns True when the quota is exhausted."""
@@ -2866,6 +2879,7 @@ class GoatApp:
         if POWER_WATCH:
             asyncio.create_task(self._power_watch())
         asyncio.create_task(self._update_watch())
+        asyncio.create_task(self._plan_watch())
 
         # Boot briefing (Phase 3, ported from the Node app 2026-07-10):
         # back after 6+ hours away → GOAT speaks first, JARVIS-style.
