@@ -821,6 +821,7 @@ class TtsPipeline:
         self.on_sentence = None
         self.on_cancel = None
         self.local_mute = False
+        self.muted_until = 0.0   # monotonic: phone voicing (laptop silent) till then
         threading.Thread(target=self._worker, daemon=True).start()
 
     def prewarm(self, lines):
@@ -870,6 +871,7 @@ class TtsPipeline:
                 except queue.Empty:
                     break
         self.audio.clear_playback()
+        self.muted_until = 0.0
         cb = getattr(self, "on_cancel", None)
         if cb:
             try:
@@ -986,6 +988,8 @@ class TtsPipeline:
                 self._tap(text, samples)
                 if getattr(self, "local_mute", False):
                     samples = np.zeros_like(samples)
+                    left = max(0, self._queued_end - self.audio.played_samples)
+                    self.muted_until = time.monotonic() + left / 16000 + 1.5
                 self.audio.queue_playback(samples)
 
     def _tap(self, text: str, samples):
@@ -1097,7 +1101,8 @@ class GoatApp:
             self._ducker.start()
             self._thinker = ThinkingSound(
                 lambda: (self.busy and not self._warming
-                         and not self._compacting and not self.suppressed),
+                         and not self._compacting and not self.suppressed
+                         and not self.tts.local_mute),
                 lambda: self.audio.is_tts_playing or self.tts.speaking())
             self._thinker.start()
         except Exception as e:  # noqa: BLE001 — extras never block the boot
@@ -1149,7 +1154,9 @@ class GoatApp:
         self.reply_to = "laptop"
         self.on_route = None
 
-    def _route(self, origin: str):
+    def _route(self, origin):
+        if origin is None:
+            return   # GOAT's own note, not him: the voice stays where it is
         self.reply_to = "phone" if origin == "phone" else "laptop"
         cb = self.on_route
         if cb:
@@ -1158,9 +1165,16 @@ class GoatApp:
             except Exception:  # noqa: BLE001 — routing must never break input
                 pass
 
+    def _phone_voicing(self) -> bool:
+        """The phone is speaking a reply right now (the laptop only runs a
+        silent clock). The laptop mic then hears the phone's speaker, not
+        him, so it neither barges in nor starts a turn."""
+        return (getattr(self.tts, "local_mute", False)
+                and time.monotonic() < getattr(self.tts, "muted_until", 0.0))
+
     # ---- audio-thread callbacks ----
     def _on_interrupt(self, _preroll):
-        if self.mic_muted or self.phone_live:
+        if self.mic_muted or self.phone_live or self._phone_voicing():
             return
         # Voice barge-in affects only the talking lane's VOICE — the work lane
         # is silent and keeps running. Cut GOAT off mid-sentence; his next
@@ -1331,7 +1345,8 @@ class GoatApp:
 
     def _on_utt_start(self, preroll):
         self._utt_began = time.monotonic()
-        if self.mic_muted or self.phone_live or not self.loop:
+        self._utt_echo = self._phone_voicing()
+        if self.mic_muted or self.phone_live or self._utt_echo or not self.loop:
             return
         # Dial (or re-dial) the voice socket while he is still talking, so
         # the answer's first clause doesn't pay the connection. Non-blocking.
@@ -1369,6 +1384,10 @@ class GoatApp:
         self._prev_utt_end = now - getattr(self.audio, "last_hangover_ms", 0.0) / 1000.0
         if self.mic_muted or self.phone_live:
             return   # phone live: the laptop mic would hear him twice
+        if getattr(self, "_utt_echo", False):
+            self._utt_echo = False
+            print("[route] laptop mic heard the phone's voice — dropped")
+            return
         if self.loop:
             self._route("laptop")
             asyncio.run_coroutine_threadsafe(
@@ -1413,7 +1432,7 @@ class GoatApp:
         else:
             note = ("[language switch] Back to English only from now on. "
                     "Confirm in one short sentence.")
-        self.submit_text(note)
+        self.submit_text(note, origin=None)
 
     def request_ui_scale(self, spec: str):
         """GOAT resizing its own interface — called from local_hands when the
@@ -1543,7 +1562,7 @@ class GoatApp:
         if lang:
             self._set_turn_lang(lang)
 
-    def submit_text(self, text: str, origin: str = "laptop"):
+    def submit_text(self, text: str, origin: str | None = "laptop"):
         """Plain typed/spoken input — goes to the TALKING brain (middle lane).
         Thread-safe."""
         if self.loop is None or self.loop.is_closed():

@@ -68,7 +68,7 @@ class FakeApp:
         self.busy = False
 
 
-async def recv(ws, kind, skip=("vitals", "snapshot")):
+async def recv(ws, kind, skip=("vitals", "snapshot", "route")):
     """Next JSON message, stepping over the periodic/catch-up ones."""
     while True:
         m = await asyncio.wait_for(ws.receive(), 5)
@@ -98,6 +98,8 @@ async def main():
     app = FakeApp()
     ps.VITALS_S = 0.3
     ps.ts_cert = lambda: None   # never touch the real tailnet from a test
+    ps._read_pref = lambda: "auto"     # nor his saved voice setting
+    ps._write_pref = lambda v: None
     srv = ps.PhoneServer(app, port=PORT)
     urls = await srv.start()
     check("server up with LAN url", any("192.168." in u or "10." in u for u in urls))
@@ -168,6 +170,49 @@ async def main():
             b = await recv(ws, "-")
             check("phone turn -> phone gets audio",
                   m["audio"] is True and len(b.data) == 1600)
+            # The Control tab can pin the voice; the phone hears where it went.
+            async with s.post(base + "/act", json={"a": "speaks", "v": "laptop"},
+                              ssl=sslc) as r:
+                j = await r.json()
+            m = await recv(ws, "route", skip=("vitals",))
+            check("pin to laptop -> laptop speaks, phone told",
+                  j["speaks"] == "laptop" and not app.tts.local_mute
+                  and m == {"type": "route", "speaks": "laptop", "pref": "laptop"})
+            app.tts.speaking = lambda: True
+            n0 = len(app.audio)
+            await ws.send_bytes(pcm)
+            await asyncio.sleep(0.2)
+            check("pinned to laptop mid-sentence -> phone mic echo dropped",
+                  len(app.audio) == n0)
+            app.tts.speaking = lambda: False
+            async with s.post(base + "/act", json={"a": "speaks", "v": "auto"},
+                              ssl=sslc) as r:
+                j = await r.json()
+            check("back to auto -> follows the last device (phone)",
+                  j["speaks"] == "phone" and app.tts.local_mute)
+            async with s.post(base + "/act", json={"a": "speaks", "v": "both"},
+                              ssl=sslc) as r:
+                check("bad voice setting refused", (await r.json())["ok"] is False)
+            async with s.get(base + "/ctl", ssl=sslc) as r:
+                j = await r.json()
+            check("/ctl carries volume, windows and route",
+                  "vol" in j and isinstance(j.get("windows"), list)
+                  and j["speaks"] == "phone" and j["pref"] == "auto")
+            async with s.post(base + "/act", json={"a": "key", "k": "alt+f4"},
+                              ssl=sslc) as r:
+                check("remote can't send Alt+F4", (await r.json())["ok"] is False)
+            # Two pages open: only the one he used gets the voice.
+            async with s.ws_connect(base + "/ws", ssl=sslc,
+                                    origin=f"https://127.0.0.1:{PORT}") as ws2:
+                while (await recv(ws2, "snapshot")).get("type") != "snapshot":
+                    pass
+                app.tts.on_sentence("Only you.", np.zeros(800, dtype=np.float32) + 0.25)
+                m1 = await recv(ws, "say")
+                b1 = await recv(ws, "-")
+                m2 = await recv(ws2, "say", skip=("vitals", "route", "status"))
+                check("second page gets the words, not the voice",
+                      m1["audio"] is True and len(b1.data) == 1600
+                      and m2["audio"] is False)
             await ws.send_str(json.dumps({"type": "stop"}))
             m = await recv(ws, "cancel")
             check("tap-to-stop cancels the voice",
@@ -202,6 +247,9 @@ async def main():
         async with s.get(base + "/screen", ssl=sslc) as r:
             data = await r.read()
             check("fresh screen capture is a jpeg", r.status == 200 and data[:2] == bytes([255, 216]))
+        async with s.get(base + "/screen?w=640&q=50", ssl=sslc) as r:
+            small = await r.read()
+            check("sized capture is smaller", r.status == 200 and len(small) < len(data))
         await asyncio.sleep(0.2)
         check("phone gone -> laptop mic back", not app.phone_live and not app.tts.local_mute)
         check("foreign origin refused", await ws_refused(

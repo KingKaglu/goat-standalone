@@ -260,6 +260,24 @@ self.addEventListener("fetch", e => {
 """
 
 
+def _read_pref() -> str:
+    try:
+        with open(os.path.join(DIR, "voice.json"), encoding="utf-8") as f:
+            v = json.load(f).get("speaks", "auto")
+        return v if v in ("auto", "phone", "laptop") else "auto"
+    except (OSError, ValueError, AttributeError):
+        return "auto"
+
+
+def _write_pref(v: str):
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        with open(os.path.join(DIR, "voice.json"), "w", encoding="utf-8") as f:
+            json.dump({"speaks": v}, f)
+    except OSError:
+        pass
+
+
 def _read_plan():
     """Last plan-usage reading GOAT saved (goat_app._pull_plan_usage)."""
     try:
@@ -272,16 +290,31 @@ def _read_plan():
         return None
 
 
-def grab_screen(max_w: int = 1280) -> bytes:
-    """The laptop's main screen as a small JPEG."""
+def grab_screen(max_w: int = 1280, quality: int = 68,
+                cursor: bool = True) -> bytes:
+    """The laptop's main screen as a small JPEG, with the mouse pointer drawn
+    in (a screen grab leaves it out, and a remote is lost without it)."""
+    import ctypes
     import io
 
-    from PIL import ImageGrab
+    from PIL import ImageDraw, ImageGrab
     img = ImageGrab.grab().convert("RGB")
+    sw, sh = img.size
     if img.width > max_w:
         img = img.resize((max_w, round(img.height * max_w / img.width)))
+    if cursor:
+        pt = (ctypes.c_long * 2)()
+        if ctypes.windll.user32.GetCursorPos(pt) and 0 <= pt[0] < sw                 and 0 <= pt[1] < sh:
+            k = img.width / sw
+            x, y = pt[0] * k, pt[1] * k
+            s = max(1.0, img.width / 1280)
+            arrow = [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10.5, 18.8),
+                     (7.6, 12), (13, 12)]
+            ImageDraw.Draw(img).polygon(
+                [(x + ax * s, y + ay * s) for ax, ay in arrow],
+                fill=(255, 255, 255), outline=(0, 0, 0))
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=68)
+    img.save(buf, "JPEG", quality=max(30, min(90, int(quality))))
     return buf.getvalue()
 
 
@@ -299,43 +332,65 @@ def _key(vk: int, times: int = 1):
         u.keybd_event(vk, 0, 2, 0)
 
 
-def do_action(d: dict) -> str:
-    """Run one phone-remote action on the laptop."""
+_MEDIA = {"volup", "voldown", "mute", "playpause", "next", "prev"}
+_NAV = {"enter": "enter", "esc": "esc", "tab": "tab", "left": "left",
+        "up": "up", "right": "right", "down": "down", "back": "backspace",
+        "space": "space", "pgup": "pageup", "pgdn": "pagedown"}
+
+
+def do_action(d: dict):
+    """Run one phone-remote action on the laptop. Returns a short message,
+    or a dict (message under "msg") when the phone needs fresh state."""
     import ctypes
+
+    import phone_ctl
     u = ctypes.windll.user32
     a = str(d.get("a", ""))
-    if a in _VK:
+    if a == "vol":
+        return {"msg": "volume", **phone_ctl.set_volume(d.get("v", 50))}
+    if a == "mute":
+        try:
+            return {"msg": "mute", **phone_ctl.set_mute(d.get("on"))}
+        except Exception:  # noqa: BLE001 — no endpoint: the media key still works
+            _key(_VK["mute"])
+            return "mute"
+    if a in _MEDIA:
         _key(_VK[a], 5 if a in ("volup", "voldown") else 1)
+        if a in ("volup", "voldown"):
+            return {"msg": a, **phone_ctl.volume()}
         return a
+    if a == "bright":
+        return {"msg": "brightness", "bright": phone_ctl.set_brightness(d.get("v", 50))}
+    if a in _NAV:
+        return phone_ctl.chord(_NAV[a])
+    if a == "key":
+        return phone_ctl.chord(d.get("k", ""))
+    if a == "focus":
+        return phone_ctl.focus(d["h"])
+    if a == "min":
+        return phone_ctl.minimize(d["h"])
+    if a == "screenoff":
+        return phone_ctl.screen_off()
     if a == "lock":
         u.LockWorkStation()
         return "locked"
-    if a in ("click", "dclick", "rclick"):
+    if a in ("click", "dclick", "rclick", "scroll"):
         w, h = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
-        x = int(max(0.0, min(1.0, float(d["x"]))) * (w - 1))
-        y = int(max(0.0, min(1.0, float(d["y"]))) * (h - 1))
-        u.SetCursorPos(x, y)
+        if "x" in d and "y" in d:
+            x = int(max(0.0, min(1.0, float(d["x"]))) * (w - 1))
+            y = int(max(0.0, min(1.0, float(d["y"]))) * (h - 1))
+            u.SetCursorPos(x, y)
+        if a == "scroll":
+            u.mouse_event(0x800, 0, 0, int(max(-15, min(15, int(d.get("dy", 0))))) * 120, 0)
+            return "scroll"
         dn, up = (0x8, 0x10) if a == "rclick" else (0x2, 0x4)
         for _ in range(2 if a == "dclick" else 1):
             u.mouse_event(dn, 0, 0, 0, 0)
             u.mouse_event(up, 0, 0, 0, 0)
             time.sleep(0.05)
-        return f"{a} {x},{y}"
-    if a == "scroll":
-        u.mouse_event(0x800, 0, 0, int(d.get("dy", 0)) * 120, 0)
-        return "scroll"
+        return a
     if a == "type":
-        import subprocess
-        txt = str(d.get("text", ""))[:500]
-        subprocess.run(["powershell", "-NoProfile", "-Command",
-                        "Set-Clipboard -Value $env:GT"],
-                       env={**os.environ, "GT": txt}, timeout=10,
-                       creationflags=0x08000000)
-        u.keybd_event(0x11, 0, 0, 0)
-        u.keybd_event(0x56, 0, 0, 0)
-        u.keybd_event(0x56, 0, 2, 0)
-        u.keybd_event(0x11, 0, 2, 0)
-        return "typed"
+        return phone_ctl.type_text(d.get("text", ""), bool(d.get("enter")))
     raise ValueError("unknown action")
 
 
@@ -385,6 +440,10 @@ class PhoneServer:
                       "usage": None, "claude": "ok", "latency": None,
                       "shot": 0, "vitals": None}
         self.done_tasks = deque(maxlen=8)
+        # Which device voices replies: "auto" (the one he last used), or
+        # pinned to "phone" / "laptop" from the Control tab. Survives restarts.
+        self.pref = _read_pref()
+        self._spoke = None     # last route sent to the phones
 
     # ---- lifecycle ----
     async def start(self) -> list:
@@ -404,6 +463,7 @@ class PhoneServer:
         wapp.router.add_get("/shot", self._shot)
         wapp.router.add_get("/screen", self._screen)
         wapp.router.add_post("/act", self._act)
+        wapp.router.add_get("/ctl", self._ctl)
         wapp.router.add_post("/upload", self._upload)
         wapp.router.add_get("/manifest.json", self._manifest)
         wapp.router.add_get("/icon.svg", self._icon)
@@ -532,7 +592,7 @@ class PhoneServer:
             return web.Response(status=403)
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=MAX_SAMPLES * 2 + 64)
         await ws.prepare(request)
-        st = {"q": asyncio.Queue(maxsize=400), "live": False}
+        st = {"q": asyncio.Queue(maxsize=400), "live": False, "t_in": 0.0}
         self.clients[ws] = st
         self._sync_route()
         writer = asyncio.create_task(self._writer(ws, st["q"]))
@@ -549,7 +609,7 @@ class PhoneServer:
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.BINARY:
-                    self._utterance(msg.data)
+                    self._utterance(msg.data, st)
                 elif msg.type == WSMsgType.TEXT:
                     self._command(st, msg.data)
         finally:
@@ -583,8 +643,14 @@ class PhoneServer:
         from aiohttp import web
         if not self._authed(request):
             return web.Response(status=403)
+        q = request.query
         try:
-            data = await asyncio.to_thread(grab_screen)
+            w = max(480, min(1920, int(q.get("w", 1280))))
+            qual = max(35, min(85, int(q.get("q", 68))))
+        except ValueError:
+            w, qual = 1280, 68
+        try:
+            data = await asyncio.to_thread(grab_screen, w, qual)
         except Exception as e:  # noqa: BLE001
             return web.Response(status=500, text=f"capture failed: {e}")
         return web.Response(body=data, content_type="image/jpeg",
@@ -677,10 +743,28 @@ class PhoneServer:
             return web.Response(status=403)
         try:
             d = await request.json()
+            if d.get("a") == "speaks":
+                return web.json_response({"ok": True, **self.set_pref(d.get("v"))})
             r = await asyncio.to_thread(do_action, d)
         except Exception as e:  # noqa: BLE001
-            return web.json_response({"ok": False, "err": str(e)})
+            return web.json_response({"ok": False, "err": str(e)[:160]})
+        if isinstance(r, dict):
+            return web.json_response({"ok": True, **r})
         return web.json_response({"ok": True, "msg": r})
+
+    async def _ctl(self, request):
+        """The Control tab's live state: volume, mute, brightness, now
+        playing, open windows, and which device speaks."""
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=403)
+        import phone_ctl
+        try:
+            st = await asyncio.to_thread(phone_ctl.state)
+        except Exception as e:  # noqa: BLE001
+            st = {"err": str(e)[:160]}
+        st.update(self._route_info())
+        return web.json_response(st, headers={"Cache-Control": "no-store"})
 
     def _snapshot(self) -> dict:
         hist = []
@@ -693,7 +777,7 @@ class PhoneServer:
                 hist.append([u[:300], r[:300]])
         return {"type": "snapshot", "now": time.time(), "booted": self.booted,
                 "state": self.state, "done": list(self.done_tasks),
-                "history": hist,
+                "history": hist, "route": self._route_info(),
                 "busy": bool(getattr(self.app, "busy", False))}
 
     # ---- vitals ----
@@ -758,10 +842,16 @@ class PhoneServer:
         return out
 
     # ---- phone -> GOAT ----
-    def _utterance(self, data: bytes):
+    def _utterance(self, data: bytes, st=None):
         n = len(data) // 2
         if n < MIN_SAMPLES or n > MAX_SAMPLES:
             return
+        if not self._phone_speaks() and self._laptop_talking():
+            # Pinned to the laptop and it's mid-sentence: what the phone mic
+            # caught is the laptop's own voice. Tap Stop to cut it off.
+            return
+        if st is not None:
+            st["t_in"] = time.time()
         audio = np.frombuffer(data[:n * 2], dtype="<i2").astype(np.float32) / 32768.0
         try:
             self.app._lat_start()
@@ -779,6 +869,7 @@ class PhoneServer:
         if kind == "text":
             text = str(m.get("text", "")).strip()[:4000]
             if text:
+                st["t_in"] = time.time()
                 self.app.submit_text(text, origin="phone")
         elif kind == "stop":
             self.app.tts.cancel()
@@ -786,6 +877,7 @@ class PhoneServer:
         elif kind == "live":
             st["live"] = bool(m.get("on"))
             if st["live"]:
+                st["t_in"] = time.time()
                 self._from_phone()   # mic on = he's on the phone now
             self._sync_live()
         elif kind == "cut":
@@ -815,14 +907,52 @@ class PhoneServer:
     def _phone_speaks(self) -> bool:
         """Replies are voiced on ONE device: the phone while its mic is live
         or when he last spoke/typed there (and it's still connected);
-        otherwise the laptop. Never both (his order 2026-10-17)."""
+        otherwise the laptop. Never both (his order 2026-10-17). The Control
+        tab can pin it to one device."""
         if not self.clients:
             return False
+        if self.pref in ("phone", "laptop"):
+            return self.pref == "phone"
         return bool(getattr(self.app, "phone_live", False)
                     or getattr(self.app, "reply_to", "laptop") == "phone")
 
+    def _laptop_talking(self) -> bool:
+        if getattr(getattr(self.app, "audio", None), "is_tts_playing", False):
+            return True
+        try:
+            return bool(self.app.tts.speaking())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _route_info(self) -> dict:
+        return {"speaks": "phone" if self._phone_speaks() else "laptop",
+                "pref": self.pref}
+
     def _sync_route(self):
         self.app.tts.local_mute = self._phone_speaks()
+        info = self._route_info()
+        if info != self._spoke:
+            self._spoke = info
+            self._send(json.dumps({"type": "route", **info}))
+
+    def set_pref(self, v) -> dict:
+        v = str(v or "auto").lower()
+        if v not in ("auto", "phone", "laptop"):
+            raise ValueError("speaks must be auto, phone or laptop")
+        self.pref = v
+        _write_pref(v)
+        self._sync_route()
+        return self._route_info()
+
+    def _voice_targets(self) -> list:
+        """The one phone that gets the audio: a live mic first, else the one
+        he used last. (Two open pages must not talk over each other.)"""
+        live = [w for w, c in self.clients.items() if c["live"]]
+        if live:
+            return live[-1:]
+        best = max(self.clients.items(), key=lambda kv: kv[1]["t_in"],
+                   default=None)
+        return [best[0]] if best else []
 
     # ---- GOAT -> phone ----
     def _post(self, items):
@@ -956,8 +1086,20 @@ class PhoneServer:
         # Laptop's turn: the phone still shows the words, but stays silent.
         voiced = (self._phone_speaks() and samples is not None
                   and len(samples) > 0)
-        items = [json.dumps({"type": "say", "text": text, "audio": voiced})]
-        if voiced:
-            items.append((np.clip(samples, -1.0, 1.0) * 32767)
-                         .astype("<i2").tobytes())
-        self._send(*items)
+        quiet = json.dumps({"type": "say", "text": text, "audio": False})
+        if not voiced:
+            self._send(quiet)
+            return
+        loud = [json.dumps({"type": "say", "text": text, "audio": True}),
+                (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()]
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(self._post_voice, loud, quiet)
+
+    def _post_voice(self, loud, quiet):
+        targets = set(self._voice_targets())
+        for ws, st in list(self.clients.items()):
+            for item in (loud if ws in targets else [quiet]):
+                try:
+                    st["q"].put_nowait(item)
+                except asyncio.QueueFull:
+                    break
