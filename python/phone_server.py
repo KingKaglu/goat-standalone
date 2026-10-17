@@ -100,8 +100,8 @@ def load_token() -> str:
     path = os.path.join(DIR, "token.txt")
     try:
         with open(path, encoding="utf-8") as f:
-            t = f.read().strip()
-        if len(t) >= 10:
+            t = f.read().strip().lower()
+        if len(t) >= 4:    # he picks his own (2026-10-17: "kaglu")
             return t
     except OSError:
         pass
@@ -556,7 +556,7 @@ class PhoneServer:
 
     async def _page(self, request):
         from aiohttp import web
-        k = request.query.get("k", "")
+        k = request.query.get("k", "").strip().lower()
         if k and hmac.compare_digest(k.encode(), self.token.encode()):
             return self._logged_in()
         if not self._authed(request):
