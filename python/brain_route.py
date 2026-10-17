@@ -72,6 +72,12 @@ _SERIOUS_RE = re.compile(
     r"make\s+sure|important|consider\s+everything|"
     r"(?:higher|bigger|better|smarter)\s+model|opus|escalate|"
     r"step\s+by\s+step|think\s+(?:it\s+)?through|"
+    r"diagnos\w*|investigat\w*|troubleshoot\w*|analy[sz]\w*|research\w*|"
+    r"figure\s+(?:it|this|that)\s+out|what'?s\s+wrong|not\s+working|"
+    r"doesn'?t\s+work|why\s+(?:is|does|did|won'?t|isn'?t)\s+(?:my|the|it|this)|"
+    r"compare|comparison|which\s+(?:is|one(?:\s+is)?)\s+better|"
+    r"should\s+i|recommend\w*|pros\s+and\s+cons|trade-?offs?|"
+    r"improve|improvement|optimi[sz]\w*|"
     r"გეგმ\w*|დაფიქრდი)\b",
     re.IGNORECASE)
 

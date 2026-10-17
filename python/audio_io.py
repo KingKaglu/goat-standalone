@@ -32,7 +32,7 @@ PREROLL_MS = 300
 DUCK_GAIN = 0.5
 VETO_NO_DUCK_S = 1.0         # after the voice lock vetoes a barge-in, someone
                              # else's chatter doesn't keep halving GOAT's voice
-VAD_THRESHOLD = 0.5
+VAD_THRESHOLD = 0.35   # 2026-10-18: lowered from 0.5, he talks quietly
 UTT_SILENCE_STOP_MS = 500    # quiet that ends a turn whose sentence SOUNDS
                              # FINISHED (or when nothing has been heard yet)
 # Smart endpointing (2026-10-17, his order). A flat timer can't tell a thought

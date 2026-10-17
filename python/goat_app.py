@@ -2648,6 +2648,18 @@ class GoatApp:
                                  if self.claude_reset else "")
                               + ". I can still talk.")
                     self.emit("work_done", "")
+                elif (msg.is_error and not self._reply_acc.strip()
+                      and BRAIN_ROUTING and self.model == MODEL_TALK
+                      and self.last_user_text
+                      and getattr(self, "_handoff_done_for", None)
+                      != self.last_user_text):
+                    # 2026-10-18, his order ("make the escalation perfect"):
+                    # the quick brain failed an order with nothing produced —
+                    # retry it ONCE on the working brain before reporting.
+                    retry = self.last_user_text
+                    self._handoff_done_for = retry
+                    self.emit("work_step", "quick brain failed — handing to the working brain")
+                    asyncio.create_task(self._handoff_retry(retry))
                 elif msg.is_error and not self._reply_acc.strip():
                     # Work errored with nothing produced — surface it on the
                     # left, don't crash, don't speak (talk owns the voice).
@@ -2720,6 +2732,14 @@ class GoatApp:
             # _apply_effort / _new_chat closed the client on purpose.
             return True
         return False
+
+    async def _handoff_retry(self, text: str):
+        """Re-run a failed quick-brain order on the working brain (once)."""
+        await asyncio.sleep(0.4)       # let the failed turn finish closing
+        try:
+            await self._work(text, hard=True, echo_you=False)
+        except Exception as e:  # noqa: BLE001
+            print(f"[handoff] retry failed: {e!r}")
 
     def _log_exchange(self, user: str, reply: str):
         """Append to the on-disk transcript (UI repaints the tail at boot).
