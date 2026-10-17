@@ -197,7 +197,7 @@ async def _collect_hedged(text: str) -> bytes:
 # it the moment he starts talking so it is warm by the time he stops.
 # Anything odd -> the per-clause path above (hedged), then Piper.
 PERSIST = True
-_REQ_TIMEOUT_S = 2.5     # a live socket answers a clause in well under 1s
+_REQ_TIMEOUT_S = 5.0     # a live socket answers a clause in well under 1s; 5s rides out a slow handshake
 _MAX_BYTES = 3000        # longer text goes the old way (service splits at 4096)
 # Heartbeat (2026-10-10, Germany, 130 ms ping on a guest line): between his
 # sentences the idle socket went stale — 300-470 ms warm, 1530 ms after 30s

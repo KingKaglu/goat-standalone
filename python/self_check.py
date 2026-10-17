@@ -28,6 +28,24 @@ import shutil
 import subprocess
 import sys
 
+# 2026-10-17: GOAT runs on `py -3.13` (start-goat-app.vbs), but bare
+# "python" on PATH is 3.12, which lacks soundfile/PySide6/numpy — so a
+# preflight run as `python self_check.py` failed on a perfectly good build.
+# Always re-run under the SAME interpreter the app uses, whoever calls us.
+TARGET_PY = (3, 13)
+if sys.version_info[:2] != TARGET_PY and not os.environ.get("GOAT_SELFCHECK_REEXEC"):
+    _env = dict(os.environ, GOAT_SELFCHECK_REEXEC="1")
+    try:
+        _rc = subprocess.call(
+            ["py", "-%d.%d" % TARGET_PY, os.path.abspath(__file__)] + sys.argv[1:],
+            env=_env,
+        )
+    except FileNotFoundError:
+        print("[FAIL] Python launcher 'py' not found — cannot reach Python %d.%d" % TARGET_PY)
+        print("PREFLIGHT FAIL — do NOT restart; fix or run rollback.")
+        sys.exit(1)
+    sys.exit(_rc)
+
 PY_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(PY_DIR)
 BACKUP = os.path.join(PY_DIR, ".self-backup", "last-good")
@@ -51,11 +69,12 @@ CORE = [
     "close_guard.py",
     "dsp.py",
     "stt_gladia.py",
+    "endpoint.py",
 ]
 
 # goat_doctor runs its probes at import time (it's a script), so it is
 # compile-checked but excluded from the import smoke test.
-IMPORT_TEST = "import goat_paths, stt_whisper, tts_edge, tts_piper, audio_io, goat_app, ui_qt, child_guard, fast_hands, close_guard, dsp"
+IMPORT_TEST = "import goat_paths, stt_whisper, tts_edge, tts_piper, audio_io, goat_app, ui_qt, child_guard, fast_hands, close_guard, dsp, endpoint"
 
 # Things the app dies or goes deaf/mute without.
 ASSETS = [

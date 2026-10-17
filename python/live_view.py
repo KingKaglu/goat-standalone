@@ -15,6 +15,7 @@ pixels (what an error says, what's inside a page).
 import ctypes
 import datetime
 import os
+import threading
 import time
 
 import psutil
@@ -28,7 +29,8 @@ _procs: dict = {}
 _primed_at = [0.0]
 
 # Titles that are never his content.
-_SKIP_TITLES = {"Program Manager", "Windows Input Experience", "GOAT"}
+_SKIP_TITLES = {"Program Manager", "Windows Input Experience", "GOAT",
+                "GOAT live"}
 
 
 def _cpu_top(n: int = 5) -> list:
@@ -62,10 +64,28 @@ def _cpu_top(n: int = 5) -> list:
     return rows[:n]
 
 
+_rows_cache: list = []
+_REFRESH_S = 5.0
+
+
+def _refresher():
+    # The scan costs ~1.6s on a 300-process Windows box (psutil does one
+    # syscall per process) and used to run inline on every turn — 80% of the
+    # 2s "prep" before he heard anything (measured 2026-10-17). Now it runs
+    # here, and the turn just reads the last result.
+    while True:
+        try:
+            _rows_cache[:] = _cpu_top()
+        except Exception:  # noqa: BLE001 — sight failing must not kill the loop
+            pass
+        time.sleep(_REFRESH_S)
+
+
 def prime():
     """Call once at boot so the first turn's CPU numbers are real."""
     _cpu_top()
     _primed_at[0] = time.monotonic()
+    threading.Thread(target=_refresher, daemon=True, name="live-view").start()
 
 
 def _front_title() -> str:
@@ -107,9 +127,9 @@ def note(max_windows: int = 12) -> str:
     except Exception as e:  # noqa: BLE001
         parts.append(f"(window list unavailable: {e})")
     try:
-        rows = _cpu_top()
+        rows = list(_rows_cache) or _cpu_top()
         if rows:
-            parts.append("busiest processes since he last spoke: " + ", ".join(
+            parts.append("busiest processes lately: " + ", ".join(
                 f"{name} {cpu:.0f}% cpu {mem}MB" for cpu, mem, name in rows))
         vm = psutil.virtual_memory()
         bat = psutil.sensors_battery()

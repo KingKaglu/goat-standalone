@@ -913,6 +913,38 @@ async def main():
           talked == ["Close the e-mail."], talked)
     g.HOLD_DANGLING_S = old_hold
 
+    # Merge window (2026-10-17): a fragment starting <=1.5s after the last
+    # one, while the brain is still on it, is the same thought.
+    talked.clear()
+    a._merge_prev = ("open the file called", time.monotonic())
+    a.busy = True
+    await a._heard("report final draft", 0.9)
+    check("merge: a fragment inside the window joins the turn in flight",
+          talked == ["open the file called report final draft"], talked)
+    talked.clear()
+    a._merge_prev = ("open the file called", time.monotonic())
+    await a._heard("report final draft", 2.4)
+    check("merge: a fragment after the window stays its own turn",
+          talked == ["report final draft"], talked)
+    talked.clear()
+    a._merge_prev = ("open the file called", time.monotonic())
+    await a._heard("stop", 0.5)
+    check("merge: a spoken stop is never glued to the old sentence",
+          talked == ["stop"], talked)
+    talked.clear()
+    a._merge_prev = ("open the file called", time.monotonic())
+    a.busy = False
+    await a._heard("report final draft", 0.5)
+    check("merge: nothing in flight means nothing to join",
+          talked == ["report final draft"], talked)
+    talked.clear()
+    a.busy = True
+    a._merge_prev = None
+    await a._heard("report final draft", 0.5)
+    check("merge: no previous brain turn (reflex/typed) means no join",
+          talked == ["report final draft"], talked)
+    a.busy = False
+
     # Close guard answers (2026-10-01: his live terminal was closed on a
     # vague "close this window"). Yes runs the held close; no leaves it.
     cg = g.close_guard
@@ -961,11 +993,14 @@ async def main():
     check("routing: a question goes low",
           te("What's the capital of Australia?", False) == "low")
     check("routing: small talk goes low", te("Hey GOAT, how are you, man?", False) == "low")
-    check("routing: a work order keeps his dial",
-          te("Delete all the League of Legends images.", False) == "high")
+    check("routing: a simple order runs at task depth",
+          te("Delete all the League of Legends images.", False) == g.TASK_EFFORT)
+    check("routing: a code order keeps his dial",
+          te("Fix the failing test in reflex.py", False) == "high")
     check("routing: asking for depth keeps his dial",
           te("Think carefully: should I upgrade my RAM?", False) == "high")
-    check("routing: a long message keeps his dial", te("word " * 60, False) == "high")
+    check("routing: a long ramble stays quick (unsure -> sonnet low)",
+          te("word " * 60, False) == g.QUICK_EFFORT)
     check("routing: a hard order keeps his dial", te("what's up", True) == "high")
     e.effort = "low"
     check("routing: never above his dial", te("Fix the build", False) == "low")
@@ -1022,6 +1057,53 @@ async def main():
           e.busy and e._effort_late == 0 and e._live_effort == "low"
           and not e.tts.spoken, (e.busy, e._effort_late, e.tts.spoken))
     e.busy = False
+    g.EFFORT_ROUTING = False
+
+    # Auto brain (2026-10-01, his order: talk + simple tasks on Sonnet 5.5,
+    # code and serious questions on the working brain, unnoticed).
+    old_route = g.BRAIN_ROUTING
+    g.BRAIN_ROUTING = True
+    g.EFFORT_ROUTING = True
+
+    async def brain_for(app, text, hard=False):
+        app.client = MockClient()
+        app.busy = False
+        app._live_view_note = None
+        await app._work(text, hard=hard)
+        app.busy = False
+        brain = [ev[1] for ev in app.events if ev[0] == "brain"][-1]
+        return (app.client.models[-1] if app.client.models else app.model), brain
+
+    r = make_app(MockClient())
+    m, b = await brain_for(r, "Hey GOAT, how's it going?")
+    check("brain: small talk -> sonnet 5.5", m == g.MODEL_TALK and b.endswith("|talk|low"), (m, b))
+    m, b = await brain_for(r, "Open YouTube and play some lo-fi.")
+    # 2026-10-17, his order: Opus only for code or planning; tasks stay on Sonnet.
+    check("brain: a simple order -> sonnet 5.5", m == g.MODEL_TALK and "|task|" in b, (m, b))
+    m, b = await brain_for(r, "Fix the scroll bug in ui_qt.py")
+    check("brain: code -> his working brain", m == g.MODEL_FULL and "|deep|" in b, (m, b))
+    m, b = await brain_for(r, "Now push it.")
+    check("brain: an order right after a code job stays deep", m == g.MODEL_FULL, (m, b))
+    m, b = await brain_for(r, "Thanks, man.")
+    check("brain: thanks after the job goes back to sonnet", m == g.MODEL_TALK, (m, b))
+    m, b = await brain_for(r, "Should I take the job offer or stay where I am?")
+    check("brain: advice, not code or planning -> sonnet 5.5", m == g.MODEL_TALK, (m, b))
+    m, b = await brain_for(r, "Make me a plan for the launch week.")
+    check("brain: planning -> his working brain", m == g.MODEL_FULL, (m, b))
+    r.hard_model = "fable 5.1"
+    m, b = await brain_for(r, "hard brain, what's up", hard=True)
+    check("brain: an explicit hard order -> hard brain", m == g.MODEL_FABLE, (m, b))
+    r.hard_model = g.DEFAULT_WORK
+    r.client = MockClient()
+    r.busy = False
+    await r._work("which model are you right now?")
+    check("brain: 'which model' is told who answers this turn",
+          "[this turn: sonnet 5.5 is answering" in r.client.queries[-1], r.client.queries)
+    g.BRAIN_ROUTING = False
+    m, b = await brain_for(r, "Hey GOAT, how's it going?")
+    check("brain: GOAT_BRAIN_ROUTE=off keeps every turn on the working brain",
+          m == g.MODEL_FULL, (m, b))
+    g.BRAIN_ROUTING = old_route
     g.EFFORT_ROUTING = False
 
     print(f"\n{PASS} passed, {FAIL} failed")

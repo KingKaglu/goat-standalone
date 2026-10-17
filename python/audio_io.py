@@ -15,9 +15,11 @@ SAMPLE_RATE = 16000
 BLOCK_SAMPLES = 160          # 10ms frames, per spec
 VAD_CHUNK = 512              # Silero's expected chunk size at 16kHz (~32ms)
 
-VOTE_WINDOW = 10            # ~320ms of chunk history (chunk ~32ms) considered for
-                             # both votes below
-BARGE_NEEDED = 7             # majority-voiced (7/10) within VOTE_WINDOW confirms a
+VOTE_WINDOW = 20            # ~640ms of chunk history (chunk ~32ms) considered for
+                             # both votes below (10 -> 20 on 2026-10-17: his order,
+                             # 500ms of speech minimum before GOAT stops, so a
+                             # "mm-hmm" or "and" no longer cuts the voice off)
+BARGE_NEEDED = 16            # voiced (16/20, ~510ms) within VOTE_WINDOW confirms a
                              # real interrupt while playing — tolerates brief VAD
                              # dips (plosives, inter-word gaps) instead of the old
                              # any-single-quiet-chunk hard reset, which kept wiping
@@ -29,19 +31,15 @@ QUIET_NEEDED = 3
 PREROLL_MS = 300
 DUCK_GAIN = 0.5
 VAD_THRESHOLD = 0.5
-UTT_SILENCE_STOP_MS = 700    # utterance ends after this much continuous quiet
-                             # (900 -> 700 on 2026-09-14: 200ms off EVERY
-                             # turn, still above the ~500ms gap that normal
-                             # mid-sentence breathing leaves)
-# Adaptive endpointing (2026-09-15, his sub-500ms goal). The 700ms hangover
-# exists to protect a THOUGHT — he pauses mid-sentence while working out what
-# he wants, and cutting him off there is worse than any latency. A short
-# utterance is not a thought, it is a command: "open google", "volume up",
-# "ხმა აუწიე". Those are already complete when the quiet starts, so they pay
-# a shorter hangover and every command in the reflex lane lands ~220ms sooner.
-# Anything longer keeps the full 700ms.
-UTT_SILENCE_STOP_SHORT_MS = 480
-UTT_SHORT_VOICED_MS = 2000   # voiced audio under this counts as a command
+UTT_SILENCE_STOP_MS = 500    # quiet that ends a turn whose sentence SOUNDS
+                             # FINISHED (or when nothing has been heard yet)
+# Smart endpointing (2026-10-17, his order). A flat timer can't tell a thought
+# from a pause, and the old "short utterance = command" 300ms rule chopped
+# every mid-thought pause into its own message. Now the streaming ear's text
+# decides (see endpoint.sounds_finished): a finished sentence ends at 500ms, a
+# trailing one ("and...", "I want to", "Goat.") waits the long 1200ms. The
+# callback is `sentence_state`; without it (batch ear) everything is 500ms.
+UTT_SILENCE_STOP_OPEN_MS = 1200
 # When to tell the streaming ear "he may be finished, start wrapping up".
 # The hangover is a wait GOAT needs for turn-taking; the ear used to sit
 # through all of it and only then begin finalising, so one pause cost two
@@ -301,6 +299,9 @@ class DuplexAudio:
         self.on_utt_audio = None
         self.on_utt_soft_end = None
         self.on_utt_abort = None
+        # () -> True/False/None: does what the streaming ear has heard so far
+        # sound like a finished sentence? False buys the long hangover.
+        self.sentence_state = None
         self._utt_soft_sent = False
         self.last_hangover_ms = 0.0
         # Makeup gain for the ears, learned from the last utterance he spoke,
@@ -677,9 +678,14 @@ class DuplexAudio:
             self._utt_silence_ms += chunk_ms
 
         total_ms = sum(len(c) for c in self._utt_chunks) / SAMPLE_RATE * 1000
-        hangover = (UTT_SILENCE_STOP_SHORT_MS
-                    if self._utt_voiced_ms < UTT_SHORT_VOICED_MS
-                    else UTT_SILENCE_STOP_MS)
+        hangover = UTT_SILENCE_STOP_MS
+        fn = self.sentence_state
+        if fn is not None and not voiced:
+            try:
+                if fn() is False:         # trails off — give him the long wait
+                    hangover = UTT_SILENCE_STOP_OPEN_MS
+            except Exception:  # noqa: BLE001 — audio callback deadline
+                pass
         if voiced:
             self._utt_soft_sent = False
         elif (not self._utt_soft_sent

@@ -23,8 +23,8 @@ import numpy as np  # noqa: E402
 
 import audio_io  # noqa: E402
 from audio_io import (BLOCK_SAMPLES, SAMPLE_RATE, DuplexAudio,  # noqa: E402
-                      UTT_SILENCE_STOP_MS, UTT_SILENCE_STOP_SHORT_MS,
-                      UTT_SHORT_VOICED_MS, VOTE_WINDOW, BARGE_NEEDED)
+                      UTT_SILENCE_STOP_MS, UTT_SILENCE_STOP_OPEN_MS,
+                      VOTE_WINDOW, BARGE_NEEDED)
 
 os.environ.setdefault("GOAT_REFLEX", "off")
 import goat_app as g  # noqa: E402
@@ -65,6 +65,7 @@ def make_audio():
     a.on_utterance = None
     a.on_utt_start = a.on_utt_audio = a.on_utt_abort = None
     a.on_utt_soft_end = None
+    a.sentence_state = None
     a._utt_soft_sent = False
     a.last_hangover_ms = 0.0
     a.ear_gain = 1.0
@@ -93,20 +94,30 @@ def silence_to_end(a, voiced_ms):
 
 
 a = make_audio()
-short_quiet, short_got = silence_to_end(a, 1200)      # "open google"
-check(f"short command ends after {short_quiet:.0f}ms of quiet "
-      f"(target ~{UTT_SILENCE_STOP_SHORT_MS})",
-      short_got and abs(short_quiet - UTT_SILENCE_STOP_SHORT_MS) <= 40,
-      f"quiet={short_quiet} delivered={bool(short_got)}")
+fin_quiet, fin_got = silence_to_end(a, 1200)           # no ear: flat 500
+check(f"no ear text: turn ends after {fin_quiet:.0f}ms (target {UTT_SILENCE_STOP_MS})",
+      fin_got and abs(fin_quiet - UTT_SILENCE_STOP_MS) <= 40,
+      f"quiet={fin_quiet}")
 
 a = make_audio()
-long_quiet, long_got = silence_to_end(a, UTT_SHORT_VOICED_MS + 1500)
-check(f"long speech still gets the full {UTT_SILENCE_STOP_MS}ms to think",
-      long_got and abs(long_quiet - UTT_SILENCE_STOP_MS) <= 40,
-      f"quiet={long_quiet}")
-check("the short hangover really is shorter",
-      short_quiet < long_quiet - 150,
-      f"{short_quiet} vs {long_quiet}")
+a.sentence_state = lambda: True                         # "open google"
+fin_quiet, fin_got = silence_to_end(a, 1200)
+check(f"finished sentence ends after {fin_quiet:.0f}ms (target {UTT_SILENCE_STOP_MS})",
+      fin_got and abs(fin_quiet - UTT_SILENCE_STOP_MS) <= 40,
+      f"quiet={fin_quiet}")
+
+a = make_audio()
+a.sentence_state = lambda: False                        # "so what I want is"
+open_quiet, open_got = silence_to_end(a, 1200)
+check(f"trailing sentence waits {open_quiet:.0f}ms (target {UTT_SILENCE_STOP_OPEN_MS})",
+      open_got and abs(open_quiet - UTT_SILENCE_STOP_OPEN_MS) <= 40,
+      f"quiet={open_quiet}")
+
+a = make_audio()
+a.sentence_state = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+bad_quiet, bad_got = silence_to_end(a, 1200)
+check("a crashing sentence_state falls back to 500ms, never kills the capture",
+      bad_got and abs(bad_quiet - UTT_SILENCE_STOP_MS) <= 40, f"quiet={bad_quiet}")
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +251,7 @@ async def backchannel_cases():
     app.turn_lang = "en"
     app.tts = FakeTts()
     g.BACKCHANNEL_AFTER_S = 0.05
+    g.BACKCHANNEL_MODE = "gap"       # default is off now; test the gap path
     await app._backchannel(app.tts.gen)
     check("a long gap gets one listening noise",
           len(app.tts.said) == 1 and app.tts.said[0] in g.BACKCHANNEL["en"],
@@ -286,7 +298,7 @@ check("backchannel lines are in the TTS prewarm list, so they cost no network",
 chunk_ms = audio_io.VAD_CHUNK / SAMPLE_RATE * 1000
 confirm_ms = BARGE_NEEDED * chunk_ms
 check(f"barge-in confirms within {confirm_ms:.0f}ms of speech "
-      f"({BARGE_NEEDED}/{VOTE_WINDOW} votes)", confirm_ms <= 400,
+      f"({BARGE_NEEDED}/{VOTE_WINDOW} votes)", 500 <= confirm_ms <= 600,
       f"{confirm_ms:.0f}ms")
 
 a = make_audio()
@@ -496,6 +508,22 @@ app.audio.last_peak = 0.05
 app._mishearing("second outage")
 check("a later outage speaks again instead of failing silently",
       len(app.tts.said) == 2, f"said={app.tts.said}")
+
+# ---------------------------------------------------------------------------
+# Does the sentence sound finished? (endpoint.py)
+# ---------------------------------------------------------------------------
+import endpoint  # noqa: E402
+
+for text, want in [("open google", True), ("Open Google.", True),
+                   ("volume up", True), ("what time is it", True),
+                   ("I think so", True), ("so what I want is", False),
+                   ("I want to", False), ("and", False), ("Goat.", False),
+                   ("Well,", False), ("This is-", False), ("", None),
+                   ("ხმა აუწიე", True), ("ხმა აუწიე და", False)]:
+    got = endpoint.sounds_finished(text)
+    check(f"sounds_finished({text!r}) -> {want}", got is want, f"got {got}")
+
+
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

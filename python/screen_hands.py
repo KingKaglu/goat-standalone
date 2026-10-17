@@ -689,6 +689,8 @@ def self_window() -> dict | None:
     own = os.getpid()
     named = None
     for w in windows():
+        if w["title"] == "GOAT live":
+            continue    # the Live window (ui_qt.LiveWindow) is not GOAT itself
         if w["pid"] == own:
             return w
         if w["title"].strip() == "GOAT" and named is None:
@@ -719,6 +721,10 @@ def _own_windows(pid: int) -> tuple[dict | None, list[dict]]:
     main, floats = None, []
     for w in windows(all_windows=True):
         if w["pid"] != pid or w["width"] <= 0 or w["height"] <= 0:
+            continue
+        if w["title"] == "GOAT live":
+            # ui_qt.LiveWindow: click-through and invisible to capture, and
+            # it is how he watches the work — it stays up (2026-10-16).
             continue
         if _user32.GetWindowLongW(w["hwnd"], GWL_EXSTYLE) & WS_EX_TOOLWINDOW:
             floats.append(w)

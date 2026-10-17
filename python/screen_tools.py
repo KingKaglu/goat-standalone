@@ -76,6 +76,26 @@ def _record(entry: dict) -> None:
             pass
 
 
+SHOT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "live-shot.png")
+
+
+def _show_shot(png: bytes) -> None:
+    """Hand the screenshot the brain is about to read to the Live window
+    (ui_qt.LiveWindow), so Giorgi sees what it sees. Written to a temp name
+    and swapped in, so the UI never loads half a file."""
+    if not _emit:
+        return
+    try:
+        tmp = SHOT_PATH + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(png)
+        os.replace(tmp, SHOT_PATH)
+        _emit("work_shot", SHOT_PATH)
+    except Exception:  # noqa: BLE001 — the UI is not allowed to break a tool
+        pass
+
+
 def _text(msg: str) -> dict:
     return {"content": [{"type": "text", "text": msg}]}
 
@@ -276,6 +296,7 @@ async def computer(args: dict) -> dict:
             _record({"tool": "computer", "action": action, "what": "screenshot",
                      "status": "error", "error": str(exc)})
             return _fail(f"screenshot failed: {exc}")
+        _show_shot(png)
         r, s = meta["region"], meta["image_size"]
         _record({"tool": "computer", "action": action, "status": "ok",
                  "what": screen_policy.describe(action, args),

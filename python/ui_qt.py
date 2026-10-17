@@ -108,6 +108,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QLineEdit,
     QMenu,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -514,6 +515,9 @@ QPushButton#winclose {{
 QPushButton#gear {{ background: transparent; border: none; color: {t['dim']};
   font-family: {ICON_FONT}; font-size: {s(16)}px; padding: {s(6)}px; border-radius: {s(16)}px; }}
 QPushButton#gear:hover {{ color: {t['paper']}; background: {rgba(t['paper'], 14)}; }}
+QProgressBar#planbar {{ background: {rgba(t['paper'], 16)}; border: none; border-radius: {s(4)}px; max-height: {s(8)}px; min-height: {s(8)}px; }}
+QProgressBar#planbar::chunk {{ background: {acc}; border-radius: {s(4)}px; }}
+QProgressBar#planbar[hot="true"]::chunk {{ background: #ff8a8a; }}
 QFrame#sideCard {{
   background: {card}; border: 1px solid {line}; border-radius: {s(14)}px;
   text-align: left; padding: 0;
@@ -3785,6 +3789,34 @@ class GoatWindow(QWidget):
         ml.addLayout(h)
         lay.addWidget(mc)
 
+        # Plan usage: 5-hour + weekly meters (fed by the "plan" event)
+        pc = QFrame()
+        pc.setObjectName("card")
+        pl = QVBoxLayout(pc)
+        pl.setSpacing(6)
+        pl.addWidget(mklabel("Claude usage", "sectionTitle"))
+        self._plan_bars = {}
+        for key, name in (("fh", "5-hour"), ("wk", "Weekly")):
+            lab = mklabel(name + " —", "rowSub")
+            bar = QProgressBar()
+            bar.setObjectName("planbar")
+            bar.setRange(0, 100)
+            bar.setTextVisible(False)
+            pl.addWidget(lab)
+            pl.addWidget(bar)
+            self._plan_bars[key] = (lab, bar)
+        lay.addWidget(pc)
+        try:
+            import json as _j
+            _d = _j.load(open(os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), ".plan_usage.json"), encoding="utf-8"))
+            for _k, _v, _n in (("fh", _d["five_hour"], "5-hour"),
+                               ("wk", _d["seven_day"], "Weekly")):
+                self._plan_bars[_k][0].setText(f"{_n} {int(_v)}%")
+                self._plan_bars[_k][1].setValue(int(_v))
+        except Exception:
+            pass
+
         # Tools ⇄ Activity: the same slot. Activity takes it while he is in
         # the chat or while work runs; Tools the rest of the time.
         self.side_stack = QStackedWidget()
@@ -5209,6 +5241,14 @@ class GoatWindow(QWidget):
             try:
                 fh, wk, rs = data.split("|")
                 self._plan = f"plan {fh}% (resets {rs}) · week {wk}%"
+                for k, v, nm, tail in (("fh", fh, "5-hour", f" · resets {rs}"),
+                                       ("wk", wk, "Weekly", "")):
+                    lab, bar = self._plan_bars[k]
+                    n = int(float(v))
+                    lab.setText(f"{nm} {n}%{tail}")
+                    bar.setValue(n)
+                    bar.setProperty("hot", "true" if n >= 85 else "false")
+                    repolish(bar)
             except ValueError:
                 pass
         elif kind == "limit":
