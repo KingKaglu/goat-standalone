@@ -21,3 +21,4 @@ winrt-Windows.Globalization
 winrt-Windows.Media.Control       # phone Control tab: now playing
 pycaw                             # volume (phone Control tab, music ducking)
 comtypes
+pywebpush

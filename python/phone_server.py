@@ -26,6 +26,7 @@ work steps and thinking, context fill, plan usage, and every few seconds the
 laptop's vitals. A phone that connects mid-task gets a snapshot first.
 """
 import asyncio
+import threading
 import datetime
 import hmac
 import ipaddress
@@ -276,6 +277,18 @@ _SW = """// GOAT phone service worker: makes the page an installable app and sho
 // a calm note instead of Chrome's dino when the laptop is out of reach.
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
+self.addEventListener("push", e => {
+  let d = {title: "GOAT", body: ""};
+  try { d = e.data.json(); } catch (x) {}
+  e.waitUntil(self.registration.showNotification(d.title || "GOAT", {
+    body: d.body || "", tag: d.tag || "goat", icon: "/icon-192.png",
+    badge: "/icon-192.png", vibrate: [120, 60, 120], renotify: true}));
+});
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({type: "window"}).then(cs =>
+    cs.length ? cs[0].focus() : self.clients.openWindow("/")));
+});
 self.addEventListener("fetch", e => {
   if (e.request.mode !== "navigate") return;
   e.respondWith(fetch(e.request).catch(() => new Response(
@@ -499,6 +512,8 @@ class PhoneServer:
         wapp.router.add_get("/icon-{size:192|512}{mask:(?:-maskable)?}.png",
                             self._icon_png)
         wapp.router.add_get("/sw.js", self._sw)
+        wapp.router.add_get("/push/key", self._push_key)
+        wapp.router.add_post("/push/sub", self._push_sub)
         self._runner = web.AppRunner(wapp, access_log=None)
         await self._runner.setup()
         await web.TCPSite(self._runner, "0.0.0.0", self.port,
@@ -713,6 +728,85 @@ class PhoneServer:
                 bool(request.match_info["mask"]))
         return web.Response(body=cache[key], content_type="image/png",
                             headers={"Cache-Control": "max-age=86400"})
+
+    # ---- web push: pings his phone when a task ends, even with the app closed
+    def _vapid(self):
+        from py_vapid import Vapid
+        pem = os.path.join(DIR, "vapid.pem")
+        v = Vapid()
+        if os.path.exists(pem):
+            v = Vapid.from_file(pem)
+        else:
+            v.generate_keys()
+            v.save_key(pem)
+        return v
+
+    def _push_subs(self) -> list:
+        try:
+            with open(os.path.join(DIR, "push.json"), encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return []
+
+    def _push_save(self, subs: list):
+        with open(os.path.join(DIR, "push.json"), "w", encoding="utf-8") as f:
+            json.dump(subs, f)
+
+    async def _push_key(self, request):
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401)
+        import base64
+        from cryptography.hazmat.primitives import serialization as ser
+        pub = self._vapid().public_key.public_bytes(
+            ser.Encoding.X962, ser.PublicFormat.UncompressedPoint)
+        return web.json_response(
+            {"key": base64.urlsafe_b64encode(pub).rstrip(b"=").decode()})
+
+    async def _push_sub(self, request):
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401)
+        sub = await request.json()
+        if not isinstance(sub, dict) or not sub.get("endpoint"):
+            return web.Response(status=400)
+        subs = [x for x in self._push_subs() if x.get("endpoint") != sub["endpoint"]]
+        subs.append(sub)
+        self._push_save(subs[-5:])
+        return web.json_response({"ok": True})
+
+    def notify(self, title: str, body: str, tag: str = "goat"):
+        """Fire-and-forget phone notification (never raises)."""
+        subs = self._push_subs()
+        if not subs:
+            return
+
+        def run():
+            try:
+                from pywebpush import webpush, WebPushException
+            except ImportError:
+                return
+            keep = []
+            for sub in subs:
+                try:
+                    webpush(sub, json.dumps({"title": title, "body": body[:180],
+                                             "tag": tag}),
+                            vapid_private_key=os.path.join(DIR, "vapid.pem"),
+                            vapid_claims={"sub": "mailto:giorgigzirishvili2004@gmail.com"},
+                            ttl=3600)
+                    keep.append(sub)
+                except WebPushException as e:
+                    code = getattr(getattr(e, "response", None), "status_code", 0)
+                    if code not in (404, 410):
+                        keep.append(sub)
+                except Exception:  # noqa: BLE001
+                    keep.append(sub)
+            if len(keep) != len(subs):
+                try:
+                    self._push_save(keep)
+                except OSError:
+                    pass
+        threading.Thread(target=run, daemon=True).start()
 
     async def _sw(self, request):
         from aiohttp import web
@@ -1076,6 +1170,9 @@ class PhoneServer:
                     | {"steps": len(t["steps"])})
             msg = {"type": "work", "ev": "fail" if kind == "work_fail"
                    else "done", "text": data[:200], "t": now}
+            if t is not None and now - t.get("t", now) > 15:
+                self.notify("GOAT failed" if kind == "work_fail" else "GOAT is done",
+                            (t.get("text") or data)[:140], "task")
         elif kind == "work_ctx":
             used, _, trim = data.partition("|")
             st["ctx"] = [int(used or 0), int(trim or 0)]
@@ -1093,6 +1190,7 @@ class PhoneServer:
             msg = {"type": "claude", "state": data}
         elif kind == "limit":
             msg = {"type": "notice", "text": data[:300]}
+            self.notify("GOAT hit the usage limit", data[:140], "limit")
         elif kind == "latency":
             st["latency"] = data
             msg = {"type": "latency", "ms": data}

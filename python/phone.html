@@ -1190,9 +1190,25 @@ function buzz() {
     try { new Notification("GOAT", {body: "Done."}); } catch (e) {}
   }
 }
-document.addEventListener("click", () => {
-  if (window.Notification && Notification.permission === "default") Notification.requestPermission();
-}, {once: true});
+async function pushSetup() {
+  try {
+    if (!("serviceWorker" in navigator) || !window.PushManager || !window.Notification) return;
+    if (Notification.permission === "default") await Notification.requestPermission();
+    if (Notification.permission !== "granted") return;
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const k = (await (await fetch("/push/key")).json()).key;
+      const pad = "=".repeat((4 - k.length % 4) % 4);
+      const raw = atob((k + pad).replace(/-/g, "+").replace(/_/g, "/"));
+      sub = await reg.pushManager.subscribe({userVisibleOnly: true,
+        applicationServerKey: Uint8Array.from(raw, c => c.charCodeAt(0))});
+    }
+    await fetch("/push/sub", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(sub)});
+  } catch (e) {}
+}
+document.addEventListener("click", () => pushSetup(), {once: true});
 // Registers only on the real-certificate address (Tailscale name); on a bare
 // IP with the self-signed cert Chrome refuses, which is harmless.
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
