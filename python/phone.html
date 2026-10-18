@@ -1094,6 +1094,16 @@ function ensureCtx() {
   if (ctx.state === "suspended") ctx.resume();
   return ctx;
 }
+// A running AudioContext holds an output stream open, so Android reports
+// "music active" forever and the bubble mic flagged every clip as a video
+// (bug 2026-10-18: over other apps I ignored him). Park it when idle.
+let parkT = 0;
+function parkCtx() {
+  clearTimeout(parkT);
+  parkT = setTimeout(() => {
+    if (ctx && !live && !sources.length && ctx.state === "running") { playEnd = 0; ctx.suspend(); }
+  }, 1500);
+}
 function playLevel() {
   if (!meter) return 0;
   meter.getFloatTimeDomainData(meterBuf);
@@ -1102,6 +1112,8 @@ function playLevel() {
 }
 function play(buf) {
   if (!ctx) return;                        // no tap yet: text only
+  clearTimeout(parkT);
+  if (ctx.state === "suspended") ctx.resume();
   const pcm = new Int16Array(buf);
   if (!pcm.length) return;
   if (!sources.length && inSpeech && voiced >= 8) {
@@ -1119,13 +1131,13 @@ function play(buf) {
   sources.push(s);
   s.onended = () => {
     sources = sources.filter(x => x !== s);
-    if (!sources.length) setSpeaking(false);
+    if (!sources.length) { setSpeaking(false); parkCtx(); }
   };
   setSpeaking(true);
 }
 function stopPlayback() {
   sources.forEach(s => { try { s.stop(); } catch (e) {} });
-  sources = []; playEnd = 0; unduck(); setSpeaking(false);
+  sources = []; playEnd = 0; unduck(); setSpeaking(false); parkCtx();
 }
 // Talking over me DUCKS my voice first instead of killing it (2026-10-18:
 // my own echo kept tripping the barge-in, so he saw the text and heard
@@ -1300,6 +1312,7 @@ async function setLive(on) {
   if (on && !(await startMic())) return;
   if (!on) stopMic();
   live = on; orb.classList.toggle("live", on);
+  if (!on) parkCtx();
   send({type: "live", on});
   setStatus(on ? "listening" : "Tap the mic to talk");
   setBusy(busy);
