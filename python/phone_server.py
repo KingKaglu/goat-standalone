@@ -519,6 +519,7 @@ class PhoneServer:
         wapp.router.add_get("/phone/poll", self._hands_poll)
         wapp.router.add_post("/phone/result", self._hands_result)
         wapp.router.add_post("/phone/do", self._hands_do)
+        wapp.router.add_post("/phone/utt", self._bg_utt)
         wapp.router.add_get("/push/key", self._push_key)
         wapp.router.add_post("/push/sub", self._push_sub)
         self._runner = web.AppRunner(wapp, access_log=None)
@@ -787,6 +788,15 @@ class PhoneServer:
         except asyncio.TimeoutError:
             return web.json_response({})
         return web.json_response({"cmd": cmd})
+
+    async def _bg_utt(self, request):
+        """Bubble-mode mic: one raw int16 16kHz utterance per POST."""
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401)
+        data = await request.read()
+        self._utterance(data)
+        return web.Response(text="ok")
 
     async def _hands_result(self, request):
         from aiohttp import web
