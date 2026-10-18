@@ -1078,6 +1078,13 @@ function play(buf) {
   if (!ctx) return;                        // no tap yet: text only
   const pcm = new Int16Array(buf);
   if (!pcm.length) return;
+  if (!sources.length && inSpeech && voiced >= 8) {
+    // He started talking in the gap between two of my sentences. The next
+    // sentence's setSpeaking(true) used to resetVad() and throw his words
+    // away (bug 2026-10-18: "in bubble mode sometimes it doesn't hear me").
+    // He wins: cut me, keep recording him.
+    cutMe(); return;
+  }
   const ab = ctx.createBuffer(1, pcm.length, SR), ch = ab.getChannelData(0);
   for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
   const s = ctx.createBufferSource(); s.buffer = ab; s.connect(ctx.destination);
@@ -1125,6 +1132,7 @@ const WORKLET = "class T extends AudioWorkletProcessor{process(i){const c=i[0]&&
   "if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor('tap',T)";
 let rsLeft = new Float32Array(0), rsPhase = 0, pend = [];
 let floor = 0.003, inSpeech = false, voiced = 0, silent = 0, above = 0;
+const HIST = 50; const hist = new Float32Array(HIST).fill(0.003); let hn = 0;   // 1 s of frame levels
 let pre = [], utt = [];
 function resetVad() { inSpeech = false; voiced = silent = above = 0; pre = []; utt = []; orb.classList.remove("hear"); }
 
@@ -1161,20 +1169,30 @@ function frame(f) {
   }
   bargeN = 0;
   if (performance.now() < quietUntil) return;
+  // Noise floor = quietest frame of the last second, tracked in AND out of
+  // speech. His speech always dips between words, so it never lifts the
+  // floor; a crowd or a TV never dips, so it does within a second and
+  // can't hold the mic open. The 2026-10-18 00:53 crowd fix used a FIXED
+  // 0.03 onset over 6 frames and 20 voiced frames instead: it went deaf to
+  // normal speech and to short words ("yes", "stop") in the bubble.
+  hist[hn] = rms; hn = (hn + 1) % HIST;
+  let m = 1; for (let i = 0; i < HIST; i++) if (hist[i] < m) m = hist[i];
+  floor = Math.min(0.15, Math.max(0.001, m));
   if (!inSpeech) {
-    floor = Math.min(0.15, Math.max(0.002, floor * 0.995 + rms * 0.005));
     pre.push(f); if (pre.length > 15) pre.shift();          // 300 ms pre-roll
-    above = rms > Math.max(0.03, floor * 5) ? above + 1 : 0;
-    if (above >= 6) { inSpeech = true; utt = pre.slice(); voiced = 3; silent = 0; orb.classList.add("hear"); setStatus("hearing you"); }
+    above = rms > Math.max(0.015, floor * 4) ? above + 1 : 0;
+    if (above >= 4) { inSpeech = true; utt = pre.slice(); voiced = 3; silent = 0; orb.classList.add("hear"); setStatus("hearing you"); }
     return;
   }
   utt.push(f);
-  if (rms > Math.max(0.02, floor * 2.5)) { voiced++; silent = 0; } else silent++;
+  // A lone spike (crowd, clatter) only buys back 100 ms; real speech is dense
+  // enough to keep the counter at zero.
+  if (rms > Math.max(0.01, floor * 2.5)) { voiced++; silent = Math.max(0, silent - 5); } else silent++;
   if (silent >= 40 || utt.length >= 1500) endUtterance();   // 800 ms quiet or 30 s
 }
 
 function endUtterance() {
-  const frames = utt, enough = voiced >= 20;
+  const frames = utt, enough = voiced >= 12;               // ~240 ms of voice: "yes" counts
   resetVad();
   if (!enough) { setStatus("listening"); return; }
   const pcm = new Int16Array(frames.length * FRAME);

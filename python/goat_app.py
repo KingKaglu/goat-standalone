@@ -1942,11 +1942,17 @@ class GoatApp:
             # that merely contains the words still gets through.
             print("[stt] dropped phantom phrase:", repr(text))
             return
-        if self._mishearing(text):
+        # The quiet-mic guard reads the LAPTOP capture level; it says nothing
+        # about audio that came from the phone. And a phone turn starts with
+        # him tapping the orb, so it is addressed by definition — the name
+        # gate only ever made the bubble look deaf (2026-10-18).
+        phone = source == "phone"
+        if not phone and self._mishearing(text):
             return
         if self._voice_command(text, source):
             return
-        if ((self.wake_enabled or getattr(self, "_asleep", False)) and not self.busy
+        if (not phone
+                and (self.wake_enabled or getattr(self, "_asleep", False)) and not self.busy
                 and not self.audio.is_tts_playing
                 and time.monotonic() - self._last_exchange > WAKE_WINDOW_S
                 and not WAKE_RE.search(text)):
