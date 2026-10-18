@@ -37,6 +37,7 @@ def make_audio():
     a._cb_errors = 0
     a._vad_errors = 0
     a._preroll = deque(maxlen=31)
+    a._recent = deque(maxlen=120)
     a._raw_rms_ema = None
     a._running = False  # _vad_loop drains the preloaded queue, then exits
     # The loopback tap (2026-09-28) is read in every callback; an unstarted

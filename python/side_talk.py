@@ -76,6 +76,16 @@ _DEVICE_RE = re.compile(
     r"ეკრან\w*|ფანჯარ\w*|ტერმინალ\w*|ფაილ\w*|კომპიუტერ\w*|ლეპტოპ\w*)\b",
     re.IGNORECASE)
 
+# Talking TO the assistant about itself or the job ("I want you to...",
+# "I think you were doing...", "could we wire it this way") — a call has no
+# reason to say these. Added 2026-10-18 after real orders were dropped.
+_TO_GOAT_RE = re.compile(
+    r"\b(?:i\s+(?:want|need|told|asked|give|wanted)\s+you|"
+    r"you\s+(?:were|are|got|should|will|did|have|need|can|could|stopped|started)|"
+    r"(?:can|could|should|shall)\s+we|we\s+(?:can|could|should|need\s+to)|"
+    r"if\s+we\s+can|your\s+(?:code|voice|memory|brain|wiring|ears|answer))\b",
+    re.IGNORECASE)
+
 _QUESTION_RE = re.compile(
     r"\?\s*$|^\W*(?:(?:okay|ok|hey|so|and|but)\W+)*(?:what|when|where|why|how|"
     r"who|which|is|are|was|were|can|could|should|would|will|do|does|did|"
@@ -101,7 +111,7 @@ def addressed(text: str, wake_re=None, reflex_match=None) -> bool:
         except Exception:  # noqa: BLE001
             pass
     return bool(_COMMAND_RE.search(t) or _DEVICE_RE.search(t)
-                or _KA_ORDER_RE.search(t))
+                or _KA_ORDER_RE.search(t) or _TO_GOAT_RE.search(t))
 
 
 def is_question(text: str) -> bool:

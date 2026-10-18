@@ -49,7 +49,16 @@ def drain(p, n_samples=SENT_SAMPLES):
         p._register(text, n_samples, epoch)
 
 
+def _bare(t):
+    # replies now open "Sir, ..." (2026-10-18); compare without that opener
+    if t.startswith("Sir, "):
+        t = t[5:]
+        t = t[:1].upper() + t[1:]
+    return t
+
+
 def check(name, got, want):
+    got = _bare(got)
     status = "PASS" if got == want else "FAIL"
     print(f"[{status}] {name}: got {got!r}")
     assert got == want, f"{name}: wanted {want!r}"
@@ -103,7 +112,8 @@ drain(p)
 p.audio.played_samples = SENT_SAMPLES // 2
 partial = p.spoken_text()
 full = "one two three four five six seven eight"
-ok = partial and partial != full and full.startswith(partial)
+partial = _bare(partial)
+ok = partial and partial.lower() != full and full.startswith(partial.lower())
 print(f"[{'PASS' if ok else 'FAIL'}] D mid-sentence prefix: got {partial!r}")
 assert ok
 

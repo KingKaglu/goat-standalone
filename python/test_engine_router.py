@@ -1094,8 +1094,10 @@ async def main():
     check("brain: an order right after a code job stays deep", m == g.MODEL_FULL, (m, b))
     m, b = await brain_for(r, "Thanks, man.")
     check("brain: thanks after the job goes back to sonnet", m == g.MODEL_TALK, (m, b))
+    m, b = await brain_for(r, "My friend just got a new puppy, so cute.")
+    check("brain: chit-chat, not code or planning -> sonnet 5.5", m == g.MODEL_TALK, (m, b))
     m, b = await brain_for(r, "Should I take the job offer or stay where I am?")
-    check("brain: advice, not code or planning -> sonnet 5.5", m == g.MODEL_TALK, (m, b))
+    check("brain: a serious 'should I' decision -> his working brain", m == g.MODEL_FULL, (m, b))
     m, b = await brain_for(r, "Make me a plan for the launch week.")
     check("brain: planning -> his working brain", m == g.MODEL_FULL, (m, b))
     r.hard_model = "fable 5.1"
