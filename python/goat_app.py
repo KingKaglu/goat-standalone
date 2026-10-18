@@ -1295,6 +1295,10 @@ class GoatApp:
         knows where it was when he spoke."""
         self._cut = True
         self._cut_id = getattr(self, "_cut_id", 0) + 1
+        held, self._after_turn = getattr(self, "_after_turn", ""), ""
+        if held and then:
+            then = f"{held}\n{then}"   # lines held during the answer ride along
+        self._stale_voice = False
         self._after_cut = then
         self.suppressed = True
         self.tts.cancel()
@@ -2100,7 +2104,15 @@ class GoatApp:
         # not a reflex now reaches the one brain that has eyes (screenshots,
         # the live desktop note), hands (shell, files, screen, browser), and
         # speaks its own answer as it writes it.
-        if echo:
+        if (not self.busy and self.tts.speaking()
+                and not (STOP_RE.search(text) and len(text.split()) <= 5)):
+            # My last answer is still queued or playing. Don't kill it before
+            # we know this line is for me: side talk the brain answers with
+            # [[quiet]] used to silence the answer he asked for (bug
+            # 2026-10-18 13:50, "have we updated it?" never spoken on either
+            # device). _speak_delta cuts it once the new reply proves real.
+            self._stale_voice = True
+        elif echo:
             self.tts.cancel()
         self._merge_prev = (text, time.monotonic())   # a fragment may follow
         await self._work(text, hard=bool(WORK_HARD_RE.search(text[:80])),
@@ -2222,6 +2234,15 @@ class GoatApp:
                                    if self._after_cut else text)
                 return
             if not self._turn_has_tools:
+                if (self.tts.speaking() and not STOP_RE.search(text)
+                        and side_talk.looks_aside(text, WAKE_RE)):
+                    # My answer is still playing and this line has no
+                    # question, order or name: likely someone else's talk.
+                    # Finish the answer first, then judge the line (bug
+                    # 2026-10-18: side talk cut his answer mid-turn).
+                    held = getattr(self, "_after_turn", "")
+                    self._after_turn = f"{held}\n{text}" if held else text
+                    return
                 # He talked over a spoken answer: drop it, answer this.
                 await self._cut_turn(text)
                 return
@@ -2254,8 +2275,11 @@ class GoatApp:
         self.busy = True
         # The brain speaks its own answer as it writes it. A listening noise
         # covers the gap only if it is slow to start.
-        self.tts.new_turn()
-        self.emit("delta", "")
+        if not getattr(self, "_stale_voice", False):
+            # (With the last answer still playing, its reveal and label stay
+            # until this reply proves real — see _drop_stale_voice.)
+            self.tts.new_turn()
+            self.emit("delta", "")
         self._first_said = False
         self._say_buf = ""
         # [[quiet]] detection: undecided until the first text arrives.
@@ -2486,9 +2510,29 @@ class GoatApp:
                 return                       # still could be the token
             self._quiet_state = "speak"
             text, self._quiet_probe = self._quiet_probe, ""
+            self._drop_stale_voice()
         self.emit("delta", text)
         self._say_buf += text
         self._flush_sentences()
+
+    def _drop_stale_voice(self):
+        """The new reply is real (not [[quiet]]): only now does the previous
+        answer, still playing, give way to it."""
+        if getattr(self, "_stale_voice", False):
+            self._stale_voice = False
+            self.tts.cancel()
+            self.tts.new_turn()
+            self.emit("delta", "")
+
+    async def _release_aside(self, text: str):
+        """A line held while my answer played (see _work): judge it now."""
+        for _ in range(300):              # a /compact may be running: wait
+            if not self.busy:
+                break
+            await asyncio.sleep(0.2)
+        if self.busy:
+            return
+        await self._talk(text, echo=False)
 
     def _flush_sentences(self, force: bool = False):
         while True:
@@ -2661,6 +2705,10 @@ class GoatApp:
                     self.emit("status", "on a call? say \"GOAT\" to talk to me")
                     quiet_turn = True
                 self._quiet_state = "speak"   # never leaks into a later turn
+                self._stale_voice = False     # quiet/empty: the old answer plays on
+                held, self._after_turn = getattr(self, "_after_turn", ""), ""
+                if held:
+                    asyncio.create_task(self._release_aside(held))
                 err = str(getattr(msg, "result", "") or "").lower()
                 if msg.is_error and "prompt is too long" in err:
                     # Work session's context is full — start a fresh one and

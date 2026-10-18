@@ -44,6 +44,9 @@ class MockTTS:
     def mark_reply(self):
         pass
 
+    def speaking(self):
+        return False
+
     def new_turn(self):
         self._sounded = False
 

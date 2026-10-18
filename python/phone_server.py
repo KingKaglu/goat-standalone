@@ -45,6 +45,11 @@ import numpy as np
 PORT = 8797
 HERE = os.path.dirname(os.path.abspath(__file__))
 ECHO_TAIL_S = 0.8   # room echo after my voice ends; clips recorded inside it are me
+# Raw clip peak below this = far-field sound (TV, people across the room):
+# Whisper turned those into phantom lines ("Go on.", "Board of Forest") that
+# reached the brain. His own voice into the phone peaks 0.4-1.0 (log
+# 2026-10-18); a faint clip gets through only if it names me.
+FAINT_PEAK = 0.16
 BOOT_GRACE_S = 90   # after a restart, wait this long for the phone to return
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
 PAGE = os.path.join(HERE, "phone.html")
@@ -1091,7 +1096,8 @@ class PhoneServer:
         # While my own voice plays on the phone, "music active" is me: the
         # echo check covers that, and his barge-in needs no name.
         media = media and not overlap
-        if overlap or media:
+        faint = pk < FAINT_PEAK
+        if overlap or media or faint:
             # Dropping every overlapping clip also ate his barge-ins (his
             # report 2026-10-18 12:45: "I could not interrupt you"). Hear it
             # first: my own words = echo, anything new = him cutting in.
@@ -1099,7 +1105,8 @@ class PhoneServer:
             # scrolling through apps"): a video's voice is not him — only a
             # line that names me gets through.
             asyncio.create_task(self._overlap_clip(audio, now - n / SR,
-                                                   overlap=overlap, media=media))
+                                                   overlap=overlap, media=media,
+                                                   faint=faint))
             return
         print(f"[phone] utterance {n / 16000:.1f}s peak {pk:.3f}", flush=True)
         try:
@@ -1124,7 +1131,7 @@ class PhoneServer:
                 self._send(json.dumps({"type": "idle"}))
 
     async def _overlap_clip(self, audio, started: float, overlap: bool = True,
-                            media: bool = False):
+                            media: bool = False, faint: bool = False):
         """A clip recorded while I was talking (echo of me, or him cutting
         in?) or while another app played sound (a video, or him?)."""
         import re
@@ -1144,11 +1151,12 @@ class PhoneServer:
             print(f"[phone] dropped clip: my own voice ({text!r})", flush=True)
             self._send(json.dumps({"type": "idle"}))
             return
-        if media:
+        if media or faint:
             wake = getattr(sys.modules.get("goat_app"), "WAKE_RE", None) or _WAKE
             if not wake.search(text):
-                print(f"[phone] other audio playing, not addressed, ignored: "
-                      f"{text!r}", flush=True)
+                why = "other audio playing" if media else "faint, far from the phone"
+                print(f"[phone] {why}, not addressed, ignored: {text!r}",
+                      flush=True)
                 self._send(json.dumps({"type": "idle"}))
                 return
         if not overlap:
@@ -1179,6 +1187,7 @@ class PhoneServer:
             # running turn is NOT ended here — a barge-in fired by room noise
             # used to kill the whole answer. If real words follow, the normal
             # path (_work -> _cut_turn) cuts the turn then.
+            print(f"[phone] {kind}: my voice cut by the phone", flush=True)
             self._voice_end = 0.0
             self.app.tts.cancel()
             self.app._say_buf = ""
