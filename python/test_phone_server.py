@@ -1,6 +1,7 @@
 """Phone client smoke test: real HTTPS + WebSocket against a fake GOAT.
 Run: py -3.13 test_phone_server.py"""
 import asyncio
+import time
 import json
 import ssl
 import sys
@@ -63,6 +64,7 @@ class FakeApp:
     async def _handle_utterance(self, audio, rt=None, gap=None, source="laptop"):
         assert source == "phone"   # the voice lock keeps a print per mic
         self.audio.append(audio)
+        self.cut_ins = getattr(self, "cut_ins", []) + [getattr(self, "_cut_in", None)]
 
     async def _cut_turn(self, then):
         self.cuts += 1
@@ -149,6 +151,28 @@ async def main():
             m = await recv(ws, "idle")
             check("clip with no message -> phone told to go idle",
                   m == {"type": "idle"})
+            # Barge-in (2026-10-18): the page paused my voice for him; his next
+            # clip is a cut-in carrying what he'd heard, and when it yields no
+            # message the page is told to carry on.
+            await ws.send_str(json.dumps({"type": "barge", "heard": "Tori was a keeper."}))
+            await asyncio.sleep(0.1)
+            srv._voice_end = time.time() + 30      # my voice "still playing"
+            await ws.send_bytes(pcm)
+            m = await recv(ws, "idle")
+            check("cut-in clip reaches the ear with what he heard",
+                  len(app.audio) == 2 and app.cut_ins[-1] is not None
+                  and app.cut_ins[-1][1] == "Tori was a keeper.")
+            check("cut-in mark cleared after the clip",
+                  getattr(app, "_cut_in", None) is None and srv._barge is None)
+            check("cut-in with no message -> page carries on (idle)",
+                  m == {"type": "idle"})
+            async with s.post(base + "/phone/utt", data=pcm,
+                              headers={"X-Barge": "1"}, ssl=sslc) as r:
+                check("bubble cut-in POST accepted", r.status == 200)
+            await recv(ws, "idle")
+            check("bubble cut-in skips the echo-overlap drop",
+                  len(app.audio) == 3 and app.cut_ins[-1] is not None)
+            srv._voice_end = 0.0
             app.tts.on_sentence("Hi there.", np.zeros(800, dtype=np.float32) + 0.25)
             m = await recv(ws, "say")
             b = await recv(ws, "-")

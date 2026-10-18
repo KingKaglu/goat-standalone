@@ -55,6 +55,7 @@ SELF_AUDIO_S = 3.0
 ECHO_WINDOW_S = 20.0
 ECHO_RUN = 4
 ECHO_SHARE = 0.6
+BARGE_MARK_S = 40.0   # a paused page's next clip (<=30 s of him) is the cut-in
 BOOT_GRACE_S = 90   # after a restart, wait this long for the phone to return
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
 PAGE = os.path.join(HERE, "phone.html")
@@ -515,6 +516,7 @@ class PhoneServer:
         self._voice_end = 0.0  # when my queued speech finishes playing (echo guard)
         self._chatlog = deque(maxlen=60)  # [his text, my words]: every turn, even cut ones
         self._said = deque(maxlen=40)   # my last sentences, to tell echo from him
+        self._barge = None   # (time, words he'd heard) when a page paused for him
         self._you_n = 0        # how many of his messages the app has taken
 
     # ---- lifecycle ----
@@ -826,7 +828,9 @@ class PhoneServer:
         data = await request.read()
         # X-Media: 1 = another app was playing sound while this was recorded
         # (he's scrolling videos). Then only a line with my name counts.
-        self._utterance(data, media=request.headers.get("X-Media") == "1")
+        # X-Barge: 1 = he talked over my voice; the page has paused it.
+        self._utterance(data, media=request.headers.get("X-Media") == "1",
+                        barge=request.headers.get("X-Barge") == "1")
         return web.Response(text="ok")
 
     async def _hands_result(self, request):
@@ -1079,9 +1083,36 @@ class PhoneServer:
         return out
 
     # ---- phone -> GOAT ----
-    def _utterance(self, data: bytes, st=None, media: bool = False):
+    def _utterance(self, data: bytes, st=None, media: bool = False,
+                   barge: bool = False):
         n = len(data) // 2
+        mark, self._barge = self._barge, None
+        if mark is not None and time.time() - mark[0] > BARGE_MARK_S:
+            mark = None
         if n < MIN_SAMPLES or n > MAX_SAMPLES:
+            if mark is not None:
+                self._send(json.dumps({"type": "idle"}))   # page: carry on
+            return
+        if barge or mark is not None:
+            # He talked over me and my voice is paused for him: this clip is
+            # HIM (recorded after the pause, a breath of my echo at most), so
+            # none of the overlap / media / pinned-laptop rules apply. The
+            # ear decides; real words -> "you" and goat_app drops the rest of
+            # that answer, nothing -> "idle" and the page carries on.
+            audio = np.frombuffer(data[:n * 2], dtype="<i2").astype(np.float32) / 32768.0
+            pk = float(np.max(np.abs(audio))) if n else 0.0
+            if 0.002 < pk < 0.5:
+                audio = np.clip(audio * min(12.0, 0.6 / pk), -1.0, 1.0)
+            if st is not None:
+                st["t_in"] = time.time()
+            print(f"[phone] cut-in {n / 16000:.1f}s peak {pk:.3f}", flush=True)
+            try:
+                self.app._lat_start()
+            except Exception:  # noqa: BLE001
+                pass
+            self._from_phone()
+            asyncio.create_task(self._take_clip(
+                audio, cut_in=mark[1] if mark is not None else ""))
             return
         if not self._phone_speaks() and self._laptop_talking():
             # Pinned to the laptop and it's mid-sentence: what the phone mic
@@ -1125,18 +1156,28 @@ class PhoneServer:
         self._from_phone()
         asyncio.create_task(self._take_clip(audio))
 
-    async def _take_clip(self, audio):
+    async def _take_clip(self, audio, cut_in: str | None = None):
         """Run one phone clip through the ear and the brain. A clip that
         produces no message (silence, a hallucinated "you", a voice-lock
         reject) used to leave the phone saying "thinking" forever — tell it
-        to go back to listening."""
+        to go back to listening (and a paused voice to carry on).
+
+        `cut_in`: he talked over me; what he'd heard of my answer so far.
+        goat_app._talk reads it off the app to stop that answer for good."""
         n0 = self._you_n
+        if cut_in is not None:
+            self.app._cut_in = (time.monotonic(), cut_in)
         try:
             await self.app._handle_utterance(audio, None, None, source="phone")
         except Exception as e:  # noqa: BLE001 — one bad clip must not kill the socket
             print(f"[phone] clip failed: {e!r}", flush=True)
         finally:
+            if cut_in is not None:
+                self.app._cut_in = None
             if self._you_n == n0:
+                if cut_in is not None:
+                    print("[phone] cut-in was not words for me: carrying on",
+                          flush=True)
                 self._send(json.dumps({"type": "idle"}))
 
     def is_echo(self, text: str, overlap: bool = False) -> bool:
@@ -1224,6 +1265,13 @@ class PhoneServer:
                 st["t_in"] = time.time()
                 self._from_phone()   # mic on = he's on the phone now
             self._sync_live()
+        elif kind == "barge":
+            # He started talking over me and the page paused my voice (it
+            # resumes on "idle", drops the rest on "you"). His clip follows,
+            # from this page's mic or the bubble's (X-Barge).
+            self._barge = (time.time(), str(m.get("heard", ""))[:300])
+            print(f"[phone] paused for him (heard up to {self._barge[1][:60]!r})",
+                  flush=True)
         elif kind == "cut":
             # The phone's Stop button: end the running turn, like talking
             # over it on the laptop.

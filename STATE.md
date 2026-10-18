@@ -3,6 +3,40 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Phone voice audit (2026-10-18 ~13:10, 498bbb6, his order: "hearing,
+## interruption, talking-over-the-app problems — fix everything")
+- Root cause of "you texted me but didn't talk": phone.html barge-in fired on
+  my OWN echo (rms>0.06 x 6 frames), sent "cut" -> voice stopped AND the turn
+  was interrupted ([Request interrupted by user] in every such case).
+- Now: barge DUCKS (gain 0.12) and records him; laptop verdict decides:
+  "you" -> stopPlayback, "idle" (clip made no message / was my echo) ->
+  unduck, no verdict in 6 s -> unduck. Echo guard: mic rms vs max playing
+  level of last 300 ms (AnalyserNode on a master gain), echoK learned from
+  non-barge frames + first 300 ms of each speech stretch; barge needs
+  rms>0.06 and >2.5*echoK*pl for 8 frames. "barge" ws msg = voice-only
+  cancel (never ends the turn). Test: python/test_phone_barge.js (node,
+  runs the real page script in a vm with stub DOM/WebAudio) 11/11.
+- phone_server: {"type":"idle"} after any clip with no "you" (page was stuck
+  on "thinking"); _you_n counts his messages via the emit hook. Bubble clips
+  with X-Media: 1 (AudioManager.isMusicActive — he's scrolling videos) need
+  the wake word unless they overlap my own voice. snapshot.ver = phone.html
+  mtime -> open pages reload after an update (first time needs one manual
+  reopen: the old page lacks the code).
+- stt_whisper: SHORT_OK keeps yes/no/stop/wait/next...; "thank you"/"okay"
+  pass only within 30 s of my speaking (note_chatting from _on_sentence).
+- goat_app _PHANTOM: chains of outro clauses ("Thanks for watching, and I'll
+  see you in the next video.") dropped whole.
+- BgMic.java: clip needs >=15 voiced frames and >=25% density (taps/scroll
+  clicks never qualify); X-Media header. APK build 29872021 in out/.
+- TRAP fixed: test_phone_server used to overwrite the REAL .phone/url.txt
+  with port 8798 + goat.tailtest.ts.net; build.sh bakes the APK address from
+  it -> a broken APK. Test now stubs _write_urls. Check url.txt before builds.
+- Known, not from this: test_engine_router "advice -> sonnet" fails (router
+  sends advice to deep; STATE 10-01 says that's intended — test or router
+  needs his call); test_side_talk mid-call bar 43% > 1/3.
+- Not fixable in code: phantom lines from real nearby audio ("This is my
+  book, boy"); voice lock (voice_id) is the tool for that.
+
 ## Phone Control tab + one-voice routing (2026-10-17 ~20:45, c35fd86)
 - python/phone_ctl.py: volume/mute (pycaw endpoint), brightness (WMI via
   PowerShell, cached, background refresh), now playing (winrt

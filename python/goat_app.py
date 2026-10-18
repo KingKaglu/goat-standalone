@@ -476,6 +476,17 @@ STOP_RE = re.compile(
     r"|(გაჩერდი|შეჩერდი|გააჩერე|შეწყვიტე|მოიცა|დაელოდე|გააუქმე)",
     re.IGNORECASE)
 
+# A cut-in that is ONLY a stop word ("stop", "wait", "okay stop", "shut up"):
+# a person who's told that just stops talking — no reply, no model turn.
+BARE_STOP_RE = re.compile(
+    r"^(?:(?:okay|ok|please|goat|sir|hey|just|now|no|oh|man|bro|dude|it|"
+    r"that's|thats|enough|stop|stop it|wait|hold on|shut up|be quiet|quiet|"
+    r"pause|silence|გაჩერდი|მოიცა|გაჩუმდი|კარგი)[\s,.!?…-]*)+$", re.IGNORECASE)
+BARE_STOP_CORE = re.compile(
+    r"\b(enough|stop|wait|hold on|shut up|quiet|pause|silence)\b|გაჩერდი|მოიცა|გაჩუმდი",
+    re.IGNORECASE)
+CUT_IN_S = 45.0   # a phone cut-in mark older than this is stale
+
 # Manual voice/typed dispatch to the WORK lane: he ADDRESSES the working brain
 # by name at the start of the message ("Fable, build…", "working brain: …",
 # "hard brain …"). This is NOT escalation — nothing routes itself — it's the
@@ -2048,8 +2059,26 @@ class GoatApp:
             return
         self._merge_prev = None
         self._last_exchange = time.monotonic()
+        cut_in, self._cut_in = getattr(self, "_cut_in", None), None
+        if cut_in is not None and time.monotonic() - cut_in[0] > CUT_IN_S:
+            cut_in = None
         if echo:
             self.emit("you", text)
+        if cut_in is not None:
+            # He talked over me on the phone and it was real words (his order
+            # 2026-10-18: interruptions like a normal conversation). Like a
+            # person I've stopped for good: the page dropped what it held, and
+            # nothing still queued of that answer may play on.
+            self.tts.cancel()
+            self._say_buf = ""
+            if (BARE_STOP_RE.match(text.strip())
+                    and BARE_STOP_CORE.search(text)):
+                print(f"[barge] he said stop: {text!r}", flush=True)
+                if self.busy:
+                    await self._cut_turn(None)
+                    self.emit("work_fail", "Stopped.")
+                return
+            self._cut_note = (time.monotonic(), cut_in[1])
         # Spoken brake on a running work turn.
         if self.busy and STOP_RE.search(text) and len(text.split()) <= 5:
             # Through _cut_turn so the interrupted turn's error result is
@@ -2364,6 +2393,14 @@ class GoatApp:
             send = KA_WORK_NOTE + send
         if self._probe_turn:
             send = side_talk.PROBE_NOTE + send
+        cut = getattr(self, "_cut_note", None)
+        self._cut_note = None
+        if cut is not None and time.monotonic() - cut[0] < CUT_IN_S:
+            send = ("[he talked over you, so you stopped mid-answer"
+                    + (f'; the last thing he heard: "{cut[1][:200]}"'
+                       if cut[1] else "")
+                    + ". Nothing after that was spoken. Answer what he said "
+                    "now; pick the old thread up only if he wants it]\n") + send
         if MODEL_Q_RE.search(text):
             send = (f"[this turn: {name} is answering — chosen automatically "
                     f"for a {tier} turn]\n") + send
