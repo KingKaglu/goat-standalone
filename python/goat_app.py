@@ -1959,6 +1959,11 @@ class GoatApp:
         # him tapping the orb, so it is addressed by definition — the name
         # gate only ever made the bubble look deaf (2026-10-18).
         phone = source == "phone"
+        if phone and self.phone is not None and self.phone.is_echo(text):
+            # My own voice, heard by the phone's mic after I finished (the
+            # panel path had no echo check: 2026-10-18 14:1x).
+            print("[phone] dropped: my own voice", repr(text))
+            return
         if not phone and self._mishearing(text):
             return
         if self._voice_command(text, source):

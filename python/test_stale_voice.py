@@ -6,6 +6,7 @@ the answer was queued; _talk cancelled the voice, then the brain answered
 Run: Python313 test_stale_voice.py (no network, no models)."""
 import asyncio
 import sys
+import time
 
 import numpy as np
 
@@ -152,18 +153,44 @@ async def phone():
         x = (np.sin(np.arange(16000) / 5.0) * peak * 32767).astype("<i2")
         return x.tobytes()
 
-    said["t"] = "Go on."
+    # The raw bubble mic: his own voice peaks ~0.1. No loudness gate any more
+    # ("Please restore them" was thrown away as "faint", 2026-10-18 14:05).
     srv._utterance(clip(0.095))
     await asyncio.sleep(0.2)
-    check("faint clip without my name: ignored", app.heard == [], app.heard)
-    said["t"] = "GOAT, go on."
-    srv._utterance(clip(0.095))
-    await asyncio.sleep(0.2)
-    check("faint clip that names me: heard", app.heard == ["GOAT, go on."], app.heard)
+    check("quiet bubble clip: straight through", app.heard == ["<loud clip>"], app.heard)
     app.heard.clear()
     srv._utterance(clip(0.9))
     await asyncio.sleep(0.2)
     check("his normal voice: straight through", app.heard == ["<loud clip>"], app.heard)
+    app.heard.clear()
+    # "Music active" right after my own voice is me (the panel's audio
+    # context), not a video: no name needed.
+    srv._voice_end = time.time() - 2.5
+    srv._utterance(clip(0.3), media=True)
+    await asyncio.sleep(0.2)
+    check("media flag just after my voice: straight through",
+          app.heard == ["<loud clip>"], app.heard)
+    app.heard.clear()
+    srv._voice_end = 0.0
+    said["t"] = "Okay, close all the tabs."
+    srv._utterance(clip(0.3), media=True)
+    await asyncio.sleep(0.2)
+    check("real other-app audio, no name: ignored", app.heard == [], app.heard)
+    said["t"] = "GOAT, close all the tabs."
+    srv._utterance(clip(0.3), media=True)
+    await asyncio.sleep(0.2)
+    check("other-app audio that names me: heard",
+          app.heard == ["GOAT, close all the tabs."], app.heard)
+    # Echo of my own words, whichever mic sent it.
+    srv._said.append((time.time(), "Checking what the panel does to audio when it closes."))
+    check("my own sentence back: echo",
+          srv.is_echo("Taking what the panel does to audio, I think."))
+    check("his new words: not echo", not srv.is_echo("I have never said that."))
+    srv._said.append((time.time(), "Want me to close the tabs?"))
+    check("his answer reusing my words: not echo",
+          not srv.is_echo("Yes, close the tabs."))
+    check("over my voice, mostly my words: echo",
+          srv.is_echo("close the tabs", overlap=True))
 
 
 asyncio.run(main())

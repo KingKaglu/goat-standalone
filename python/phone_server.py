@@ -45,11 +45,16 @@ import numpy as np
 PORT = 8797
 HERE = os.path.dirname(os.path.abspath(__file__))
 ECHO_TAIL_S = 0.8   # room echo after my voice ends; clips recorded inside it are me
-# Raw clip peak below this = far-field sound (TV, people across the room):
-# Whisper turned those into phantom lines ("Go on.", "Board of Forest") that
-# reached the brain. His own voice into the phone peaks 0.4-1.0 (log
-# 2026-10-18); a faint clip gets through only if it names me.
-FAINT_PEAK = 0.16
+# Android calls ANY playback "music active", my own voice included, and the
+# panel's audio context runs ~1.5 s past my last word (parkCtx). A bubble clip
+# starting inside this window after my voice is not "another app playing".
+SELF_AUDIO_S = 3.0
+# A phone transcript is my own voice coming back (bug 2026-10-18 14:1x: the
+# panel mic sent "Checking what the panel does to audio" as his line) when
+# it repeats my words from this window, in order (see is_echo).
+ECHO_WINDOW_S = 20.0
+ECHO_RUN = 4
+ECHO_SHARE = 0.6
 BOOT_GRACE_S = 90   # after a restart, wait this long for the phone to return
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
 PAGE = os.path.join(HERE, "phone.html")
@@ -1084,29 +1089,30 @@ class PhoneServer:
         # talking and the check above passes. Judge by when the clip was
         # recorded: if it started before my voice ended (+ room tail), it is me.
         now = time.time()
-        overlap = st is None and now - n / SR < self._voice_end + ECHO_TAIL_S
+        started = now - n / SR
+        overlap = st is None and started < self._voice_end + ECHO_TAIL_S
         if st is not None:
             st["t_in"] = time.time()
         audio = np.frombuffer(data[:n * 2], dtype="<i2").astype(np.float32) / 32768.0
         # Bubble/WebView mics arrive quiet (no auto-gain): lift to a healthy
         # level so Whisper hears short, soft words. Capped so hiss isn't boosted.
+        # No loudness gate: the bubble mic records raw, so his own voice peaks
+        # 0.1-0.3 there, and a 0.16 "faint = far away" cut threw away whole
+        # requests (2026-10-18 14:05, "Please restore them"). Far voices are
+        # the voice lock's job.
         pk = float(np.max(np.abs(audio))) if n else 0.0
         if 0.002 < pk < 0.5:
             audio = np.clip(audio * min(12.0, 0.6 / pk), -1.0, 1.0)
-        # While my own voice plays on the phone, "music active" is me: the
-        # echo check covers that, and his barge-in needs no name.
-        media = media and not overlap
-        faint = pk < FAINT_PEAK
-        if overlap or media or faint:
+        media = media and started >= self._voice_end + SELF_AUDIO_S
+        if overlap or media:
             # Dropping every overlapping clip also ate his barge-ins (his
             # report 2026-10-18 12:45: "I could not interrupt you"). Hear it
             # first: my own words = echo, anything new = him cutting in.
             # Media playing (his order 2026-10-18: "the phone must not hear me
             # scrolling through apps"): a video's voice is not him — only a
             # line that names me gets through.
-            asyncio.create_task(self._overlap_clip(audio, now - n / SR,
-                                                   overlap=overlap, media=media,
-                                                   faint=faint))
+            asyncio.create_task(self._overlap_clip(audio, overlap=overlap,
+                                                   media=media, peak=pk))
             return
         print(f"[phone] utterance {n / 16000:.1f}s peak {pk:.3f}", flush=True)
         try:
@@ -1130,11 +1136,33 @@ class PhoneServer:
             if self._you_n == n0:
                 self._send(json.dumps({"type": "idle"}))
 
-    async def _overlap_clip(self, audio, started: float, overlap: bool = True,
-                            media: bool = False, faint: bool = False):
+    def is_echo(self, text: str, overlap: bool = False) -> bool:
+        """Is this phone transcript my own recent words coming back? Checked
+        on EVERY phone clip (goat_app._heard): the panel's mic path used to
+        skip it and my sentences arrived as his messages.
+
+        Recorded over my voice (`overlap`): most of its words being mine is
+        enough. Otherwise it must repeat my words IN ORDER, a run of at least
+        ECHO_RUN of them, so "yes, close the tabs" after "want me to close the
+        tabs?" is still him."""
+        import difflib
+        import re
+        words = re.findall(r"[a-z']+", (text or "").lower())
+        if not words:
+            return True
+        cut = time.time() - ECHO_WINDOW_S
+        mine = re.findall(r"[a-z']+", " ".join(
+            t for at, t in self._said if at >= cut).lower())
+        if overlap:
+            m = set(mine)
+            return sum(w in m for w in words) / len(words) >= 0.6
+        got = sum(b.size for b in difflib.SequenceMatcher(
+            None, mine, words, autojunk=False).get_matching_blocks())
+        return got >= ECHO_RUN and got / len(words) >= ECHO_SHARE
+
+    async def _overlap_clip(self, audio, overlap: bool, media: bool, peak: float):
         """A clip recorded while I was talking (echo of me, or him cutting
         in?) or while another app played sound (a video, or him?)."""
-        import re
         import stt_whisper
         try:
             text = await asyncio.to_thread(stt_whisper.transcribe, audio)
@@ -1144,19 +1172,16 @@ class PhoneServer:
         if not text:
             self._send(json.dumps({"type": "idle"}))
             return
-        words = re.findall(r"[a-z']+", text.lower())
-        mine = set(re.findall(r"[a-z']+", " ".join(self._said).lower()))
-        if overlap and (not words
-                        or sum(w in mine for w in words) / len(words) >= 0.6):
+        # Inside my voice the bar is lower: it IS mostly echo.
+        if overlap and self.is_echo(text, overlap=True):
             print(f"[phone] dropped clip: my own voice ({text!r})", flush=True)
             self._send(json.dumps({"type": "idle"}))
             return
-        if media or faint:
+        if media:
             wake = getattr(sys.modules.get("goat_app"), "WAKE_RE", None) or _WAKE
             if not wake.search(text):
-                why = "other audio playing" if media else "faint, far from the phone"
-                print(f"[phone] {why}, not addressed, ignored: {text!r}",
-                      flush=True)
+                print(f"[phone] other audio playing, not addressed, ignored "
+                      f"(peak {peak:.3f}): {text!r}", flush=True)
                 self._send(json.dumps({"type": "idle"}))
                 return
         if not overlap:
@@ -1182,15 +1207,6 @@ class PhoneServer:
             if text:
                 st["t_in"] = time.time()
                 self.app.submit_text(text, origin="phone")
-        elif kind in ("stop", "barge"):
-            # Voice only: he started talking over me (or tapped Stop). The
-            # running turn is NOT ended here — a barge-in fired by room noise
-            # used to kill the whole answer. If real words follow, the normal
-            # path (_work -> _cut_turn) cuts the turn then.
-            print(f"[phone] {kind}: my voice cut by the phone", flush=True)
-            self._voice_end = 0.0
-            self.app.tts.cancel()
-            self.app._say_buf = ""
         elif kind == "live":
             st["live"] = bool(m.get("on"))
             if st["live"]:
@@ -1411,7 +1427,7 @@ class PhoneServer:
             self._send(json.dumps({"type": "work", "ev": "think", "text": text}))
 
     def _on_sentence(self, text: str, samples):
-        self._said.append(text)
+        self._said.append((time.time(), text))
         try:
             import stt_whisper
             stt_whisper.note_chatting()

@@ -1116,12 +1116,12 @@ function play(buf) {
   if (ctx.state === "suspended") ctx.resume();
   const pcm = new Int16Array(buf);
   if (!pcm.length) return;
-  if (!sources.length && inSpeech && voiced >= 8) {
-    // He started talking in the gap between two of my sentences. The next
-    // sentence's setSpeaking(true) used to resetVad() and throw his words
-    // away (bug 2026-10-18: "in bubble mode sometimes it doesn't hear me").
-    // He wins: cut me, keep recording him.
-    bargeMe(); return;
+  if (!sources.length && inSpeech && voiced >= 8 && !ducked) {
+    // Something is mid-utterance as my sentence starts: him, or room noise.
+    // Killing my voice here lost whole answers to a cough or a video (bug
+    // 2026-10-18 14:0x: "I did not hear that"). Duck and keep recording; the
+    // laptop hears the clip and cancels me only if it is real words.
+    duck();
   }
   const ab = ctx.createBuffer(1, pcm.length, SR), ch = ab.getChannelData(0);
   for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
@@ -1161,13 +1161,6 @@ function unduck() {
 let cutAt = 0, cutLast = 0;
 function cutMe() {
   stopPlayback(); send({type: "cut"});
-  cutAt = cutLast = performance.now();
-}
-// He talked over me: silence my voice only. The server ends the running turn
-// itself if what he says turns out to be real words (a noise-triggered cut
-// used to kill whole answers).
-function bargeMe() {
-  stopPlayback(); send({type: "barge"});
   cutAt = cutLast = performance.now();
 }
 function staleAudio() {

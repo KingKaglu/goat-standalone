@@ -222,19 +222,11 @@ async def main():
                 check("second page gets the words, not the voice",
                       m1["audio"] is True and len(b1.data) == 1600
                       and m2["audio"] is False)
-            await ws.send_str(json.dumps({"type": "stop"}))
+            await ws.send_str(json.dumps({"type": "cut"}))
             m = await recv(ws, "cancel")
             check("tap-to-stop cancels the voice",
-                  app.tts.cancelled == 1 and m["type"] == "cancel")
-            # Talking over me silences my voice but must NOT end the turn:
-            # a noise-triggered barge-in used to kill whole answers.
-            app.busy = True
-            canc0, cuts0 = app.tts.cancelled, app.cuts
-            await ws.send_str(json.dumps({"type": "barge"}))
-            await recv(ws, "cancel")
-            check("barge-in silences the voice, keeps the turn",
-                  app.tts.cancelled == canc0 + 1 and app.cuts == cuts0)
-            app.busy = False
+                  app.tts.cancelled == 1 and m["type"] == "cancel"
+                  and app.cuts == 0)
             app.emit("brain", "Opus 5.5|deep|high")
             m = await recv(ws, "brain")
             check("brain pick mirrored", m == {"type": "brain", "model": "Opus 5.5",
