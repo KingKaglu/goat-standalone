@@ -489,6 +489,7 @@ class PhoneServer:
         self.pref = _read_pref()
         self._spoke = None     # last route sent to the phones
         self._voice_end = 0.0  # when my queued speech finishes playing (echo guard)
+        self._said = deque(maxlen=12)   # my last sentences, to tell echo from him
 
     # ---- lifecycle ----
     async def start(self) -> list:
@@ -1060,9 +1061,7 @@ class PhoneServer:
         # talking and the check above passes. Judge by when the clip was
         # recorded: if it started before my voice ended (+ room tail), it is me.
         now = time.time()
-        if st is None and now - n / SR < self._voice_end + ECHO_TAIL_S:
-            print(f"[phone] dropped {n / SR:.1f}s clip: my own voice", flush=True)
-            return
+        overlap = st is None and now - n / SR < self._voice_end + ECHO_TAIL_S
         if st is not None:
             st["t_in"] = time.time()
         audio = np.frombuffer(data[:n * 2], dtype="<i2").astype(np.float32) / 32768.0
@@ -1071,6 +1070,12 @@ class PhoneServer:
         pk = float(np.max(np.abs(audio))) if n else 0.0
         if 0.002 < pk < 0.5:
             audio = np.clip(audio * min(12.0, 0.6 / pk), -1.0, 1.0)
+        if overlap:
+            # Dropping every overlapping clip also ate his barge-ins (his
+            # report 2026-10-18 12:45: "I could not interrupt you"). Hear it
+            # first: my own words = echo, anything new = him cutting in.
+            asyncio.create_task(self._overlap_clip(audio, now - n / SR))
+            return
         print(f"[phone] utterance {n / 16000:.1f}s peak {pk:.3f}", flush=True)
         try:
             self.app._lat_start()
@@ -1079,6 +1084,28 @@ class PhoneServer:
         self._from_phone()
         asyncio.create_task(self.app._handle_utterance(audio, None, None,
                                                        source="phone"))
+
+    async def _overlap_clip(self, audio, started: float):
+        """A clip recorded while I was talking: echo of me, or him cutting in?"""
+        import re
+        import stt_whisper
+        try:
+            text = await asyncio.to_thread(stt_whisper.transcribe, audio)
+        except Exception:  # noqa: BLE001
+            return
+        if not text:
+            return
+        words = re.findall(r"[a-z']+", text.lower())
+        mine = set(re.findall(r"[a-z']+", " ".join(self._said).lower()))
+        if not words or sum(w in mine for w in words) / len(words) >= 0.6:
+            print(f"[phone] dropped clip: my own voice ({text!r})", flush=True)
+            return
+        print(f"[phone] barge-in over my voice: {text!r}", flush=True)
+        self._voice_end = 0.0
+        self.app.tts.cancel()
+        self.app._say_buf = ""
+        self._from_phone()
+        await self.app._heard(text, None, None, "phone")
 
     def _command(self, st, raw: str):
         try:
@@ -1313,6 +1340,7 @@ class PhoneServer:
             self._send(json.dumps({"type": "work", "ev": "think", "text": text}))
 
     def _on_sentence(self, text: str, samples):
+        self._said.append(text)
         if samples is not None and len(samples) > 0:
             # my voice will play for len/SR seconds, queued after what's already out
             self._voice_end = max(self._voice_end, time.time()) + len(samples) / SR
