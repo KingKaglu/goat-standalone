@@ -1,11 +1,14 @@
 """GOAT's hands on Giorgi's phone. Usage:
   python phone_hands.py screen | shot | apps | back | home | recents | notifications
   python phone_hands.py tap X Y | hold X Y | swipe X1 Y1 X2 Y2 | scroll [up]
+  python phone_hands.py alarm HH MM [label] | timer SECONDS [label] | dial NUMBER | sms NUMBER "text"
+  python phone_hands.py url URL | maps "place" | search "query" | settings [wifi|bluetooth|display|sound|battery|apps|location]
+  python phone_hands.py intent '{"action":..,"data":..,"package":..,"extras":{..}}'  (any Android intent, instant)
   python phone_hands.py tap_text "Send" | type "hello" [submit] | open "WhatsApp"
 `screen` lists on-screen text with tap coordinates; `shot` saves a screenshot to
 workspace/phone-uploads/phone-shot.jpg. Needs the GOAT app's accessibility
 service switched on (Settings > Accessibility > GOAT)."""
-import base64, json, ssl, sys, urllib.request
+import base64, json, ssl, sys, urllib.request, urllib.parse
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 from pathlib import Path
 
@@ -23,6 +26,36 @@ def call(cmd):
     return json.load(urllib.request.urlopen(req, context=ctx, timeout=30))
 
 
+def _i(action, data=None, **kw):
+    d = {"op": "intent", "action": action}
+    if data: d["data"] = data
+    d.update(kw); return d
+
+
+def _q(x): return urllib.parse.quote(x)
+
+
+SETS = {"wifi": "WIFI", "bluetooth": "BLUETOOTH", "display": "DISPLAY", "sound": "SOUND", "battery": "BATTERY_SAVER",
+        "apps": "APPLICATION", "location": "LOCATION_SOURCE", "airplane": "AIRPLANE_MODE", "data": "DATA_ROAMING"}
+SHORT = {
+    "alarm": lambda r: _i("android.intent.action.SET_ALARM", extras={
+        "android.intent.extra.alarm.HOUR": int(r[0]), "android.intent.extra.alarm.MINUTES": int(r[1]),
+        "android.intent.extra.alarm.MESSAGE": r[2] if len(r) > 2 else "GOAT",
+        "android.intent.extra.alarm.SKIP_UI": True}),
+    "timer": lambda r: _i("android.intent.action.SET_TIMER", extras={
+        "android.intent.extra.alarm.LENGTH": int(r[0]),
+        "android.intent.extra.alarm.MESSAGE": r[1] if len(r) > 1 else "GOAT",
+        "android.intent.extra.alarm.SKIP_UI": True}),
+    "dial": lambda r: _i("android.intent.action.DIAL", "tel:" + r[0]),
+    "sms": lambda r: _i("android.intent.action.SENDTO", "smsto:" + r[0], extras={"sms_body": r[1] if len(r) > 1 else ""}),
+    "url": lambda r: _i("android.intent.action.VIEW", r[0]),
+    "maps": lambda r: _i("android.intent.action.VIEW", "geo:0,0?q=" + _q(r[0])),
+    "search": lambda r: _i("android.intent.action.VIEW", "https://www.google.com/search?q=" + _q(r[0])),
+    "settings": lambda r: _i("android.settings." + (SETS[r[0]] + "_SETTINGS" if r and r[0] in SETS else "SETTINGS")),
+    "intent": lambda r: dict(json.loads(r[0]), op="intent"),
+}
+
+
 def main(a):
     if not a:
         print(__doc__); return
@@ -34,6 +67,8 @@ def main(a):
     elif op == "tap_text": c["text"] = r[0]
     elif op == "type": c.update(text=r[0], submit=len(r) > 1 and r[1] == "submit")
     elif op == "open": c["app"] = r[0]
+    elif op in SHORT:
+        c = SHORT[op](r)
     res = call(c)
     if op == "shot" and res.get("jpeg"):
         p = ROOT / "workspace" / "phone-uploads" / "phone-shot.jpg"
