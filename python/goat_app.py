@@ -736,6 +736,18 @@ def _new_client(options) -> ClaudeSDKClient:
     return ClaudeSDKClient(options)
 
 
+# Speech-model hallucinations over silence/room noise (see _heard). Anchored:
+# the WHOLE transcript must be one of these, never a sentence containing one.
+_PHANTOM = re.compile(
+    r"^\W*(?:(?:thanks?|thank you)(?: (?:so|very) much)? for watching"
+    r"|(?:please )?(?:like and )?subscribe(?: to (?:my|the|our) channel)?"
+    r"|(?:don't forget to )?like,? (?:comment,? )?and subscribe"
+    r"|mm+[- ]?hmm+|m+h?m+"
+    r"|see you (?:next time|in the next (?:one|video))"
+    r"|subtitles? (?:by|created by)\b.*)\W*$",
+    re.IGNORECASE)
+
+
 def _describe_tool(block) -> str:
     """One-line left-panel step from a tool use, e.g. 'edit — ui_qt.py'."""
     name = getattr(block, "name", "tool")
@@ -752,6 +764,11 @@ def _describe_tool(block) -> str:
     path = inp.get("file_path") or inp.get("path")
     if path:
         return f"{name} — {os.path.basename(str(path))}"
+    # Shell calls carry a plain-words description ("Shoot all four tabs at
+    # phone size"); that reads far better than the raw command line.
+    desc = " ".join(str(inp.get("description") or "").split())
+    if desc and inp.get("command"):
+        return f"{name} — {desc[:80]}"
     for k in ("command", "pattern", "url", "query", "prompt"):
         if inp.get(k):
             return f"{name} — {str(inp[k])[:60]}"
@@ -1914,6 +1931,14 @@ class GoatApp:
         self._stt_warned = False
         if not text:
             return  # silence/junk — normal, stay quiet
+        if _PHANTOM.match(text):
+            # 2026-10-18 02:00: "Thanks for watching." / "Please subscribe." /
+            # "Mm-hmm." arrived as his messages off a quiet room — the YouTube
+            # outros every speech model invents over silence. Each one cost a
+            # full model turn. Whole-utterance match only, so a real sentence
+            # that merely contains the words still gets through.
+            print("[stt] dropped phantom phrase:", repr(text))
+            return
         if self._mishearing(text):
             return
         if self._voice_command(text, source):

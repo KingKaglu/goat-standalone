@@ -48,17 +48,27 @@ main{flex:1;min-height:0;position:relative}
 .you{align-self:flex-end;background:var(--s2);padding:10px 14px;
   border-radius:20px 20px 6px 20px}
 .goat{align-self:flex-start;padding:0 2px;font-size:16.5px;line-height:1.55}
-.old{opacity:.5}
+.old{opacity:.62}
 .note{align-self:center;max-width:92%;font:12px/1.4 var(--mono);color:var(--warn);text-align:center}
 .hint{display:none;flex-direction:column;align-items:center;justify-content:center;
   gap:6px;height:55%;color:var(--faint);text-align:center;font-size:14px}
 .hint b{font-size:22px;font-weight:600;letter-spacing:.18em;color:var(--dim)}
 #log:empty~.hint{display:flex}
-#nowcard{position:sticky;top:0;z-index:2;display:none;margin:2px 0 10px;
+#nowcard{display:none;margin:2px 18px 6px;flex:none;cursor:pointer;
   padding:9px 14px;border-radius:14px;background:var(--s1);
   border:1px solid var(--line2);font:12.5px/1.4 var(--mono);color:var(--dim);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #nowcard.on{display:block}
+body[data-pane=work] #nowcard{display:none}
+.sep{align-self:stretch;display:flex;align-items:center;gap:10px;margin:2px 0;
+  font:11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.sep::before,.sep::after{content:"";flex:1;height:1px;background:var(--line2)}
+#jump{position:absolute;left:50%;bottom:12px;z-index:5;transform:translate(-50%,8px);
+  opacity:0;pointer-events:none;border:1px solid var(--line2);background:var(--s2);color:var(--tx);
+  border-radius:999px;min-height:36px;padding:0 14px;font-size:13px;display:flex;align-items:center;
+  gap:6px;box-shadow:0 6px 20px #000b;transition:opacity .18s,transform .18s}
+#jump.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+body:not([data-pane=chat]) #jump{display:none}
 #nowcard b{color:var(--acc);font-weight:600}
 #nowcard b::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
   background:var(--acc);margin-right:8px;animation:blink 1.1s infinite}
@@ -69,6 +79,7 @@ main{flex:1;min-height:0;position:relative}
 .card h3{margin:0 0 12px;font:600 11px/1 var(--mono);letter-spacing:.14em;
   text-transform:uppercase;color:var(--dim);display:flex;justify-content:space-between;
   align-items:center;gap:8px;min-height:20px}
+.card h3>span+span{text-transform:none;letter-spacing:.02em}
 .row{display:flex;justify-content:space-between;gap:12px;font-size:14.5px;margin:4px 0}
 .row span:last-child{color:var(--dim);text-align:right;font-family:var(--mono);font-size:13px}
 .bar{height:5px;border-radius:5px;background:#ffffff10;overflow:hidden;margin:5px 0 12px}
@@ -288,9 +299,10 @@ nav .badge.on{display:block;animation:blink 1.2s infinite}
   <div class="chips"><span class="chip" id="cmodel">—</span><span class="chip" id="cstate">idle</span></div>
   <button class="spk" id="cspk" aria-label="Where I answer out loud"><svg class="i"><use href="#i-laptop"/></svg></button>
 </header>
+<div id="nowcard"><b>Working</b> <span id="nowtxt"></span> · <span id="nowtime"></span></div>
 <main>
+  <button type="button" id="jump" aria-label="Jump to latest">↓ Latest</button>
   <section class="pane sel" id="p-chat">
-    <div id="nowcard"><b>Working</b> <span id="nowtxt"></span> · <span id="nowtime"></span></div>
     <div id="log"></div>
     <div class="hint"><b>GOAT</b><span>Say something, or type below.</span></div>
   </section>
@@ -457,12 +469,23 @@ let ws = null, ctx = null, stream = null, srcNode = null, tap = null, wake = nul
 let live = false, sources = [], playEnd = 0, quietUntil = 0, goatBubble = null;
 let skew = 0, task = null, busy = false, pane = "chat", booted = 0;
 
+// Follow the conversation only while he's at the bottom; if he scrolled up to
+// read, leave him there and offer a "Latest" button instead of yanking him down.
+const chatP = $("p-chat"), jumpB = $("jump");
+const atBottom = () => chatP.scrollHeight - chatP.scrollTop - chatP.clientHeight < 140;
 function add(cls, text, where) {
+  const follow = atBottom() || /^you/.test(cls);
   const d = document.createElement("div");
   d.className = "m " + cls; d.textContent = text;
-  (where || logEl).appendChild(d); stick(); return d;
+  (where || logEl).appendChild(d); stick(follow); return d;
 }
-function stick() { const p = $("p-chat"); if (pane === "chat") p.scrollTop = p.scrollHeight; }
+function stick(follow = true) {
+  if (pane !== "chat") return;
+  if (follow) { chatP.scrollTop = chatP.scrollHeight; jumpB.classList.remove("on"); }
+  else jumpB.classList.add("on");
+}
+chatP.addEventListener("scroll", () => { if (atBottom()) jumpB.classList.remove("on"); }, {passive: true});
+jumpB.onclick = () => chatP.scrollTo({top: chatP.scrollHeight, behavior: "smooth"});
 function setStatus(s) { statusEl.textContent = s; }
 function send(o) {
   if (!ws || ws.readyState !== 1) return false;
@@ -1000,6 +1023,8 @@ function onSnapshot(m) {
   if (m.route) setRoute(m.route.speaks, m.route.pref);
   if (!logEl.children.length && m.history.length) {
     m.history.forEach(h => { add("you old", h[0]); if (h[1]) add("goat old", h[1]); });
+    const sepEl = document.createElement("div"); sepEl.className = "sep"; sepEl.textContent = "now";
+    logEl.appendChild(sepEl); stick();
   }
 }
 
@@ -1017,8 +1042,9 @@ function connect() {
     else if (m.type === "say") {
       if (cutAt && m.audio) return;          // a cut sentence, never spoken
       if (!goatBubble) goatBubble = add("goat", "");
+      const follow = atBottom();
       goatBubble.textContent += (goatBubble.textContent ? " " : "") + m.text;
-      stick();
+      stick(follow);
     }
     else if (m.type === "turn_done") { goatBubble = null; }
     else if (m.type === "status") { if (!sources.length) setStatus(m.text); }
