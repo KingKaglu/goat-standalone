@@ -1046,6 +1046,12 @@ class PhoneServer:
         if st is not None:
             st["t_in"] = time.time()
         audio = np.frombuffer(data[:n * 2], dtype="<i2").astype(np.float32) / 32768.0
+        # Bubble/WebView mics arrive quiet (no auto-gain): lift to a healthy
+        # level so Whisper hears short, soft words. Capped so hiss isn't boosted.
+        pk = float(np.max(np.abs(audio))) if n else 0.0
+        if 0.002 < pk < 0.5:
+            audio = np.clip(audio * min(12.0, 0.6 / pk), -1.0, 1.0)
+        print(f"[phone] utterance {n / 16000:.1f}s peak {pk:.3f}", flush=True)
         try:
             self.app._lat_start()
         except Exception:  # noqa: BLE001 — the ledger is optional
