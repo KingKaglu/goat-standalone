@@ -486,7 +486,29 @@ function stick(follow = true) {
 }
 chatP.addEventListener("scroll", () => { if (atBottom()) jumpB.classList.remove("on"); }, {passive: true});
 jumpB.onclick = () => chatP.scrollTo({top: chatP.scrollHeight, behavior: "smooth"});
-function setStatus(s) { statusEl.textContent = s; }
+// Soft two-note tick every ~1.6 s while I'm working, so silence never feels dead.
+let thinkT = 0;
+function thinkTick() {
+  if (typeof sources !== "undefined" && sources.length) return;
+  try {
+    const c = ensureCtx(), t = c.currentTime;
+    [[520, 0], [660, 0.16]].forEach(([f, d]) => {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = "sine"; o.frequency.value = f;
+      g.gain.setValueAtTime(0, t + d);
+      g.gain.linearRampToValueAtTime(0.035, t + d + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + d + 0.2);
+      o.connect(g); g.connect(c.destination);
+      o.start(t + d); o.stop(t + d + 0.22);
+    });
+  } catch (e) {}
+}
+function setStatus(s) {
+  statusEl.textContent = s;
+  const thinking = /^thinking/i.test(s);
+  if (thinking && !thinkT) { thinkTick(); thinkT = setInterval(thinkTick, 1600); }
+  else if (!thinking && thinkT) { clearInterval(thinkT); thinkT = 0; parkCtx(); }
+}
 function send(o) {
   if (!ws || ws.readyState !== 1) return false;
   ws.send(o instanceof ArrayBuffer ? o : JSON.stringify(o)); return true;
