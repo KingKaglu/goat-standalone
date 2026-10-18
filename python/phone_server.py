@@ -43,6 +43,7 @@ import numpy as np
 
 PORT = 8797
 HERE = os.path.dirname(os.path.abspath(__file__))
+ECHO_TAIL_S = 0.8   # room echo after my voice ends; clips recorded inside it are me
 BOOT_GRACE_S = 90   # after a restart, wait this long for the phone to return
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
 PAGE = os.path.join(HERE, "phone.html")
@@ -487,6 +488,7 @@ class PhoneServer:
         # pinned to "phone" / "laptop" from the Control tab. Survives restarts.
         self.pref = _read_pref()
         self._spoke = None     # last route sent to the phones
+        self._voice_end = 0.0  # when my queued speech finishes playing (echo guard)
 
     # ---- lifecycle ----
     async def start(self) -> list:
@@ -1053,6 +1055,14 @@ class PhoneServer:
             # Pinned to the laptop and it's mid-sentence: what the phone mic
             # caught is the laptop's own voice. Tap Stop to cut it off.
             return
+        # Echo of my own voice (bug 2026-10-18 12:41): the bubble mic closes an
+        # utterance ~0.7 s after the sound stops, so it lands AFTER I finished
+        # talking and the check above passes. Judge by when the clip was
+        # recorded: if it started before my voice ended (+ room tail), it is me.
+        now = time.time()
+        if st is None and now - n / SR < self._voice_end + ECHO_TAIL_S:
+            print(f"[phone] dropped {n / SR:.1f}s clip: my own voice", flush=True)
+            return
         if st is not None:
             st["t_in"] = time.time()
         audio = np.frombuffer(data[:n * 2], dtype="<i2").astype(np.float32) / 32768.0
@@ -1082,6 +1092,7 @@ class PhoneServer:
                 st["t_in"] = time.time()
                 self.app.submit_text(text, origin="phone")
         elif kind == "stop":
+            self._voice_end = 0.0
             self.app.tts.cancel()
             self.app._say_buf = ""
         elif kind == "live":
@@ -1093,6 +1104,7 @@ class PhoneServer:
         elif kind == "cut":
             # The phone's Stop button: end the running turn, like talking
             # over it on the laptop.
+            self._voice_end = 0.0
             self.app.tts.cancel()
             self.app._say_buf = ""
             cut = getattr(self.app, "_cut_turn", None)
@@ -1301,6 +1313,9 @@ class PhoneServer:
             self._send(json.dumps({"type": "work", "ev": "think", "text": text}))
 
     def _on_sentence(self, text: str, samples):
+        if samples is not None and len(samples) > 0:
+            # my voice will play for len/SR seconds, queued after what's already out
+            self._voice_end = max(self._voice_end, time.time()) + len(samples) / SR
         if not self.clients:
             return
         # Laptop's turn: the phone still shows the words, but stays silent.
