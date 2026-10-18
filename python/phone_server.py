@@ -26,6 +26,7 @@ work steps and thinking, context fill, plan usage, and every few seconds the
 laptop's vitals. A phone that connects mid-task gets a snapshot first.
 """
 import asyncio
+import base64
 import threading
 import datetime
 import hmac
@@ -55,6 +56,7 @@ SELF_AUDIO_S = 3.0
 ECHO_WINDOW_S = 20.0
 ECHO_RUN = 4
 ECHO_SHARE = 0.6
+STREAM_TTL_S = 30.0   # a stream with no chunk and no clip for this long is dead
 BARGE_MARK_S = 40.0   # a paused page's next clip (<=30 s of him) is the cut-in
 BOOT_GRACE_S = 90   # after a restart, wait this long for the phone to return
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
@@ -515,6 +517,7 @@ class PhoneServer:
         self._spoke = None     # last route sent to the phones
         self._voice_end = 0.0  # when my queued speech finishes playing (echo guard)
         self._chatlog = deque(maxlen=60)  # [his text, my words]: every turn, even cut ones
+        self._streams = {}     # stream id -> {"rt": realtime ear session, "t": last chunk}
         self._said = deque(maxlen=40)   # my last sentences, to tell echo from him
         self._barge = None   # (time, words he'd heard) when a page paused for him
         self._you_n = 0        # how many of his messages the app has taken
@@ -551,6 +554,7 @@ class PhoneServer:
         wapp.router.add_post("/phone/result", self._hands_result)
         wapp.router.add_post("/phone/do", self._hands_do)
         wapp.router.add_post("/phone/utt", self._bg_utt)
+        wapp.router.add_post("/phone/chunk", self._bg_chunk)
         wapp.router.add_get("/push/key", self._push_key)
         wapp.router.add_post("/push/sub", self._push_sub)
         self._runner = web.AppRunner(wapp, access_log=None)
@@ -693,7 +697,7 @@ class PhoneServer:
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.BINARY:
-                    self._utterance(msg.data, st)
+                    self._utterance(msg.data, st, sid=st.pop("sid", ""))
                 elif msg.type == WSMsgType.TEXT:
                     self._command(st, msg.data)
         finally:
@@ -830,7 +834,8 @@ class PhoneServer:
         # (he's scrolling videos). Then only a line with my name counts.
         # X-Barge: 1 = he talked over my voice; the page has paused it.
         self._utterance(data, media=request.headers.get("X-Media") == "1",
-                        barge=request.headers.get("X-Barge") == "1")
+                        barge=request.headers.get("X-Barge") == "1",
+                        sid=request.headers.get("X-Stream", ""))
         return web.Response(text="ok")
 
     async def _hands_result(self, request):
@@ -1083,8 +1088,89 @@ class PhoneServer:
         return out
 
     # ---- phone -> GOAT ----
+    # ---- streaming ear for phone audio ------------------------------------
+    # The phone used to send a clip only after 0.7 s of his silence, and the
+    # batch ear then spent ~1.1 s on it. Now the page/bubble also stream the
+    # audio WHILE he talks (chunks tagged with a stream id), the laptop's
+    # realtime ear transcribes along, and the final clip only closes it:
+    # 240-310 ms after the end instead of ~1.1 s (measured 2026-10-18). The
+    # final clip still carries all the audio, so a failed stream costs
+    # nothing but the old batch time.
+    def _stream_chunk(self, sid: str, pcm: bytes = b"", drop: bool = False):
+        if not sid:
+            return
+        now = time.monotonic()
+        s = self._streams.get(sid)
+        if drop:
+            if s is not None:
+                self._streams.pop(sid, None)
+                self._end_rt(s.get("rt"))
+            return
+        if s is None:
+            for k, old in list(self._streams.items()):
+                if now - old["t"] > STREAM_TTL_S:
+                    self._streams.pop(k, None)
+                    self._end_rt(old.get("rt"))
+            # He just started talking: dial the voice socket under his words.
+            try:
+                import tts_edge
+                tts_edge.prime()
+            except Exception:  # noqa: BLE001 — a cold socket only costs time
+                pass
+            rt = None
+            try:
+                import stt_realtime
+                rt = stt_realtime.start_threadsafe(self.app._rt_lang(), self.loop)
+            except Exception as e:  # noqa: BLE001 — batch ear still has the clip
+                print(f"[phone] streaming ear not started: {e!r}", flush=True)
+            s = self._streams[sid] = {"rt": rt, "t": now}
+        s["t"] = now
+        rt = s.get("rt")
+        if rt is not None and len(pcm) >= 2:
+            try:
+                rt.feed(np.frombuffer(pcm[:len(pcm) // 2 * 2], dtype="<i2")
+                        .astype(np.float32) / 32768.0)
+            except Exception:  # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _end_rt(rt):
+        try:
+            if rt is not None:
+                rt.end()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _take_stream(self, sid):
+        """The clip is complete: commit its stream and hand the session on."""
+        s = self._streams.pop(sid, None) if sid else None
+        rt = s.get("rt") if s else None
+        self._end_rt(rt)
+        return rt
+
+    async def _bg_chunk(self, request):
+        """Bubble-mode mic, while he is still talking: raw int16 16 kHz."""
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401)
+        data = await request.read()
+        self._stream_chunk(request.headers.get("X-Stream", ""), data,
+                           drop=request.headers.get("X-Drop") == "1")
+        return web.Response(text="ok")
+
     def _utterance(self, data: bytes, st=None, media: bool = False,
-                   barge: bool = False):
+                   barge: bool = False, sid: str = ""):
+        rt = self._take_stream(sid)
+        # Dial the voice socket now, under the time the ear takes on this
+        # clip (a streamed clip already primed it when he started talking).
+        # The laptop mic primes when he starts talking; phone clips never did,
+        # so a phone answer's first clause paid the ~950 ms dial (2026-10-18).
+        if rt is None:
+            try:
+                import tts_edge
+                tts_edge.prime()
+            except Exception:  # noqa: BLE001 — a cold socket only costs time
+                pass
         n = len(data) // 2
         mark, self._barge = self._barge, None
         if mark is not None and time.time() - mark[0] > BARGE_MARK_S:
@@ -1112,7 +1198,7 @@ class PhoneServer:
                 pass
             self._from_phone()
             asyncio.create_task(self._take_clip(
-                audio, cut_in=mark[1] if mark is not None else ""))
+                audio, cut_in=mark[1] if mark is not None else "", rt=rt))
             return
         if not self._phone_speaks() and self._laptop_talking():
             # Pinned to the laptop and it's mid-sentence: what the phone mic
@@ -1154,9 +1240,9 @@ class PhoneServer:
         except Exception:  # noqa: BLE001 — the ledger is optional
             pass
         self._from_phone()
-        asyncio.create_task(self._take_clip(audio))
+        asyncio.create_task(self._take_clip(audio, rt=rt))
 
-    async def _take_clip(self, audio, cut_in: str | None = None):
+    async def _take_clip(self, audio, cut_in: str | None = None, rt=None):
         """Run one phone clip through the ear and the brain. A clip that
         produces no message (silence, a hallucinated "you", a voice-lock
         reject) used to leave the phone saying "thinking" forever — tell it
@@ -1168,7 +1254,7 @@ class PhoneServer:
         if cut_in is not None:
             self.app._cut_in = (time.monotonic(), cut_in)
         try:
-            await self.app._handle_utterance(audio, None, None, source="phone")
+            await self.app._handle_utterance(audio, rt, None, source="phone")
         except Exception as e:  # noqa: BLE001 — one bad clip must not kill the socket
             print(f"[phone] clip failed: {e!r}", flush=True)
         finally:
@@ -1265,6 +1351,17 @@ class PhoneServer:
                 st["t_in"] = time.time()
                 self._from_phone()   # mic on = he's on the phone now
             self._sync_live()
+        elif kind == "chunk":
+            # His words so far, while he is still talking (streaming ear).
+            try:
+                pcm = base64.b64decode(str(m.get("pcm", "")))
+            except Exception:  # noqa: BLE001
+                pcm = b""
+            self._stream_chunk(str(m.get("sid", ""))[:40], pcm)
+        elif kind == "utt_end":
+            st["sid"] = str(m.get("sid", ""))[:40]   # the next binary clip closes it
+        elif kind == "utt_drop":
+            self._stream_chunk(str(m.get("sid", ""))[:40], drop=True)
         elif kind == "barge":
             # He started talking over me and the page paused my voice (it
             # resumes on "idle", drops the rest on "you"). His clip follows,

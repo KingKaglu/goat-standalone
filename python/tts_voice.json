@@ -1,0 +1,6 @@
+{
+  "voice": "en-GB-LibbyNeural",
+  "engine": "edge",
+  "eleven_voice": "JBFqnCBsd6RMkjVDRZzb",
+  "_why": "2026-10-18: on NEW text Sonia took 2.9-6.2 s (and timed out), Libby 0.8-2.7 s. Delete this file to go back to Sonia. engine 'eleven' = ElevenLabs Flash (paid, fastest)."
+}

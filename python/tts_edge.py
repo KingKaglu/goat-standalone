@@ -67,13 +67,47 @@ RATE = CHARACTERS["goat"]["rate"]
 PITCH = CHARACTERS["goat"]["pitch"]
 
 
+# Speed switches (2026-10-18). On NEW text the voices differ wildly in how
+# long Microsoft takes: Sonia 4.5-6.2 s, Ava Multilingual 7.7 s, Ryan
+# 0.5-1.6 s (repeat text is cached server-side, so only fresh text tells).
+#   GOAT_TTS_VOICE=en-GB-RyanNeural    another Edge voice for English
+#   GOAT_TTS_ENGINE=eleven              ElevenLabs Flash (0.5-0.85 s for a
+#                                       full new sentence), Edge on any error
+# Persistent choice: tts_voice.json next to this file ({"voice": ..., "engine":
+# ..., "eleven_voice": ...}); environment variables win over it.
+def _voice_file() -> dict:
+    try:
+        import json
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "tts_voice.json"), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:  # noqa: BLE001 — no file = the character's own voice
+        return {}
+
+
+_VF = _voice_file()
+VOICE_OVERRIDE = (os.environ.get("GOAT_TTS_VOICE") or _VF.get("voice") or "").strip()
+ENGINE = (os.environ.get("GOAT_TTS_ENGINE") or _VF.get("engine") or "edge").strip().lower()
+ELEVEN_VOICE = (os.environ.get("GOAT_ELEVEN_VOICE") or _VF.get("eleven_voice")
+                or "JBFqnCBsd6RMkjVDRZzb").strip()
+ELEVEN_MODEL = os.environ.get("GOAT_ELEVEN_MODEL", "eleven_flash_v2_5").strip()
+
+
 def _apply():
     global VOICE, RATE, PITCH
     c = CHARACTERS.get(CHARACTER, CHARACTERS["goat"])
     VOICE = c["voices"].get(LANG, VOICE)
     if LANG == "en":
         VOICE = c.get("accents", {}).get(ACCENT, VOICE)
+        if VOICE_OVERRIDE:
+            VOICE = VOICE_OVERRIDE
+        if ENGINE == "eleven":
+            VOICE = "eleven:" + ELEVEN_VOICE   # also keys the line cache
     RATE, PITCH = c["rate"], c["pitch"]
+
+
+_apply()
 
 
 def set_accent(name: str) -> bool:
@@ -149,8 +183,8 @@ def color(data: np.ndarray, rate: int = 16000) -> np.ndarray:
     return _ultron(data.astype(np.float32), rate)
 
 
-async def _collect_mp3(text: str) -> bytes:
-    com = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
+async def _collect_mp3(text: str, voice: str | None = None) -> bytes:
+    com = edge_tts.Communicate(text, voice or VOICE, rate=RATE, pitch=PITCH)
     chunks = []
     async for chunk in com.stream():
         if chunk["type"] == "audio":
@@ -167,12 +201,12 @@ async def _collect_mp3(text: str) -> bytes:
 HEDGE_S = 0.9
 
 
-async def _collect_hedged(text: str) -> bytes:
-    first = asyncio.ensure_future(_collect_mp3(text))
+async def _collect_hedged(text: str, voice: str | None = None) -> bytes:
+    first = asyncio.ensure_future(_collect_mp3(text, voice))
     done, _ = await asyncio.wait({first}, timeout=HEDGE_S)
     if done:
         return first.result()
-    second = asyncio.ensure_future(_collect_mp3(text))
+    second = asyncio.ensure_future(_collect_mp3(text, voice))
     pending = {first, second}
     err = None
     while pending:
@@ -299,9 +333,12 @@ class _Live:
             self.lock = asyncio.Lock()
         async with self.lock:
             t0 = asyncio.get_running_loop().time()
+            # Longer text takes longer (a 30-word clause ran past a flat 5 s
+            # and was torn down every time, 2026-10-18): give it room.
+            limit = max(_REQ_TIMEOUT_S, 2.0 + 0.2 * len(text.split()))
             try:
                 return await asyncio.wait_for(
-                    self._once(text, voice, rate, pitch), _REQ_TIMEOUT_S)
+                    self._once(text, voice, rate, pitch), limit)
             except Exception:  # noqa: BLE001
                 await self._close()
                 # A socket the service quietly dropped fails FAST — re-dial
@@ -310,43 +347,86 @@ class _Live:
                 if asyncio.get_running_loop().time() - t0 > 0.5:
                     raise
             return await asyncio.wait_for(
-                self._once(text, voice, rate, pitch), _REQ_TIMEOUT_S)
+                self._once(text, voice, rate, pitch), limit)
 
 
 _live = None
 
 
+# Hedge (2026-10-18 evening): the service answers the SAME short clause on
+# the SAME warm socket in 280 ms one time and 1.8-2 s the next. Two warm
+# sockets each get every clause; the first answer plays. The slower one is
+# never cancelled — cutting it mid-reply would leave its tail on the socket
+# for the next clause — it finishes in the background under its own lock.
+HEDGE = max(1, int(os.environ.get("GOAT_TTS_HEDGE", "2")))
+HEDGE_AFTER_S = float(os.environ.get("GOAT_TTS_HEDGE_AFTER", "0.45"))
+_lives = []
+_rr = 0
+
+
+def _get_lives():
+    while len(_lives) < HEDGE:
+        _lives.append(_Live())
+    return _lives
+
+
 def _get_live():
-    global _live
-    if _live is None:
-        _live = _Live()
-    return _live
+    return _get_lives()[0]
 
 
 def prime():
-    """Open (or re-open) the live socket in the background. Non-blocking —
+    """Open (or re-open) the live sockets in the background. Non-blocking —
     GOAT calls it when he STARTS talking, so the dial hides under his voice."""
     if not PERSIST:
         return
-    try:
-        asyncio.run_coroutine_threadsafe(_get_live().prime(), _get_live().loop)
-    except Exception:  # noqa: BLE001
-        pass
+    for live in _get_lives():
+        try:
+            asyncio.run_coroutine_threadsafe(live.prime(), live.loop)
+        except Exception:  # noqa: BLE001
+            pass
 
 
-def _persist_mp3(text: str) -> bytes | None:
+def _persist_mp3(text: str, voice: str | None = None) -> bytes | None:
     if not PERSIST or len(text.encode("utf-8")) > _MAX_BYTES:
         return None
-    live = _get_live()
-    fut = asyncio.run_coroutine_threadsafe(
-        live.request(text, VOICE, RATE, PITCH), live.loop)
-    try:
-        mp3 = fut.result(timeout=2 * _REQ_TIMEOUT_S + 1.0)
-    except Exception as e:  # noqa: BLE001 — the per-clause path takes over
-        fut.cancel()
-        print(f"[tts] live socket failed ({type(e).__name__}) — per-clause path")
-        return None
-    return mp3 if len(mp3) >= 200 else None
+    import concurrent.futures as cf
+    import time
+    global _rr
+    lives = _get_lives()
+    _rr = (_rr + 1) % len(lives)
+    order = lives[_rr:] + lives[:_rr]       # take turns as the first socket
+    busy = lambda live: live.lock is not None and live.lock.locked()  # noqa: E731
+    # An idle socket first: with the TTS pool synthesizing several sentences
+    # at once, queueing behind a busy socket (or hedging onto one) piled six
+    # requests on the service and it answered in 4-7 s instead of 0.5-1.2 s
+    # (measured 2026-10-18 23:05).
+    order = [lv for lv in order if not busy(lv)] + [lv for lv in order if busy(lv)]
+    send = lambda live: asyncio.run_coroutine_threadsafe(  # noqa: E731
+        live.request(text, voice or VOICE, RATE, PITCH), live.loop)
+    pending = {send(order[0])}
+    deadline = time.monotonic() + 2 * max(_REQ_TIMEOUT_S, 2.0 + 0.2 * len(text.split())) + 1.0
+    err = None
+    # Only a slow answer gets a second socket, and only an IDLE one: racing
+    # every clause, or onto a busy socket, just queued more work on the service.
+    done, _ = cf.wait(pending, timeout=HEDGE_AFTER_S)
+    if not done:
+        pending |= {send(live) for live in order[1:] if not busy(live)}
+    while pending:
+        done, pending = cf.wait(pending, timeout=max(0.0, deadline - time.monotonic()),
+                                return_when=cf.FIRST_COMPLETED)
+        if not done:
+            break
+        for fut in done:
+            try:
+                mp3 = fut.result()
+            except Exception as e:  # noqa: BLE001 — the other socket may still win
+                err = e
+                continue
+            if len(mp3) >= 200:
+                return mp3
+    print(f"[tts] live socket failed ({type(err).__name__ if err else 'Timeout'})"
+          " — per-clause path")
+    return None
 
 
 def synth(text: str, target_rate: int = 16000, timeout_s: float = 10.0) -> np.ndarray:
@@ -356,9 +436,45 @@ def synth(text: str, target_rate: int = 16000, timeout_s: float = 10.0) -> np.nd
     if not text:
         return np.zeros(0, dtype=np.float32)
 
-    mp3 = _persist_mp3(text)
+    if VOICE.startswith("eleven:"):
+        try:
+            data = _eleven_pcm(text)
+            if target_rate != 16000:
+                g = int(np.gcd(16000, int(target_rate)))
+                data = dsp.resample_poly(data, target_rate // g, 16000 // g).astype(np.float32)
+            return color(data, target_rate)
+        except Exception as e:  # noqa: BLE001 — Edge (Sonia) takes the clause
+            print(f"[tts] elevenlabs failed ({type(e).__name__}: {e}) — edge voice", flush=True)
+            return _edge_synth(text, target_rate, timeout_s,
+                               CHARACTERS["goat"]["accents"].get(ACCENT, "en-GB-SoniaNeural"))
+    return _edge_synth(text, target_rate, timeout_s, VOICE)
+
+
+_eleven_client = None
+
+
+def _eleven_pcm(text: str) -> np.ndarray:
+    """ElevenLabs Flash: raw 16 kHz PCM, no decode step. One kept-alive client."""
+    global _eleven_client
+    import httpx
+    import stt_gladia
+    if _eleven_client is None:
+        _eleven_client = httpx.Client(timeout=httpx.Timeout(8.0, connect=3.0))
+    r = _eleven_client.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE}?output_format=pcm_16000",
+        headers={"xi-api-key": stt_gladia._scribe_key()},
+        json={"text": text, "model_id": ELEVEN_MODEL})
+    if r.status_code != 200 or len(r.content) < 400:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:120]}")
+    return np.frombuffer(r.content[:len(r.content) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
+
+
+def _edge_synth(text: str, target_rate: int, timeout_s: float, voice: str) -> np.ndarray:
+    # voice passed down explicitly: the TTS pool runs 3 clauses at once, so
+    # swapping the global for a fallback would leak into other clauses
+    mp3 = _persist_mp3(text, voice)
     if mp3 is None:
-        mp3 = asyncio.run(asyncio.wait_for(_collect_hedged(text),
+        mp3 = asyncio.run(asyncio.wait_for(_collect_hedged(text, voice),
                                            timeout=timeout_s))
     if len(mp3) < 200:
         raise RuntimeError("edge-tts returned no audio")

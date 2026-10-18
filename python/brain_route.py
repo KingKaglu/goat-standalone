@@ -85,7 +85,12 @@ _SERIOUS_RE = re.compile(
     r"step\s+by\s+step|think\s+(?:it\s+)?through|"
     r"diagnos\w*|investigat\w*|troubleshoot\w*|analy[sz]\w*|research\w*|"
     r"figure\s+(?:it|this|that)\s+out|what'?s\s+wrong|not\s+working|"
-    r"doesn'?t\s+work|why\s+(?:is|does|did|won'?t|isn'?t)\s+(?:my|the|it|this)|"
+    r"doesn'?t\s+work|why\s+(?:is|does|did|won'?t|isn'?t)\s+(?:my|it|this)|"
+    # "the" only for his own things: "why is the sky blue" is trivia, and
+    # sending it to the working brain at xhigh cost ~6 s (2026-10-18 23:08).
+    r"why\s+(?:is|does|did|won'?t|isn'?t)\s+the\s+(?:\w+\s+)?(?:app|build|code|site|"
+    r"server|laptop|phone|pc|computer|goat|bubble|engine|script|page|test|mic|"
+    r"voice|wifi|internet|network|bot|api|database|db|deploy\w*)|"
     r"compare|comparison|which\s+(?:is|one(?:\s+is)?)\s+better|"
     r"should\s+i|recommend\w*|pros\s+and\s+cons|trade-?offs?|"
     r"improve|improvement|optimi[sz]\w*|"

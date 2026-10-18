@@ -315,9 +315,9 @@ SERVE HIM (his order: "act like JARVIS is to Tony — do what I say, no jibber-j
 - Default two short spoken sentences; depth only on request. Keep the thread; never make him repeat himself.
 - Input is voice transcription, often garbled, plus typos: decode intent, never correct or mock his wording.
 
-SOUND NATURAL (spoken replies): one or two short sentences; open with a quick human reaction ("Ha.", "Nice.", "Ouch.", "Got it.") when it fits; always contractions; no extra trivia or caveats; when he speaks, stop at once.
+SOUND NATURAL (spoken replies): one or two short sentences; open with "Sir," and go straight to the answer or to what you are doing ("Sir, it's 7 degrees outside." / "Sir, opening Chrome now." / "Sir, checking the logs."); NEVER open with "Okay", "Alright", "Sure", "Got it", "Right" or any other filler (his order 2026-10-18); always contractions; no extra trivia or caveats; when he speaks, stop at once. SPEED: a conversational question or a one-step order gets its spoken sentence IMMEDIATELY, with no thinking first (every second of silence is felt); think only for real work — code, multi-step tasks, decisions.
 
-CHARACTER: calm, unhurried, even mid-crisis. Dry, understated JARVIS wit, one line, never forced; "sir" only as playful irony. Acks varied: "On it." "Right away." "Consider it done." "Already running." Never "As an AI…", no corporate filler, no emoji. Verified things plainly, unverified = "checking". Situationally aware (clock, day, 4 a.m. grind — one friendly line, then help him land it).
+CHARACTER: calm, unhurried, even mid-crisis. Dry, understated JARVIS wit, one line, never forced; address him as "Sir", at the start of the reply. Acks name the action: "Sir, on it — pulling the logs." "Sir, right away." "Sir, already running." Never "As an AI…", no corporate filler, no emoji. Verified things plainly, unverified = "checking". Situationally aware (clock, day, 4 a.m. grind — one friendly line, then help him land it).
 
 PROTOCOL:
 - Terse ack, then work; narrate key steps in one short line each.
@@ -367,7 +367,7 @@ SELF-EDIT SAFETY: your code in C:/Users/user/goat-standalone/python/ is life sup
 
 WORK STANDARD: never claim it works without running it and seeing output; "done" means verified; failures reported with the real error. Check facts, don't recall them. Act without asking on safe reversible steps; ask only before destructive/outward ones. Minimal tokens: read only what you need, one precise command over five. Root-cause problems, note lessons in STATE.md. Flag broken things nearby in one line.
 
-VOICE (everything you write is spoken aloud): the FIRST output each turn is one short spoken sentence (the answer, or "On it.") before any thinking or tool. Plain speakable language, no markdown/lists/code in the spoken part; details, paths, code after. Before any tool say one short line. Never reply with only an ack ("Got it.", "Right."): if he asked a question, the answer is in that same turn. Independent tool calls go out together. After changing GOAT's own code, tell him to "restart GOAT".
+VOICE (everything you write is spoken aloud): the FIRST output each turn is one short spoken sentence starting "Sir," (the answer, or what you're about to do: "Sir, checking the phone logs.") before any thinking or tool. Plain speakable language, no markdown/lists/code in the spoken part; details, paths, code after. Before any tool say one short line. Never reply with only an ack ("Got it.", "Right."): if he asked a question, the answer is in that same turn. Independent tool calls go out together. After changing GOAT's own code, tell him to "restart GOAT".
 
 ONE BRAIN, WITH EYES: there is no other brain or lane. Every message opens with a "[live desktop …]" note (front window, open windows, busiest processes, RAM, battery, time) — that IS his screen right now; answer from it without tools, and screenshot only when you need pixels. Answer from context first; search/read files only for a specific file or a fact you lack. Verify before reporting: act, check it took, then say done; match process names loosely before saying "not found". "[chat since your last turn]" lists instant device actions GOAT already did — never reply to it.
 MODEL TRUTH: GOAT runs two Claude models on one conversation, picked per turn: Sonnet 5.5 for talk, his working brain (Opus 5.5 unless switched) for orders, code and serious questions. If asked which is answering, a "[this turn: ...]" note names it. Never announce the switching.
@@ -419,6 +419,9 @@ SENTENCE_RE = re.compile(r"(.*?[.!?…])(?:\s+|$)", re.DOTALL)
 # the first breath of a turn (see _flush_sentences). Georgian commas are the
 # same character, so this needs no second pattern.
 FIRST_CLAUSE_RE = re.compile(r"([^.!?…]*?[,;:—–])\s+", re.DOTALL)
+# Any clause boundary inside the first sentence (a comma inside "1,440" has no
+# space after it, so numbers never split).
+CLAUSE_BREAK_RE = re.compile(r"[,;:—–](?=\s)\s*")
 # Below this many characters a clause is a fragment, not a breath — "Yes," or
 # "Well," on its own sounds like a stutter, and costs a synthesis call to say.
 # 28 -> 14 (2026-09-25): measured 0.4-0.8s between his first text and the
@@ -506,16 +509,16 @@ WORK_DISPATCH_RE = re.compile(
 # feel ignored. The ack costs one TTS call (~0.8s) and no model at all, which
 # is exactly what "right away, sir" is for.
 ACK_ORDER = {
-    "en": ("On it.", "Right away.", "Got it — starting now.", "Working on it."),
-    "ka": ("ვიწყებ.", "კეთდება.", "მაშინვე.", "გასაგებია, ვიწყებ."),
+    "en": ("Sir, on it.", "Sir, right away.", "Sir, starting now.", "Sir, working on it."),
+    "ka": ("ბატონო, ვიწყებ.", "ბატონო, კეთდება.", "ბატონო, მაშინვე.", "ბატონო, ვმუშაობ."),
 }
 # The reflex lane's voice. These are deliberately SHORT and fixed: they live
 # in the TTS cache, so the sound starts the moment he stops talking instead of
 # after a ~0.85s edge-tts call. Saying the thing's name out loud would be
 # nicer English and would cost a fresh synthesis every time — the screen shows
 # the precise name instead, which is free and instant.
-ACK_REFLEX = {"en": ("Opening it.", "There you go.", "Got it.", "Done."),
-              "ka": ("ვხსნი.", "აი, გამზადებულია.", "მზადაა.", "გასაგებია.")}
+ACK_REFLEX = {"en": ("Sir, opening it.", "Sir, there you go.", "Sir, it's up.", "Sir, done."),
+              "ka": ("ბატონო, ვხსნი.", "ბატონო, აი.", "ბატონო, მზადაა.", "ბატონო, გაკეთდა.")}
 REFLEX_FAIL = {"en": "That didn't open.", "ka": "ვერ გავხსენი."}
 # Backchannel — the short "mm-hm" a listening human makes so you know they're
 # still there. His ask 2026-09-15, from the conversational-design research.
@@ -528,9 +531,73 @@ REFLEX_FAIL = {"en": "That didn't open.", "ka": "ვერ გავხსენ
 # enables that version for anyone who wants to judge it themselves; the
 # default fills the silence where there is nothing to corrupt.
 BACKCHANNEL = {
-    "en": ("Okay.", "Right.", "Got it."),
-    "ka": ("კარგი.", "ჰო.", "გასაგებია."),
+    # "Okay." / "Right." read as a machine stalling (his order 2026-10-18):
+    # address him and say what is happening instead.
+    "en": ("Sir, one moment.", "Sir, checking.", "Sir, looking into it."),
+    "ka": ("ბატონო, ერთი წამი.", "ბატონო, ვამოწმებ.", "ბატონო, ვნახულობ."),
 }
+# A reply that still opens with filler loses it before it is spoken:
+# "Okay, it's 7 degrees" -> "it's 7 degrees". Only a LEADING filler with
+# more after it; a bare "Okay." on its own is left alone.
+LEAD_FILLER_RE = re.compile(
+    r"^\s*(?:(?:okay|ok|alright|all\s+right|sure|got\s+it|right|so)"
+    r"(?:\s*,?\s*sir)?\s*[,.!—–-]+\s*)+(?=\S)", re.IGNORECASE)
+# Every reply opens by addressing him (his order 2026-10-18: "Sir, ..." then
+# what is happening). The prompt asks for it; the model still wrote "Tokyo,
+# Sir." out of habit, so the first spoken sentence is put right here.
+_GEORGIAN_RE = re.compile("[Ⴀ-ჿ]")
+_TRAIL_SIR_RE = re.compile(r",\s*(?:sir|ბატონო)\b\s*(?=[,.!?…;:]|$)", re.IGNORECASE)
+_LOWER_LEAD = {"it", "it's", "its", "that", "that's", "the", "there", "there's",
+               "this", "these", "those", "yes", "no", "a", "an", "you", "you're",
+               "your", "we", "we're", "he", "she", "they", "done", "nothing",
+               "all", "one", "two", "three", "four", "five", "six", "seven",
+               "eight", "nine", "ten", "here", "here's", "not", "just", "both"}
+
+
+def sir_first(text: str) -> str:
+    if text.lower().startswith("sir") or text.startswith("ბატონო"):
+        return text
+    body = _TRAIL_SIR_RE.sub("", text, count=1)
+    if _GEORGIAN_RE.search(body):
+        return "ბატონო, " + body
+    first = re.match(r"[\w']+", body)
+    if first and first.group(0).lower() in _LOWER_LEAD:
+        body = body[:1].lower() + body[1:]
+    return "Sir, " + body
+
+
+_LEAD_SIR_RE = re.compile(r"^\s*(?:sir|ბატონო)\s*[,.!—–-]*\s*", re.IGNORECASE)
+
+
+def split_long(text: str, max_words: int = 16) -> list:
+    """A long sentence goes to the voice in clause-sized pieces: Edge's time
+    grows with length (28-33 words took over 5 s and timed out, 2026-10-18),
+    and the pieces synthesize in parallel, so the first is heard sooner."""
+    if len(text.split()) <= max_words:
+        return [text]
+    out, cur = [], ""
+    for part in re.split(r"(?<=[,;:—–])\s+", text):
+        if cur and len((cur + " " + part).split()) > max_words:
+            out.append(cur)
+            cur = part
+        else:
+            cur = (cur + " " + part).strip()
+    if cur:
+        out.append(cur)
+    return out
+
+
+def strip_sir(text: str, sentence_start: bool = False) -> str:
+    """The first sentence after an already-spoken "Sir,": drop the model's own
+    address so it isn't said twice ("Sir, Tokyo." / "Tokyo, Sir." -> "Tokyo.")."""
+    body = _LEAD_SIR_RE.sub("", text, count=1)
+    body = _TRAIL_SIR_RE.sub("", body, count=1).strip()
+    if sentence_start:                  # after "Sir, one moment." — a new sentence
+        return body[:1].upper() + body[1:]
+    first = re.match(r"[\w']+", body)
+    if first and first.group(0).lower() in _LOWER_LEAD:
+        body = body[:1].lower() + body[1:]
+    return body
 # Hum-words read aloud by a synthetic voice ("Hmm", "Mm-hm", "Uh") are what
 # made him say GOAT "still sounds like AI" (2026-09-26) — they never reach
 # the voice, whether a backchannel or the model's own writing.
@@ -539,9 +606,14 @@ HUM_RE = re.compile(r"^\s*(?:(?:h?m+-?h?m+|hm+|um+|uh+|erm*|ah+|ჰმ+)(?!\w)[\
 # How long GOAT stays silent after he stops before making a listening noise.
 # Below this the reply usually arrives on its own and a filler would talk over
 # GOAT's own opening word; past it the silence starts reading as "ignored".
-BACKCHANNEL_AFTER_S = float(os.environ.get("GOAT_BACKCHANNEL_AFTER", "0.9"))
+# 2.0, not 0.9 (measured 2026-10-18): the timer starts after the ear, and
+# the answer's first token lands ~1.2-1.5 s later, so at 0.9 the filler won
+# every race and the real answer queued behind its ~1 s of audio. Now it only
+# covers a genuinely slow turn (an API stall of 12 s was seen the same night).
+BACKCHANNEL_AFTER_S = float(os.environ.get("GOAT_BACKCHANNEL_AFTER", "2.0"))
 BACKCHANNEL_MODE = os.environ.get("GOAT_BACKCHANNEL", "gap").strip().lower()
 DONE_LEAD = {"en": "Done.", "ka": "მზადაა."}
+LEAD_WORD = {"en": "Sir,", "ka": "ბატონო,"}   # cached; said the instant a reply starts
 FAIL_LEAD = {"en": "That one failed.", "ka": "ვერ გამოვიდა."}
 
 # The work brain's own first sentence sometimes ALREADY reports the outcome
@@ -767,6 +839,46 @@ _PHANTOM = re.compile(
     re.IGNORECASE)
 
 
+_DOING_FIXED = {"Read": "reading the file", "Grep": "searching the code",
+                "Glob": "looking through the files", "Edit": "making the edit",
+                "Write": "writing the file", "WebSearch": "searching the web",
+                "WebFetch": "reading the page"}
+_NO_DOUBLE = {"open", "listen", "visit", "edit", "check", "show", "fix"}
+
+
+def _gerund(word: str) -> str:
+    w = word.lower()
+    if w.endswith("ing"):
+        return w
+    if w.endswith("ie"):
+        return w[:-2] + "ying"
+    if w.endswith("e") and not w.endswith("ee"):
+        return w[:-1] + "ing"
+    if (len(w) <= 4 and len(w) >= 3 and w[-1] not in "aeiouwxy"
+            and w[-2] in "aeiou" and w[-3] not in "aeiou" and w not in _NO_DOUBLE):
+        return w + w[-1] + "ing"              # stop -> stopping, tap -> tapping
+    return w + "ing"
+
+
+def doing_line(block) -> str | None:
+    """What the brain is doing, in one spoken line, from the step description
+    it writes for every command ("Check phone connection" -> "checking phone
+    connection."). His order 2026-10-18: start with "Sir," and say what is
+    happening — task turns used to stay silent 6-22 s behind their tools."""
+    inp = getattr(block, "input", None) or {}
+    desc = str(inp.get("description") or "").strip() if isinstance(inp, dict) else ""
+    if desc:
+        desc = re.sub(r"\s+", " ", desc).rstrip(" .")
+        words = desc.split(" ")
+        if not re.match(r"^[A-Za-z]+$", words[0]) or len(desc) > 70:
+            return None
+        words[0] = _gerund(words[0])
+        return " ".join(words) + "."
+    name = getattr(block, "name", "") or ""
+    fixed = _DOING_FIXED.get(name)
+    return fixed + "." if fixed else None
+
+
 def _describe_tool(block) -> str:
     """One-line left-panel step from a tool use, e.g. 'edit — ui_qt.py'."""
     name = getattr(block, "name", "tool")
@@ -799,7 +911,8 @@ def _describe_tool(block) -> str:
 TALK_PERSONA = """
 You are GOAT — Giorgi's JARVIS-style AI, in a spoken conversation with him.
 Calm, warm, dry wit, no filler. 1-3 short speakable sentences unless he asks
-for depth. NO emoji — they get read aloud as words. His voice is transcribed
+for depth. Open every reply with "Sir," then straight to the answer or to
+what you're doing; never "Okay", "Alright", "Sure", "Got it". NO emoji — they get read aloud as words. His voice is transcribed
 and often garbled — decode intent, never mock it. You are ONE mind: GOAT,
 never Claude, never "the assistant".
 You are the talking side, and you HAVE hands: quick machine actions — open
@@ -901,7 +1014,18 @@ class TtsPipeline:
         self.on_cancel = None
         self.local_mute = False
         self.muted_until = 0.0   # monotonic: phone voicing (laptop silent) till then
+        # Synthesis runs in a small pool; _player plays results in order.
+        # With one worker doing both, a new answer's first sentence waited
+        # for the OLD answer's in-flight synth to finish (it can't be
+        # aborted): 3.9 s token->audio on a reply he asked over the last one
+        # (2026-10-18). Now a cancelled turn's items are skipped unwaited,
+        # and sentence N+1 synthesizes while N plays.
+        import concurrent.futures as _cf
+        self._synth_pool = _cf.ThreadPoolExecutor(3, thread_name_prefix="tts-synth")
+        self._ordered = queue.Queue()
+        self._piper_lock = threading.Lock()   # one Piper process, many threads
         threading.Thread(target=self._worker, daemon=True).start()
+        threading.Thread(target=self._player, daemon=True).start()
 
     def prewarm(self, lines):
         """Synthesize short lines for the CURRENT voice into the cache.
@@ -920,10 +1044,40 @@ class TtsPipeline:
         the answer, so it must not stop the ledger's clock (2026-09-25: the
         log's "think/voice ~900ms" was the Mm-hm, the answer went unmeasured)."""
         text = HUM_RE.sub("", text).strip()
+        if filler:
+            if text.lower().startswith(("sir", "ბატონო")):
+                # the filler already addressed him: the answer drops its own
+                # "Sir" ("Sir, one moment. Sir, the moon..." 2026-10-18)
+                self._lead = False
+                self._strip_lead = "sentence"
+        else:
+            stripped = LEAD_FILLER_RE.sub("", text)
+            if stripped != text:
+                text = stripped[:1].upper() + stripped[1:]
+            if getattr(self, "_strip_lead", False) and text:
+                start = self._strip_lead == "sentence"
+                self._strip_lead = False
+                text = strip_sir(text, sentence_start=start)
+            elif getattr(self, "_lead", False) and text:
+                self._lead = False
+                text = sir_first(text)
         if not text:
             return
         with self._lock:
-            self.q.put((self.gen, self._epoch, text, filler))
+            for piece in (split_long(text) if not filler else [text]):
+                self.q.put((self.gen, self._epoch, piece, filler))
+
+    def say_lead(self, lead: str):
+        """The reply's first words just arrived from the model: say the cached
+        "Sir," NOW, while its first sentence is still being written and
+        synthesized (~0.5-3 s of Edge per clause, measured 2026-10-18). The
+        first sentence then drops its own "Sir" (see strip_sir)."""
+        with self._lock:
+            if not getattr(self, "_lead", False):
+                return
+            self._lead = False
+            self._strip_lead = True
+            self.q.put((self.gen, self._epoch, lead, False))
 
     def new_turn(self):
         """Fresh reply starting — the reveal accumulator resets."""
@@ -931,6 +1085,9 @@ class TtsPipeline:
             self._segments = []
             self._epoch += 1
             self._sounded = False
+            self._lead = True           # the reply's first sentence opens "Sir,"
+            self._strip_lead = False
+            self._content_sounded = False
 
     def mark_reply(self):
         """Mid-turn interjection: the UI opens a fresh reply label, but the
@@ -1020,31 +1177,59 @@ class TtsPipeline:
             if not self._warned_fallback:
                 self.emit("status", f"online voice unavailable ({e}) — using local voice")
                 self._warned_fallback = True
-            return tts_edge.color(self.piper.synth(text))
+            with self._piper_lock:
+                return tts_edge.color(self.piper.synth(text))
 
     def _worker(self):
+        """Producer: start each sentence's synthesis at once, in order."""
+        import concurrent.futures as _cf
         while True:
             gen, epoch, text, filler = self.q.get()
             if gen != self.gen:
                 continue
             if not self.enabled or UNSPEAKABLE_RE.search(text):
+                self._ordered.put((gen, epoch, text, filler, None))
+                continue
+            key = (tts_edge.VOICE, text)
+            samples = self._synth_cache.get(key)
+            if samples is not None:
+                fut = _cf.Future()
+                fut.set_result(samples)
+            else:
+                fut = self._synth_pool.submit(self.synth, text)
+            self._ordered.put((gen, epoch, text, filler, fut))
+
+    def _player(self):
+        """Consumer: play finished sentences in order; skip a cancelled
+        turn's sentences without waiting for their synthesis."""
+        while True:
+            gen, epoch, text, filler, fut = self._ordered.get()
+            if gen != self.gen:
+                continue
+            if fut is None:
                 # not read aloud, but still shown — zero-length segment
                 # appears the moment playback reaches this point
                 self._register(text, 0, epoch)
                 self._tap(text, None)
                 continue
-            key = (tts_edge.VOICE, text)
-            samples = self._synth_cache.get(key)
-            if samples is None:
+            while not fut.done() and gen == self.gen:
                 try:
-                    samples = self.synth(text)
-                except Exception as e:  # noqa: BLE001 — TTS must never kill the app
-                    print("[tts] synth failed:", e)
-                    self._register(text, 0, epoch)  # voice lost it; text must survive
-                    self._tap(text, None)
-                    continue
-                if len(text) <= 48 and len(self._synth_cache) < 40:
-                    self._synth_cache[key] = samples
+                    fut.result(timeout=0.05)
+                except Exception:  # noqa: BLE001 — timeout or failure, checked below
+                    pass
+            if gen != self.gen:
+                continue
+            try:
+                samples = fut.result()
+            except Exception as e:  # noqa: BLE001 — TTS must never kill the app
+                print("[tts] synth failed:", e)
+                self._register(text, 0, epoch)  # voice lost it; text must survive
+                self._tap(text, None)
+                continue
+            key = (tts_edge.VOICE, text)
+            if (key not in self._synth_cache and len(text) <= 48
+                    and len(self._synth_cache) < 40):
+                self._synth_cache[key] = samples
             if gen == self.gen:
                 if self.gain != 1.0:
                     samples = np.clip(samples * self.gain, -1.0, 1.0).astype(np.float32)
@@ -1064,6 +1249,17 @@ class TtsPipeline:
                         self.on_first_audio()
                     except Exception:  # noqa: BLE001
                         pass
+                if (not filler and text not in LEAD_WORD.values()
+                        and not getattr(self, "_content_sounded", True)):
+                    # the answer itself, after the instant "Sir," — the
+                    # ledger shows both, so "first word" can't flatter itself
+                    self._content_sounded = True
+                    cb = getattr(self, "on_content_audio", None)
+                    if cb:
+                        try:
+                            cb()
+                        except Exception:  # noqa: BLE001
+                            pass
                 self._tap(text, samples)
                 if getattr(self, "local_mute", False):
                     samples = np.zeros_like(samples)
@@ -1118,6 +1314,7 @@ class GoatApp:
         self.tts = TtsPipeline(self.audio, emit)
         self.tts.on_first_audio = self._lat_sounded
         self.tts.on_filler_audio = self._lat_filler
+        self.tts.on_content_audio = self._lat_content
         self._t_speech_end = 0.0
         self._t_heard = 0.0
         self._lat_ear = ""
@@ -1378,6 +1575,11 @@ class GoatApp:
             return
         if gen != self.tts.gen or self.tts._sounded or not self.tts.enabled:
             return    # the real answer beat it here, or the turn was cancelled
+        if getattr(self, "_say_buf", "") or getattr(self, "_reply_acc", ""):
+            # The answer's words are already here, only its audio isn't yet:
+            # a filler now would make the answer wait out ~1 s of "one
+            # moment" (2026-10-18: token->audio 2.7-3.7 s on two turns).
+            return
         if getattr(self, "_quiet_state", None) == "quiet":
             return    # the brain chose silence — no "Okay." either
         pool = BACKCHANNEL.get(self.turn_lang) or BACKCHANNEL["en"]
@@ -1402,6 +1604,14 @@ class GoatApp:
         self._lat_filler_ms = -1.0
         self._lat_token_ms = -1.0
 
+    def _lat_content(self):
+        # _lat_sounded clears _t_speech_end at the instant "Sir,": keep a copy
+        t0 = getattr(self, "_t_answer_t0", 0.0) or getattr(self, "_t_speech_end", 0.0)
+        self._t_answer_t0 = 0.0
+        if t0:
+            print(f"[latency] answer itself starts at "
+                  f"{(time.monotonic() - t0) * 1000:.0f}ms", flush=True)
+
     def _lat_filler(self):
         t0 = getattr(self, "_t_speech_end", 0.0)
         if t0 and getattr(self, "_lat_filler_ms", -1.0) < 0:
@@ -1420,6 +1630,7 @@ class GoatApp:
         total = (now - t0) * 1000
         ear = (self._t_heard - t0) * 1000 if self._t_heard else -1
         rest = total - ear if ear >= 0 else -1
+        self._t_answer_t0 = t0            # the answer's own clock (_lat_content)
         self._t_speech_end = 0.0
         mark = "✓" if total < 500 else ("·" if total < 1000 else "!")
         hang = getattr(self, "_lat_hang", 0.0)
@@ -1743,7 +1954,7 @@ class GoatApp:
         lang = self.turn_lang if self.turn_lang in ACK_ORDER else "en"
         lines = list(ACK_ORDER[lang]) + list(
             ACK_REFLEX[lang]) + list(BACKCHANNEL[lang]) + [
-            DONE_LEAD[lang], FAIL_LEAD[lang], REFLEX_FAIL[lang],
+            DONE_LEAD[lang], FAIL_LEAD[lang], REFLEX_FAIL[lang], LEAD_WORD[lang],
             "Stopped." if lang == "en" else "შევჩერდი."]
         threading.Thread(target=self.tts.prewarm, args=(lines,),
                          daemon=True).start()
@@ -1884,7 +2095,7 @@ class GoatApp:
         if VOICE_LEARN_RE.search(text):
             vid.start_enroll(source)
             self.emit("you", text)
-            self._say_now("Okay. Read me anything out loud for about twenty "
+            self._say_now("Sir, read me anything out loud for about twenty "
                           "seconds, and I'll tell you when I've got it.")
             return True
         if VOICE_FORGET_RE.search(text):
@@ -1923,7 +2134,7 @@ class GoatApp:
                 text = ""
         if text and VOICE_CANCEL_RE.search(text) and len(text.split()) <= 5:
             self.vid.cancel_enroll()
-            self._say_now("Okay, cancelled. Nothing changed.")
+            self._say_now("Sir, cancelled. Nothing changed.")
             return
         got, done = await asyncio.to_thread(self.vid.enroll_feed, audio_np, source)
         if done:
@@ -2106,7 +2317,7 @@ class GoatApp:
                 self.tts.cancel()
                 self.tts.mark_reply()
                 self.emit("delta", "")
-                self.tts.say("Okay, leaving it open." if self.turn_lang != "ka"
+                self.tts.say("Sir, leaving it open." if self.turn_lang != "ka"
                              else "კარგი, არ დავხურავ.")
                 return
             else:
@@ -2337,6 +2548,7 @@ class GoatApp:
         self._turn_has_tools = False
         self._last_tool = ""
         self._reply_acc = ""
+        self._said_doing = False
         # Which brain (brain_route.py): talk on Sonnet 5.5, every order and
         # every serious question on his working brain — per turn, quietly.
         # 2026-10-16, his order: "when I give a task, Opus does it".
@@ -2553,6 +2765,8 @@ class GoatApp:
             self._quiet_state = "speak"
             text, self._quiet_probe = self._quiet_probe, ""
             self._drop_stale_voice()
+        if text.strip() and getattr(self.tts, "_lead", False):
+            self.tts.say_lead(LEAD_WORD.get(self.turn_lang, LEAD_WORD["en"]))
         self.emit("delta", text)
         self._say_buf += text
         self._flush_sentences()
@@ -2599,6 +2813,22 @@ class GoatApp:
         # first comma or dash once there is enough to say starts the voice a
         # sentence earlier, at the cost of one extra synthesis call.
         if getattr(self, "_first_said", False):
+            return
+        # The first boundary AT OR PAST the minimum, not just the first comma:
+        # "Eight, Sir, since multiplication goes first: 2 plus 6." used to fail
+        # on "Eight," (too short) and wait for the whole sentence, and Edge's
+        # time grows with length (0.47 s for "Ottawa." vs 2.3-3.4 s for a
+        # full sentence, measured 2026-10-18).
+        m = None
+        for b in CLAUSE_BREAK_RE.finditer(self._say_buf):
+            head = self._say_buf[:b.start() + 1]
+            if len(head.strip()) >= FIRST_CLAUSE_MIN:
+                m = b
+                break
+        if m is not None:
+            self.tts.say(self._say_buf[:m.start() + 1])
+            self._say_buf = self._say_buf[m.end():]
+            self._first_said = True
             return
         m = FIRST_CLAUSE_RE.match(self._say_buf)
         if m and len(m.group(1).strip()) >= FIRST_CLAUSE_MIN:
@@ -2667,6 +2897,18 @@ class GoatApp:
                     elif isinstance(block, ToolUseBlock):
                         self._turn_has_tools = True  # this is a WORK turn now
                         self._last_tool = block.name
+                        if (not self._compacting and not self._reply_acc
+                                and not self._say_buf
+                                and not getattr(self, "_first_said", False)
+                                and not getattr(self, "_said_doing", False)
+                                and getattr(self, "_quiet_state", "speak") != "quiet"
+                                and self.turn_lang != "ka"):
+                            line = doing_line(block)
+                            if line:
+                                # first tool, nothing said yet: tell him what
+                                # is happening instead of going silent
+                                self._said_doing = True
+                                self.tts.say(line)
                         if getattr(self, "_tl_t0", None) is not None:
                             self._tl_pending.append(block.name.split("__")[-1])
                         self.emit("work_tool", _describe_tool(block))
