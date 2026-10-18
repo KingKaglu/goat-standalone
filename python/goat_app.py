@@ -1176,6 +1176,9 @@ class GoatApp:
                          and not self.tts.local_mute),
                 lambda: self.audio.is_tts_playing or self.tts.speaking())
             self._thinker.start()
+            from watchers import Watchers
+            self._watchers = Watchers(self)
+            self._watchers.start()
         except Exception as e:  # noqa: BLE001 — extras never block the boot
             print(f"[extras] {type(e).__name__}: {e}")
         self._limit_warned = False
