@@ -101,6 +101,10 @@ def make_app(client):
     app.last_user_text = None
     app.claude_out = False
     app.claude_reset = ""
+    app.claude_reset_at = 0.0
+    app._limit_hit_at = 0.0
+    app._resume_text = ""
+    app._resume_watch = None
     app.suppressed = False
     app._hold_deltas = False
     app._delta_buf = ""
@@ -432,6 +436,7 @@ async def main():
         app = make_app(c)
         app.claude_out = True
         app.claude_reset = "14:30"
+        app._limit_hit_at = time.time()   # just hit: no 20-min probe yet
         await app._talk("build something")
         check("claude out -> no query, spoken line with the reset time",
               c.queries == [] and not app.busy and has(app, "work_fail")

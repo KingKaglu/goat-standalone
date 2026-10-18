@@ -69,7 +69,7 @@ class FakeApp:
         self.busy = False
 
 
-async def recv(ws, kind, skip=("vitals", "snapshot", "route")):
+async def recv(ws, kind, skip=("vitals", "snapshot", "route", "idle")):
     """Next JSON message, stepping over the periodic/catch-up ones."""
     while True:
         m = await asyncio.wait_for(ws.receive(), 5)
@@ -101,6 +101,9 @@ async def main():
     ps.ts_cert = lambda: None   # never touch the real tailnet from a test
     ps._read_pref = lambda: "auto"     # nor his saved voice setting
     ps._write_pref = lambda v: None
+    # nor the real .phone/url.txt: the APK build bakes its address from it
+    # (2026-10-18: a test run left port 8798 + a fake ts name in there)
+    ps.PhoneServer._write_urls = lambda self: None
     srv = ps.PhoneServer(app, port=PORT)
     urls = await srv.start()
     check("server up with LAN url", any("192.168." in u or "10." in u for u in urls))
@@ -141,6 +144,11 @@ async def main():
             await asyncio.sleep(0.2)
             check("phone audio reaches the ear",
                   len(app.audio) == 1 and len(app.audio[0]) == 16000)
+            # A clip that produces no message (junk/silence) must hand the
+            # phone back to "listening" instead of leaving it on "thinking".
+            m = await recv(ws, "idle")
+            check("clip with no message -> phone told to go idle",
+                  m == {"type": "idle"})
             app.tts.on_sentence("Hi there.", np.zeros(800, dtype=np.float32) + 0.25)
             m = await recv(ws, "say")
             b = await recv(ws, "-")
@@ -218,6 +226,15 @@ async def main():
             m = await recv(ws, "cancel")
             check("tap-to-stop cancels the voice",
                   app.tts.cancelled == 1 and m["type"] == "cancel")
+            # Talking over me silences my voice but must NOT end the turn:
+            # a noise-triggered barge-in used to kill whole answers.
+            app.busy = True
+            canc0, cuts0 = app.tts.cancelled, app.cuts
+            await ws.send_str(json.dumps({"type": "barge"}))
+            await recv(ws, "cancel")
+            check("barge-in silences the voice, keeps the turn",
+                  app.tts.cancelled == canc0 + 1 and app.cuts == cuts0)
+            app.busy = False
             app.emit("brain", "Opus 5.5|deep|high")
             m = await recv(ws, "brain")
             check("brain pick mirrored", m == {"type": "brain", "model": "Opus 5.5",

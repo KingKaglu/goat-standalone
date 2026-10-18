@@ -1006,7 +1006,12 @@ $("scrbtn").onclick = loadScreen; $("scr").onclick = loadScreen;
 $("shot").onclick = () => window.open($("shot").src, "_blank");
 $("stopbtn").onclick = () => { cutMe(); setStatus("stopping"); };
 
+let pageVer = "";
 function onSnapshot(m) {
+  // A newer page on the laptop (GOAT was updated): load it, unless he is
+  // talking or I am — then the next reconnect will do it.
+  if (m.ver && pageVer && m.ver !== pageVer && !inSpeech && !sources.length) { location.reload(); return; }
+  if (m.ver && !pageVer) pageVer = m.ver;
   skew = m.now - Date.now() / 1000; booted = m.booted;
   const s = m.state;
   if (s.brain) setBrain(s.brain[0], s.brain[2], s.brain[1]);
@@ -1037,7 +1042,10 @@ function connect() {
   ws.onmessage = e => {
     if (typeof e.data !== "string") { if (!staleAudio()) play(e.data); return; }
     const m = JSON.parse(e.data);
-    if (m.type === "you") { cutAt = 0; add("you", m.text); goatBubble = null; }
+    if (m.type === "you") {
+      cutAt = 0; add("you", m.text); goatBubble = null;
+      if (ducked) stopPlayback();   // he really cut in (no cutAt: his answer is next on the wire)
+    }
     else if (m.type === "reply") { goatBubble = null; }
     else if (m.type === "say") {
       if (cutAt && m.audio) return;          // a cut sentence, never spoken
@@ -1049,6 +1057,10 @@ function connect() {
     else if (m.type === "turn_done") { goatBubble = null; }
     else if (m.type === "status") { if (!sources.length) setStatus(m.text); }
     else if (m.type === "cancel") { if (sources.length) stopPlayback(); }
+    else if (m.type === "idle") {
+      if (ducked && !inSpeech) unduck();                    // it was my echo: carry on
+      if (!sources.length && !inSpeech) setStatus(live ? "listening" : "Tap the mic to talk");
+    }
     else if (m.type === "snapshot") onSnapshot(m);
     else if (m.type === "work") onWork(m);
     else if (m.type === "brain") setBrain(m.model, m.effort, m.tier);
@@ -1069,10 +1081,24 @@ function connect() {
 }
 
 // ---- voice out ----
+let master = null, meter = null;
+const meterBuf = new Float32Array(512);
 function ensureCtx() {
-  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // Everything I say goes through one meter, so the mic loop can tell my
+    // own echo (tracks what is playing) from him talking over me (doesn't).
+    master = ctx.createGain(); meter = ctx.createAnalyser(); meter.fftSize = 512;
+    master.connect(meter); meter.connect(ctx.destination);
+  }
   if (ctx.state === "suspended") ctx.resume();
   return ctx;
+}
+function playLevel() {
+  if (!meter) return 0;
+  meter.getFloatTimeDomainData(meterBuf);
+  let e = 0; for (let i = 0; i < meterBuf.length; i++) e += meterBuf[i] * meterBuf[i];
+  return Math.sqrt(e / meterBuf.length);
 }
 function play(buf) {
   if (!ctx) return;                        // no tap yet: text only
@@ -1083,11 +1109,11 @@ function play(buf) {
     // sentence's setSpeaking(true) used to resetVad() and throw his words
     // away (bug 2026-10-18: "in bubble mode sometimes it doesn't hear me").
     // He wins: cut me, keep recording him.
-    cutMe(); return;
+    bargeMe(); return;
   }
   const ab = ctx.createBuffer(1, pcm.length, SR), ch = ab.getChannelData(0);
   for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
-  const s = ctx.createBufferSource(); s.buffer = ab; s.connect(ctx.destination);
+  const s = ctx.createBufferSource(); s.buffer = ab; s.connect(master);
   const t = Math.max(ctx.currentTime + 0.04, playEnd);
   s.start(t); playEnd = t + ab.duration;
   sources.push(s);
@@ -1099,7 +1125,22 @@ function play(buf) {
 }
 function stopPlayback() {
   sources.forEach(s => { try { s.stop(); } catch (e) {} });
-  sources = []; playEnd = 0; setSpeaking(false);
+  sources = []; playEnd = 0; unduck(); setSpeaking(false);
+}
+// Talking over me DUCKS my voice first instead of killing it (2026-10-18:
+// my own echo kept tripping the barge-in, so he saw the text and heard
+// nothing). The laptop hears the clip: real words -> it cancels my voice and
+// answers him ("cancel" + "you" arrive); echo or noise -> "idle", and my
+// voice comes back up where it was.
+let ducked = 0, duckWait = 0;
+function duck() {
+  ducked = performance.now(); duckWait = 0;
+  if (master) master.gain.setTargetAtTime(0.12, ctx.currentTime, 0.02);
+}
+function unduck() {
+  if (!ducked) return;
+  ducked = 0; duckWait = 0;
+  if (master) master.gain.setTargetAtTime(1, ctx.currentTime, 0.05);
 }
 // After a cut, sentences the laptop already sent are still on the wire.
 // Playing them restarted the speaker for a blink and setSpeaking(true) wiped
@@ -1108,6 +1149,13 @@ function stopPlayback() {
 let cutAt = 0, cutLast = 0;
 function cutMe() {
   stopPlayback(); send({type: "cut"});
+  cutAt = cutLast = performance.now();
+}
+// He talked over me: silence my voice only. The server ends the running turn
+// itself if what he says turns out to be real words (a noise-triggered cut
+// used to kill whole answers).
+function bargeMe() {
+  stopPlayback(); send({type: "barge"});
   cutAt = cutLast = performance.now();
 }
 function staleAudio() {
@@ -1119,6 +1167,7 @@ function staleAudio() {
 function setSpeaking(on) {
   orb.classList.toggle("speak", on);
   const cs = $("cstate");
+  if (on && (ducked || inSpeech)) return;   // he's mid-sentence over me: keep his words
   if (on) { resetVad(); setStatus("tap to cut me off"); cs.textContent = "speaking"; cs.className = "chip hot"; }
   else {
     // mid-utterance (he cut me off by talking): keep recording him
@@ -1151,22 +1200,42 @@ function resample(f32) {
   while (pend.length >= FRAME) frame(Float32Array.from(pend.splice(0, FRAME)));
 }
 
-let bargeN = 0;
+// Echo guard for the barge-in. The mic always hears some of my own voice
+// (more with auto-gain on), and the speaker's output reaches the mic ~50-150
+// ms late, so the mic level is compared with the LOUDEST playing level of
+// the last 300 ms. echoK = how much of that comes back as echo, learned from
+// frames that are not a barge, and freely during the first 300 ms of every
+// stretch of my speech. He counts as talking over me only when he is
+// clearly above my echo for 160 ms.
+let bargeN = 0, echoK = 0.5, playN = 0;
+const plHist = new Float32Array(15); let plI = 0;
 function frame(f) {
   let e = 0; for (let i = 0; i < f.length; i++) e += f[i] * f[i];
   const rms = Math.sqrt(e / f.length);
-  if (sources.length) {                      // voice barge-in: loud sustained speech over me
-    bargeN = rms > 0.06 ? bargeN + 1 : 0;
+  const now = performance.now();
+  if (ducked && !inSpeech && duckWait && now - duckWait > 6000) unduck();   // no answer: undo
+  if (sources.length && !ducked) {           // voice barge-in: him, over me
+    plHist[plI] = playLevel(); plI = (plI + 1) % plHist.length;
+    let pl = 0; for (let i = 0; i < plHist.length; i++) if (plHist[i] > pl) pl = plHist[i];
+    playN++;
+    const learning = playN <= 15;
+    const loud = !learning && rms > 0.06 && rms > 2.5 * echoK * pl;
+    if (!loud && pl > 0.02) {
+      const r = Math.min(2, rms / pl);
+      echoK += (r - echoK) * (learning || r < echoK ? 0.15 : 0.02);
+    }
+    bargeN = loud ? bargeN + 1 : 0;
     pre.push(f); if (pre.length > 25) pre.shift();          // 500 ms: his words over me
-    if (bargeN >= 6) {
-      // He talked over me: stop, and what he's saying IS his next message —
-      // start recording from the pre-roll instead of throwing it away.
-      bargeN = 0; const seed = pre.slice(); cutMe();
+    if (bargeN >= 8) {
+      // He talked over me: duck my voice, and what he's saying IS his next
+      // message — record it from the pre-roll instead of throwing it away.
+      bargeN = 0; const seed = pre.slice(); duck();
       quietUntil = 0; inSpeech = true; utt = seed; voiced = 10; silent = 0; above = 0;
       orb.classList.add("hear"); setStatus("hearing you");
     }
     return;
   }
+  if (!sources.length) { playN = 0; plHist.fill(0); }
   bargeN = 0;
   if (performance.now() < quietUntil) return;
   // Noise floor = quietest frame of the last second, tracked in AND out of
@@ -1194,7 +1263,8 @@ function frame(f) {
 function endUtterance() {
   const frames = utt, enough = voiced >= 12;               // ~240 ms of voice: "yes" counts
   resetVad();
-  if (!enough) { setStatus("listening"); return; }
+  if (!enough) { unduck(); setStatus("listening"); return; }
+  if (ducked) duckWait = performance.now();                // the laptop decides: him or echo
   const pcm = new Int16Array(frames.length * FRAME);
   frames.forEach((f, j) => { for (let i = 0; i < FRAME; i++) pcm[j * FRAME + i] = Math.max(-1, Math.min(1, f[i])) * 32767; });
   setStatus(send(pcm.buffer) ? "thinking" : "not connected");

@@ -738,13 +738,21 @@ def _new_client(options) -> ClaudeSDKClient:
 
 # Speech-model hallucinations over silence/room noise (see _heard). Anchored:
 # the WHOLE transcript must be one of these, never a sentence containing one.
-_PHANTOM = re.compile(
-    r"^\W*(?:(?:thanks?|thank you)(?: (?:so|very) much)? for watching"
+# 2026-10-18 13:0x: "Thanks for watching, and I'll see you in the next video."
+# got through — two outro lines chained. Now any chain of outro clauses
+# (joined by commas, "and", full stops) is one phantom.
+_OUTRO = (
+    r"(?:(?:thanks?|thank you)(?: (?:so|very) much)?(?: (?:all|guys|everyone))?"
+    r" for watching(?: (?:this|the|my) video)?"
     r"|(?:please )?(?:like and )?subscribe(?: to (?:my|the|our) channel)?"
     r"|(?:don't forget to )?like,? (?:comment,? )?and subscribe"
     r"|mm+[- ]?hmm+|m+h?m+"
-    r"|see you (?:next time|in the next (?:one|video))"
-    r"|subtitles? (?:by|created by)\b.*)\W*$",
+    r"|(?:i'?ll |we'?ll )?see you (?:guys |all )?(?:next time|soon|later"
+    r"|in the next (?:one|video|episode))"
+    r"|(?:bye(?:[- ]bye)?|goodbye)(?: (?:guys|everyone))?"
+    r"|subtitles? (?:by|created by)\b.*)")
+_PHANTOM = re.compile(
+    r"^\W*" + _OUTRO + r"(?:[\s,.!]+(?:and\s+)?" + _OUTRO + r")*\W*$",
     re.IGNORECASE)
 
 
@@ -1769,7 +1777,7 @@ class GoatApp:
             why = getattr(rt, "why", None)
             print(f"[stt-rt] missed -> batch ear ({why() if why else '?'})")
             self.emit("status", "streaming ear missed — using the full one")
-        elif stt_realtime.ENABLED:
+        elif stt_realtime.ENABLED and source != "phone":
             print("[stt-rt] no stream opened -> batch ear "
                   "(realtime down after a failure, no key, or loop not ready)")
         if self.language != "en" and stt_gladia.available():

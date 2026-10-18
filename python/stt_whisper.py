@@ -168,15 +168,46 @@ def _apply_fixes(text: str) -> str:
     return text
 
 
-def clean_transcript(raw: str) -> str:
+# One-word replies that are real speech, not noise: the old rule (a single
+# word under 8 letters is junk) threw away "yes", "no", "stop", "wait" and
+# "next" — the exact words a voice assistant lives on (2026-10-18 audit).
+SHORT_OK = re.compile(
+    r"^\W*(yes|yep|yeah|no|nope|stop|wait|cancel|pause|play|next|back|go|"
+    r"continue|resume|repeat|louder|quieter|mute|unmute|hello|hi|hey|goat|"
+    r"sir|sure|right|really|why|how|what|who|when|where|again|more|done|"
+    r"help|thanks?|thank you|okay|ok)\W*$", re.IGNORECASE)
+# Whisper's favourite inventions over noise. Still dropped, unless he is
+# mid-conversation (see clean_transcript(chatting=...)).
+_HALLUCINATED = re.compile(r"^\W*(thanks?( for watching)?|thank you|you|okay|ok|yeah|"
+                           r"bye(\s*bye)?|and build)\W*$", re.IGNORECASE)
+
+
+def clean_transcript(raw: str, chatting: bool = False) -> str:
+    """Raw whisper text -> what he said, or "" for silence/junk.
+
+    chatting=True means I spoke to him in the last half minute: a short
+    "thank you" / "okay" is then a real reply, not whisper hallucinating over
+    a quiet room, so it gets through."""
     text = re.sub(r"\[BLANK_AUDIO\]|\[.*?\]|\(.*?\)", "", raw)
     text = re.sub(r"\s+", " ", text).strip()
     words = [w for w in text.split(" ") if w]
-    if JUNK.match(text) or (len(words) < 2 and len(text) < 8):
+    if text and SHORT_OK.match(text) and (chatting or not _HALLUCINATED.match(text)):
+        return _apply_fixes(text)
+    if JUNK.match(text) or (len(words) < 2 and len(text) < 8
+                            and not SHORT_OK.match(text)):
         if text:
             print("[stt] dropped junk:", json.dumps(text))
         return ""
     return _apply_fixes(text)
+
+
+_chatting_until = 0.0
+
+
+def note_chatting(seconds: float = 30.0):
+    """Called when I speak: for a while a short thank-you is a real reply."""
+    global _chatting_until
+    _chatting_until = time.monotonic() + seconds
 
 
 def transcribe(audio: np.ndarray, sample_rate: int = 16000):
@@ -198,7 +229,8 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000):
                 timeout=30.0,
             )
             r.raise_for_status()
-            return clean_transcript(r.json().get("text", ""))
+            return clean_transcript(r.json().get("text", ""),
+                                    time.monotonic() < _chatting_until)
         except httpx.ConnectError as e:
             if attempt == 1:
                 print("[stt] server gone — restarting it")

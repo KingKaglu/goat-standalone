@@ -32,6 +32,7 @@ import hmac
 import ipaddress
 import json
 import os
+import sys
 import secrets
 import socket
 import subprocess
@@ -52,6 +53,9 @@ SR = 16000
 MIN_SAMPLES = SR // 4
 MAX_SAMPLES = SR * 60
 _TAILNET = ipaddress.ip_network("100.64.0.0/10")
+# Fallback for goat_app.WAKE_RE (tests run without goat_app loaded).
+import re as _re
+_WAKE = _re.compile(r"\b(goat|goats|goad|goot|gote|coat|გოატ|გოუთ|გოთ)\b", _re.I)
 _TOKEN_ABC = "abcdefghjkmnpqrstuvwxyz23456789"   # no 0/o/1/l/i: typed on a phone
 ROOT = os.path.dirname(HERE)
 SHOT = os.path.join(HERE, "live-shot.png")       # screen_tools.SHOT_PATH
@@ -458,6 +462,16 @@ autocapitalize="off" autocorrect="off" spellcheck="false" autofocus>
 <button>Log in</button><p>%MSG%</p></form></body></html>"""
 
 
+def _page_ver() -> str:
+    """Changes whenever phone.html does. An open page that reconnects to a
+    newer GOAT reloads itself — before this, fixes to the page never reached
+    a phone that stayed open (the bubble app keeps its page alive)."""
+    try:
+        return str(int(os.path.getmtime(PAGE)))
+    except OSError:
+        return ""
+
+
 class PhoneServer:
     def __init__(self, app, port: int = PORT):
         self.app = app
@@ -490,6 +504,7 @@ class PhoneServer:
         self._spoke = None     # last route sent to the phones
         self._voice_end = 0.0  # when my queued speech finishes playing (echo guard)
         self._said = deque(maxlen=12)   # my last sentences, to tell echo from him
+        self._you_n = 0        # how many of his messages the app has taken
 
     # ---- lifecycle ----
     async def start(self) -> list:
@@ -798,7 +813,9 @@ class PhoneServer:
         if not self._authed(request):
             return web.Response(status=401)
         data = await request.read()
-        self._utterance(data)
+        # X-Media: 1 = another app was playing sound while this was recorded
+        # (he's scrolling videos). Then only a line with my name counts.
+        self._utterance(data, media=request.headers.get("X-Media") == "1")
         return web.Response(text="ok")
 
     async def _hands_result(self, request):
@@ -984,7 +1001,8 @@ class PhoneServer:
         return {"type": "snapshot", "now": time.time(), "booted": self.booted,
                 "state": self.state, "done": list(self.done_tasks),
                 "history": hist, "route": self._route_info(),
-                "busy": bool(getattr(self.app, "busy", False))}
+                "busy": bool(getattr(self.app, "busy", False)),
+                "ver": _page_ver()}
 
     # ---- vitals ----
     async def _vitals_loop(self):
@@ -1048,7 +1066,7 @@ class PhoneServer:
         return out
 
     # ---- phone -> GOAT ----
-    def _utterance(self, data: bytes, st=None):
+    def _utterance(self, data: bytes, st=None, media: bool = False):
         n = len(data) // 2
         if n < MIN_SAMPLES or n > MAX_SAMPLES:
             return
@@ -1070,11 +1088,18 @@ class PhoneServer:
         pk = float(np.max(np.abs(audio))) if n else 0.0
         if 0.002 < pk < 0.5:
             audio = np.clip(audio * min(12.0, 0.6 / pk), -1.0, 1.0)
-        if overlap:
+        # While my own voice plays on the phone, "music active" is me: the
+        # echo check covers that, and his barge-in needs no name.
+        media = media and not overlap
+        if overlap or media:
             # Dropping every overlapping clip also ate his barge-ins (his
             # report 2026-10-18 12:45: "I could not interrupt you"). Hear it
             # first: my own words = echo, anything new = him cutting in.
-            asyncio.create_task(self._overlap_clip(audio, now - n / SR))
+            # Media playing (his order 2026-10-18: "the phone must not hear me
+            # scrolling through apps"): a video's voice is not him — only a
+            # line that names me gets through.
+            asyncio.create_task(self._overlap_clip(audio, now - n / SR,
+                                                   overlap=overlap, media=media))
             return
         print(f"[phone] utterance {n / 16000:.1f}s peak {pk:.3f}", flush=True)
         try:
@@ -1082,23 +1107,54 @@ class PhoneServer:
         except Exception:  # noqa: BLE001 — the ledger is optional
             pass
         self._from_phone()
-        asyncio.create_task(self.app._handle_utterance(audio, None, None,
-                                                       source="phone"))
+        asyncio.create_task(self._take_clip(audio))
 
-    async def _overlap_clip(self, audio, started: float):
-        """A clip recorded while I was talking: echo of me, or him cutting in?"""
+    async def _take_clip(self, audio):
+        """Run one phone clip through the ear and the brain. A clip that
+        produces no message (silence, a hallucinated "you", a voice-lock
+        reject) used to leave the phone saying "thinking" forever — tell it
+        to go back to listening."""
+        n0 = self._you_n
+        try:
+            await self.app._handle_utterance(audio, None, None, source="phone")
+        except Exception as e:  # noqa: BLE001 — one bad clip must not kill the socket
+            print(f"[phone] clip failed: {e!r}", flush=True)
+        finally:
+            if self._you_n == n0:
+                self._send(json.dumps({"type": "idle"}))
+
+    async def _overlap_clip(self, audio, started: float, overlap: bool = True,
+                            media: bool = False):
+        """A clip recorded while I was talking (echo of me, or him cutting
+        in?) or while another app played sound (a video, or him?)."""
         import re
         import stt_whisper
         try:
             text = await asyncio.to_thread(stt_whisper.transcribe, audio)
         except Exception:  # noqa: BLE001
+            self._send(json.dumps({"type": "idle"}))
             return
         if not text:
+            self._send(json.dumps({"type": "idle"}))
             return
         words = re.findall(r"[a-z']+", text.lower())
         mine = set(re.findall(r"[a-z']+", " ".join(self._said).lower()))
-        if not words or sum(w in mine for w in words) / len(words) >= 0.6:
+        if overlap and (not words
+                        or sum(w in mine for w in words) / len(words) >= 0.6):
             print(f"[phone] dropped clip: my own voice ({text!r})", flush=True)
+            self._send(json.dumps({"type": "idle"}))
+            return
+        if media:
+            wake = getattr(sys.modules.get("goat_app"), "WAKE_RE", None) or _WAKE
+            if not wake.search(text):
+                print(f"[phone] other audio playing, not addressed, ignored: "
+                      f"{text!r}", flush=True)
+                self._send(json.dumps({"type": "idle"}))
+                return
+        if not overlap:
+            print(f"[phone] heard over other audio: {text!r}", flush=True)
+            self._from_phone()
+            await self.app._heard(text, None, None, "phone")
             return
         print(f"[phone] barge-in over my voice: {text!r}", flush=True)
         self._voice_end = 0.0
@@ -1118,7 +1174,11 @@ class PhoneServer:
             if text:
                 st["t_in"] = time.time()
                 self.app.submit_text(text, origin="phone")
-        elif kind == "stop":
+        elif kind in ("stop", "barge"):
+            # Voice only: he started talking over me (or tapped Stop). The
+            # running turn is NOT ended here — a barge-in fired by room noise
+            # used to kill the whole answer. If real words follow, the normal
+            # path (_work -> _cut_turn) cuts the turn then.
             self._voice_end = 0.0
             self.app.tts.cancel()
             self.app._say_buf = ""
@@ -1228,6 +1288,8 @@ class PhoneServer:
         def emit(kind, *args, **kw):
             orig(kind, *args, **kw)
             data = args[0] if args else ""
+            if kind == "you":
+                self._you_n += 1
             try:
                 self._mirror(kind, str(data))
             except Exception:  # noqa: BLE001 — the phone must never break GOAT
@@ -1341,6 +1403,11 @@ class PhoneServer:
 
     def _on_sentence(self, text: str, samples):
         self._said.append(text)
+        try:
+            import stt_whisper
+            stt_whisper.note_chatting()
+        except Exception:  # noqa: BLE001
+            pass
         if samples is not None and len(samples) > 0:
             # my voice will play for len/SR seconds, queued after what's already out
             self._voice_end = max(self._voice_end, time.time()) + len(samples) / SR
