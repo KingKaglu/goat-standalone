@@ -513,7 +513,8 @@ class PhoneServer:
         self.pref = _read_pref()
         self._spoke = None     # last route sent to the phones
         self._voice_end = 0.0  # when my queued speech finishes playing (echo guard)
-        self._said = deque(maxlen=12)   # my last sentences, to tell echo from him
+        self._chatlog = deque(maxlen=60)  # [his text, my words]: every turn, even cut ones
+        self._said = deque(maxlen=40)   # my last sentences, to tell echo from him
         self._you_n = 0        # how many of his messages the app has taken
 
     # ---- lifecycle ----
@@ -1008,6 +1009,8 @@ class PhoneServer:
                 continue
             if u and not u.startswith("["):
                 hist.append([u[:300], r[:300]])
+        mine = {u for u, _ in self._chatlog}
+        hist = [h for h in hist if h[0] not in mine] + [list(c) for c in self._chatlog]
         return {"type": "snapshot", "now": time.time(), "booted": self.booted,
                 "state": self.state, "done": list(self.done_tasks),
                 "history": hist, "route": self._route_info(),
@@ -1150,12 +1153,20 @@ class PhoneServer:
         words = re.findall(r"[a-z']+", (text or "").lower())
         if not words:
             return True
-        cut = time.time() - ECHO_WINDOW_S
+        # A long reply is queued whole but plays for many seconds, so a clip
+        # recorded over its tail quotes sentences older than ECHO_WINDOW_S
+        # (bug 2026-10-18 17:39: my own paragraph came back as his message).
+        cut = time.time() - (ECHO_WINDOW_S * 3 if overlap else ECHO_WINDOW_S)
         mine = re.findall(r"[a-z']+", " ".join(
             t for at, t in self._said if at >= cut).lower())
         if overlap:
             m = set(mine)
-            return sum(w in m for w in words) / len(words) >= 0.6
+            if sum(w in m for w in words) / len(words) >= 0.5:
+                return True
+            import difflib as _d
+            run = sum(b.size for b in _d.SequenceMatcher(
+                None, mine, words, autojunk=False).get_matching_blocks())
+            return run >= ECHO_RUN and run / len(words) >= 0.4
         got = sum(b.size for b in difflib.SequenceMatcher(
             None, mine, words, autojunk=False).get_matching_blocks())
         return got >= ECHO_RUN and got / len(words) >= ECHO_SHARE
@@ -1315,6 +1326,7 @@ class PhoneServer:
             data = args[0] if args else ""
             if kind == "you":
                 self._you_n += 1
+                self._chatlog.append([str(data)[:300], ""])
             try:
                 self._mirror(kind, str(data))
             except Exception:  # noqa: BLE001 — the phone must never break GOAT
@@ -1428,6 +1440,8 @@ class PhoneServer:
 
     def _on_sentence(self, text: str, samples):
         self._said.append((time.time(), text))
+        if self._chatlog:
+            self._chatlog[-1][1] = (self._chatlog[-1][1] + " " + text).strip()[:300]
         try:
             import stt_whisper
             stt_whisper.note_chatting()
