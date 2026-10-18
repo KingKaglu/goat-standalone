@@ -3313,10 +3313,17 @@ class GoatApp:
             self.emit("claude", "out|" + reset)  # UI meter
             # Spoken heads-up comes through the talk lane's voice (once).
             # NEVER the raw CLI error — GOAT's own words only.
-            warn = ("Giorgi, Claude — my working brain — hit its usage limit"
-                    + (f"; it resets around {reset}" if reset else "")
-                    + ". Code and repo work waits until then, but I'm still "
-                    "here — questions, web, files, planning, all of it.")
+            # One brain since 2026-10-16: with Claude out, only the reflex
+            # lane works — the old "questions, web, files, all of it" was a
+            # promise GOAT could no longer keep.
+            warn = (("ბატონო, Claude-ის ლიმიტი ამოიწურა"
+                     + (f", განახლდება {reset}-ზე" if reset else "")
+                     + ". მანამდე მხოლოდ სწრაფი ბრძანებები მუშაობს: გახსნა, "
+                     "დახურვა, ხმა და მედია.") if self.turn_lang == "ka" else
+                    ("Sir, I've hit Claude's usage limit"
+                     + (f"; it resets around {reset}" if reset else "")
+                     + ". Until then only quick commands work: opening, "
+                     "closing, volume and media."))
             self.emit("limit", warn)
             if not self._limit_warned:
                 self._limit_warned = True

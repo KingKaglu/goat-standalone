@@ -1148,6 +1148,11 @@ let sched = [], held = [], paused = 0, pauseWait = 0, pauseT = 0, sayText = "";
 // re-triggered the pause on every resume and the phone repeated the first
 // syllables of a sentence over and over (2026-10-18 19:21, "Ha, noted, Sir").
 let noBarge = false;
+let soft = null; const SOFT_MAX = 150;      // soft-barge clip: <= 3 s of him over me
+function endSoft() {
+  const frames = soft; soft = null;
+  if (frames && frames.length >= 15) send(toPcm(frames).buffer);
+}
 function play(buf, text) {
   if (!ctx) return;                        // no tap yet: text only
   const pcm = new Int16Array(buf);
@@ -1219,7 +1224,7 @@ function resumeVoice() {
   setSpeaking(true);
 }
 function stopPlayback() {
-  silence(); noBarge = false;
+  silence(); noBarge = false; soft = null;
   held = []; paused = 0; pauseWait = 0; clearTimeout(pauseT);
   if (!inSpeech) orb.classList.remove("hear");
   setSpeaking(false); parkCtx();
@@ -1317,6 +1322,11 @@ function frame(f) {
   let e = 0; for (let i = 0; i < f.length; i++) e += f[i] * f[i];
   const rms = Math.sqrt(e / f.length);
   if (sources.length) {                      // I'm talking: is that him, over me?
+    if (soft) {                              // soft barge: keep his words, I keep talking
+      soft.push(f);
+      if (soft.length >= SOFT_MAX) endSoft();
+      return;
+    }
     plHist[plI] = playLevel(); plI = (plI + 1) % plHist.length;
     let pl = 0; for (let i = 0; i < plHist.length; i++) if (plHist[i] > pl) pl = plHist[i];
     playN++;
@@ -1337,9 +1347,16 @@ function frame(f) {
       quietUntil = 0; inSpeech = true; utt = seed; voiced = 10; silent = 0; above = 0;
       streamStart(utt);
       orb.classList.add("hear"); setStatus("hearing you");
+    } else if (bargeHits >= 6 && noBarge) {
+      // One false alarm already this reply, so I don't pause again — but
+      // his words still go to the laptop: real words stop me there, my own
+      // echo is dropped there (2026-10-18: after one false pause he could
+      // no longer stop me by voice at all).
+      soft = pre.slice(); bargeHits = 0; bargeWin.fill(0);
     }
     return;
   }
+  if (soft) endSoft();                       // my answer ended while he spoke
   if (!sources.length) { playN = 0; plHist.fill(0); }
   bargeWin.fill(0); bargeHits = 0;
   if (performance.now() < quietUntil) return;
