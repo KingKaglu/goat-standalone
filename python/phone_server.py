@@ -1141,7 +1141,13 @@ class PhoneServer:
             rt = None
             try:
                 import stt_realtime
-                rt = stt_realtime.start_threadsafe(self.app._rt_lang(), self.loop)
+                # Recorded while I talk: both ears (English + Georgian). Pinned
+                # to English, his "გაჩერდი" came back as "Picture." and could
+                # never stop me (2026-10-19 21:2x).
+                lang = self.app._rt_lang()
+                if time.time() < self._voice_end + ECHO_TAIL_S and lang == "en":
+                    lang = "auto"
+                rt = stt_realtime.start_threadsafe(lang, self.loop)
             except Exception as e:  # noqa: BLE001 — batch ear still has the clip
                 print(f"[phone] streaming ear not started: {e!r}", flush=True)
             s = self._streams[sid] = {"rt": rt, "t": now}

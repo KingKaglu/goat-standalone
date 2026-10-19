@@ -1265,7 +1265,10 @@ function stopPlayback() {
 }
 // The bubble's native mic (BgMic.java) hears him over me while this page is
 // hidden: it calls these through evaluateJavascript.
-window.goatBarge = () => aecStrict < 3 && pauseVoice(false);
+// No lock-out after false alarms: three misjudged cut-ins of his locked him
+// out for the rest of a story (2026-10-19 21:2x, "I could not interrupt").
+// Each one only raises the bar.
+window.goatBarge = () => pauseVoice(false);
 window.goatBargeEnd = sent => { if (!paused) return; if (sent) waitVerdict(); else resumeVoice(); };
 // After a cut, sentences the laptop already sent are still on the wire.
 // Playing them restarted the speaker for a blink and setSpeaking(true) wiped
@@ -1645,7 +1648,7 @@ function frame(raw, ref) {
       const rr = Math.sqrt(er / raw.length), learning = playN <= 50;
       // Until the canceller locks on (the first ~2 s ever, ~1 s after a reload)
       // he has to be clearly louder than my echo.
-      loud = !learning && rr > 0.05 && rr > (aecStrict ? 4 : 3.5) * echoK * pl;
+      loud = !learning && rr > 0.05 && rr > (3.5 + 0.5 * Math.min(aecStrict, 4)) * echoK * pl;
       if (!loud && pl > 0.02) {
         const r = Math.min(2, rr / pl);
         if (learning) echoK = Math.max(echoK * 0.98, r);
@@ -1656,7 +1659,7 @@ function frame(raw, ref) {
     bargeHits += (loud ? 1 : 0) - bargeWin[bwI];
     bargeWin[bwI] = loud ? 1 : 0; bwI = (bwI + 1) % bargeWin.length;
     pre.push(f); if (pre.length > 25) pre.shift();          // 500 ms: his words over me (cleaned)
-    if (bargeHits >= 6 && aecStrict < 3) {
+    if (bargeHits >= 6) {
       // He talked over me: stop and listen, and what he's saying IS his next
       // message — record it from the pre-roll instead of throwing it away.
       const seed = pre.slice();
