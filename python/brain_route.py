@@ -58,7 +58,9 @@ _CODE_RE = re.compile(
     r"(?:code\s+)?review\w*|overview\w*|audit\w*|glitch\w*|bugfix\w*|broken|"
     r"(?:look|go)\s+(?:over|through|into)\s+(?:the|this|that|my|your|it|goat)|"
     r"(?:your|goat'?s|the\s+app'?s)\s+(?:own\s+)?(?:code|source|files)|"
-    r"(?:un)?install\w*|config\w*|"
+    # Installing is work; "installed" is a question ("which drive is GOAT
+    # installed on?" went to Opus xhigh, 8.7 s to first word, 2026-10-19).
+    r"(?:un|re)?install(?:s|ing|er|ers|ation)?|config\w*|"
     r"(?:fix|build|rebuild|update|upgrade|patch|optimi[sz]e|migrate)\s+"
     r"(?:the|this|that|it|my|your|a|an|those|these|goat)\b|"
     r"\w+\.(?:py|js|ts|tsx|json|md|ps1|bat|toml|yml|yaml|css|html))\b",
@@ -85,7 +87,12 @@ _SERIOUS_RE = re.compile(
     r"step\s+by\s+step|think\s+(?:it\s+)?through|"
     r"diagnos\w*|investigat\w*|troubleshoot\w*|analy[sz]\w*|research\w*|"
     r"figure\s+(?:it|this|that)\s+out|what'?s\s+wrong|not\s+working|"
-    r"doesn'?t\s+work|why\s+(?:is|does|did|won'?t|isn'?t)\s+(?:my|it|this)|"
+    r"doesn'?t\s+work|why\s+(?:is|does|did|won'?t|isn'?t)\s+(?:my|this)|"
+    # "it" only with a verb of his things breaking: "why isn't it Sydney?"
+    # is trivia and went to Opus xhigh (2026-10-19).
+    r"why\s+(?:is|does|did|won'?t|isn'?t|doesn'?t|didn'?t)\s+it\s+(?:\w+\s+)?"
+    r"(?:work|load|start|open|run|connect|respond|show|play|sync|build|"
+    r"install|update|boot|charg|hear|listen)\w*|"
     # "the" only for his own things: "why is the sky blue" is trivia, and
     # sending it to the working brain at xhigh cost ~6 s (2026-10-18 23:08).
     r"why\s+(?:is|does|did|won'?t|isn'?t)\s+the\s+(?:\w+\s+)?(?:app|build|code|site|"

@@ -49,11 +49,18 @@ CASES = [
     ("Okay. Delete all the League of Legends images.", br.TASK),
     ("კაი, კამერა გახსენი ახლა", br.TASK),
     ("კარგი, შეგიძლია Google გამიხსნა?", br.TASK),
+    # "installed" is a question, not install work (2026-10-19)
+    ("Could you please tell me what drive the GOAT application is installed on?", br.TALK),
+    ("Is Spotify installed?", br.TALK),
+    ("What's the capital of Australia, and why isn't it Sydney?", br.TALK),
+    ("Why isn't it working?", br.DEEP),
+    ("Why won't it connect to the phone?", br.DEEP),
     # deep -> his working brain, his dial
     ("Can you build this for me?", br.DEEP),
     ("Uh, commit everything to GitHub. Every last update. Okay.", br.DEEP),
     ("Okay, the Intel graphics. It's, it's 12:00 this morning. Install now.", br.DEEP),
     ("Fix the scroll bug in ui_qt.py", br.DEEP),
+    ("Uninstall the old Chrome and reinstall it.", br.DEEP),
     ("Make me a plan for the launch week.", br.DEEP),
     ("კოდში ბაგია, გაასწორე", br.DEEP),
 ]

@@ -315,7 +315,7 @@ SERVE HIM (his order: "act like JARVIS is to Tony — do what I say, no jibber-j
 - Default two short spoken sentences; depth only on request. Keep the thread; never make him repeat himself.
 - Input is voice transcription, often garbled, plus typos: decode intent, never correct or mock his wording.
 
-SOUND NATURAL (spoken replies): one or two short sentences; open with "Sir," and go straight to the answer or to what you are doing ("Sir, it's 7 degrees outside." / "Sir, opening Chrome now." / "Sir, checking the logs."); NEVER open with "Okay", "Alright", "Sure", "Got it", "Right" or any other filler (his order 2026-10-18); always contractions; no extra trivia or caveats; when he speaks, stop at once. SPEED: a conversational question or a one-step order gets its spoken sentence IMMEDIATELY, with no thinking first (every second of silence is felt); think only for real work — code, multi-step tasks, decisions.
+SOUND NATURAL (spoken replies): one or two short sentences; open with "Sir," and go straight to the answer or to what you are doing ("Sir, it's 7 degrees outside." / "Sir, opening Chrome now." / "Sir, checking the logs."); keep that FIRST sentence short, under 8 words, and put details in the next one ("Sir, it's on the C drive. About 2 gigabytes, in your user folder.") — the first sentence is voiced before anything else, and a long one leaves a second of silence after "Sir,"; NEVER open with "Okay", "Alright", "Sure", "Got it", "Right" or any other filler (his order 2026-10-18); always contractions; no extra trivia or caveats; when he speaks, stop at once. SPEED: a conversational question or a one-step order gets its spoken sentence IMMEDIATELY, with no thinking first (every second of silence is felt); think only for real work — code, multi-step tasks, decisions.
 
 CHARACTER: calm, unhurried, even mid-crisis. Dry, understated JARVIS wit, one line, never forced; address him as "Sir", at the start of the reply. Acks name the action: "Sir, on it — pulling the logs." "Sir, right away." "Sir, already running." Never "As an AI…", no corporate filler, no emoji. Verified things plainly, unverified = "checking". Situationally aware (clock, day, 4 a.m. grind — one friendly line, then help him land it).
 
@@ -610,7 +610,11 @@ HUM_RE = re.compile(r"^\s*(?:(?:h?m+-?h?m+|hm+|um+|uh+|erm*|ah+|ჰმ+)(?!\w)[\
 # the answer's first token lands ~1.2-1.5 s later, so at 0.9 the filler won
 # every race and the real answer queued behind its ~1 s of audio. Now it only
 # covers a genuinely slow turn (an API stall of 12 s was seen the same night).
-BACKCHANNEL_AFTER_S = float(os.environ.get("GOAT_BACKCHANNEL_AFTER", "2.0"))
+# 1.5 (2026-10-19, 13 live turns): first tokens land either <1.0 s after
+# the ear (plain talk) or >2 s (the model deliberating), never between, and
+# the filler now stands down once any answer text exists — so 1.5 gives
+# every slow turn its "Sir, …" 0.5 s sooner and races nothing.
+BACKCHANNEL_AFTER_S = float(os.environ.get("GOAT_BACKCHANNEL_AFTER", "1.5"))
 BACKCHANNEL_MODE = os.environ.get("GOAT_BACKCHANNEL", "gap").strip().lower()
 DONE_LEAD = {"en": "Done.", "ka": "მზადაა."}
 LEAD_WORD = {"en": "Sir,", "ka": "ბატონო,"}   # cached; said the instant a reply starts
@@ -1597,12 +1601,27 @@ class GoatApp:
         # of the silence he sits in — counting from now would flatter every
         # number by exactly the wait he felt.
         hang = getattr(self.audio, "last_hangover_ms", 0.0) / 1000.0
+        # A second clip can land while the last turn is still on its way to
+        # its first word; keep that turn's clock so a clip that turns out to
+        # be nothing hands it back (2026-10-19: "ear() -1ms ... = 759ms").
+        self._lat_prev = ((self._t_speech_end, self._lat_hang, self._t_heard,
+                           self._lat_ear, self._lat_filler_ms,
+                           self._lat_token_ms)
+                          if getattr(self, "_t_speech_end", 0.0) else None)
         self._t_speech_end = time.monotonic() - hang
         self._lat_hang = hang * 1000
         self._t_heard = 0.0
         self._lat_ear = ""
         self._lat_filler_ms = -1.0
         self._lat_token_ms = -1.0
+
+    def _lat_restore(self):
+        """The clip that last started the clock gave no turn: give the clock
+        back to the turn that was already running, if it is still unheard."""
+        prev, self._lat_prev = getattr(self, "_lat_prev", None), None
+        if prev and getattr(self, "_t_speech_end", 0.0) and not self._t_heard:
+            (self._t_speech_end, self._lat_hang, self._t_heard, self._lat_ear,
+             self._lat_filler_ms, self._lat_token_ms) = prev
 
     def _lat_content(self):
         # _lat_sounded clears _t_speech_end at the instant "Sir,": keep a copy
@@ -1623,6 +1642,8 @@ class GoatApp:
             self._lat_ear = ear
 
     def _lat_sounded(self):
+        if getattr(self, "_lat_prev", None) and not self._t_heard:
+            self._lat_restore()   # the sound is the older turn's, not the new clip's
         t0 = getattr(self, "_t_speech_end", 0.0)
         if not t0:
             return
@@ -1640,7 +1661,7 @@ class GoatApp:
               f"{ear - hang:.0f}ms + think/voice {rest:.0f}ms "
               f"= {total:.0f}ms to first word"
               + (f" (filler at {filler:.0f}ms)" if filler >= 0 else "")
-              + (f" [first token at {tok:.0f}ms, token->audio {total - tok:.0f}ms]"
+              + (f" [first text at {tok:.0f}ms, text->audio {total - tok:.0f}ms]"
                  if tok >= 0 else ""))
         self.emit("latency", f"{total:.0f}")
 
@@ -2697,7 +2718,7 @@ class GoatApp:
         self._tl_tools = []      # (names, s)
         self._tl_wait = None     # query sent -> first model step started
 
-    def _tl_event(self, et: str):
+    def _tl_event(self, et: str, dtype: str = ""):
         now = time.monotonic()
         if et == "message_start" and self._tl_wait is None:
             # Everything before the first step: queueing behind another turn,
@@ -2712,7 +2733,11 @@ class GoatApp:
             self._tl_step_t0, self._tl_first = now, None
         elif et == "content_block_delta":
             t0 = getattr(self, "_t_speech_end", 0.0)
-            if t0 and getattr(self, "_lat_token_ms", -1.0) < 0:
+            # Spoken text only: a thinking delta counted here billed the
+            # model's silent deliberation (2-4 s) to the voice as
+            # "token->audio" and pointed the hunt at TTS (2026-10-19).
+            if (t0 and dtype == "text_delta"
+                    and getattr(self, "_lat_token_ms", -1.0) < 0):
                 self._lat_token_ms = (now - t0) * 1000
             if self._tl_first is None and self._tl_step_t0 is not None:
                 self._tl_first = now - self._tl_step_t0
@@ -2860,7 +2885,8 @@ class GoatApp:
             if isinstance(msg, StreamEvent):
                 ev = msg.event
                 if getattr(self, "_tl_t0", None) is not None:
-                    self._tl_event(ev.get("type", ""))
+                    self._tl_event(ev.get("type", ""),
+                                   ev.get("delta", {}).get("type", ""))
                 if ev.get("type") == "content_block_delta":
                     delta = ev.get("delta", {})
                     if (delta.get("type") == "text_delta"

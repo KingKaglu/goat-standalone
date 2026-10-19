@@ -1261,6 +1261,10 @@ class PhoneServer:
             if cut_in is not None:
                 self.app._cut_in = None
             if self._you_n == n0:
+                try:
+                    self.app._lat_restore()
+                except Exception:  # noqa: BLE001 — the ledger is optional
+                    pass
                 if cut_in is not None:
                     print("[phone] cut-in was not words for me: carrying on",
                           flush=True)
