@@ -837,7 +837,7 @@ _OUTRO = (
     r" for watching(?: (?:this|the|my) video)?"
     r"|(?:please )?(?:like and )?subscribe(?: to (?:my|the|our) channel)?"
     r"|(?:don't forget to )?like,? (?:comment,? )?and subscribe"
-    r"|mm+[- ]?hmm+|m+h?m+"
+    r"|mm+[- ]?hmm+|m+h?m+|h+m+"      # "Hmm." off a humming room got answered (2026-10-19 21:3x)
     r"|(?:i'?ll |we'?ll )?see you (?:guys |all )?(?:next time|soon|later"
     r"|in the next (?:one|video|episode))"
     r"|(?:bye(?:[- ]bye)?|goodbye)(?: (?:guys|everyone))?"
