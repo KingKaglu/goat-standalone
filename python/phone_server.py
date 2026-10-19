@@ -1265,7 +1265,7 @@ class PhoneServer:
             # scrolling through apps"): a video's voice is not him — only a
             # line that names me gets through.
             asyncio.create_task(self._overlap_clip(audio, overlap=overlap,
-                                                   media=media, peak=pk))
+                                                   media=media, peak=pk, rt=rt))
             return
         print(f"[phone] utterance {n / 16000:.1f}s peak {pk:.3f}", flush=True)
         try:
@@ -1401,12 +1401,24 @@ class PhoneServer:
             return None
         return left
 
-    async def _overlap_clip(self, audio, overlap: bool, media: bool, peak: float):
+    async def _overlap_clip(self, audio, overlap: bool, media: bool, peak: float,
+                            rt=None):
         """A clip recorded while I was talking (echo of me, or him cutting
         in?) or while another app played sound (a video, or him?)."""
         import stt_whisper
+        text = None
+        if rt is not None:
+            # The streaming cloud ear writes down BOTH voices; local Whisper
+            # keeps only the louder one, and over my echo that is me — his
+            # "stop, stop, wait" vanished whenever my echo was as loud as him
+            # (measured 2026-10-19 on testdata/aec).
+            try:
+                text = await rt.result()
+            except Exception:  # noqa: BLE001
+                text = None
         try:
-            text = await asyncio.to_thread(stt_whisper.transcribe, audio)
+            if not text:
+                text = await asyncio.to_thread(stt_whisper.transcribe, audio)
         except Exception:  # noqa: BLE001
             self._send(json.dumps({"type": "idle"}))
             return
