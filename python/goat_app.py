@@ -2219,6 +2219,15 @@ class GoatApp:
             # ...or a real request riding on it: keep just his words.
             print(f"[phone] his words inside my echo: {run!r}")
             text = run
+        cut = getattr(self, "_cut_in", None)
+        if phone and cut is not None and self._murmur(text, cut[1]):
+            # A cut-in that is one or two stray words — a cough or a click
+            # under my voice (2026-10-19 11:2x: a 1.7 s clip peaking at 1.000
+            # came back "I am." and stopped my story to ask what he wanted).
+            # His stops, my name, an order and an answer to my question
+            # still cut me off.
+            print(f"[barge] murmur under my voice, carrying on: {text!r}")
+            return
         if not phone and self._mishearing(text):
             return
         if self._voice_command(text, source):
@@ -2397,6 +2406,26 @@ class GoatApp:
         await self._work(text, hard=bool(WORK_HARD_RE.search(text[:80])),
                          echo_you=False)
         self._last_exchange = time.monotonic()
+
+    def _murmur(self, text: str, heard: str) -> bool:
+        """One or two stray words cut in over my voice and nothing to act on:
+        not a stop, not my name, not an order, not a yes/no to a question I
+        just asked (`heard` = what he'd heard of my answer)."""
+        import phone_server
+        words = re.findall(r"[\w']+", text)
+        if not words or len(words) > 2:
+            return False
+        if (STOP_RE.search(text) or WAKE_RE.search(text) or "?" in text
+                or phone_server._STOP_LEFT.search(text)):
+            return False
+        if "?" in (heard or "") and re.match(
+                r"(?i)\s*(yes|yeah|yep|no|nope|sure|ok(ay)?|do it|go ahead|"
+                r"კი|ხო|არა|ჰო)\b", text):
+            return False
+        try:
+            return reflex.match(text, self.turn_lang) is None
+        except Exception:  # noqa: BLE001
+            return True
 
     async def _echo_stop(self, his: str):
         """He said stop over my voice and the phone clip was mostly my echo:

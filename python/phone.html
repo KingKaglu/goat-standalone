@@ -1157,8 +1157,12 @@ function play(buf, text) {
   const ab = ctx.createBuffer(1, pcm.length, SR), ch = ab.getChannelData(0);
   for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
   if (paused) { held.push({ab, off: 0, text}); return; }   // he has the floor: queue it
-  if (!sources.length && inSpeech && voiced >= 8) {
+  if (!sources.length && inSpeech && voiced >= 8 && performance.now() - speechAt < 3000) {
     // He's mid-sentence as my next sentence arrives: wait for him, keep it.
+    // Only a FRESH sentence of his (< 3 s): a "sentence" that has run longer
+    // is room noise holding the VAD open — every reply on 2026-10-19 opened
+    // with "paused for him (heard up to '')", then 4-20 s of noise, an empty
+    // ear and "carrying on". His words still record; the laptop decides.
     held.push({ab, off: 0, text}); pauseVoice(true); return;
   }
   schedule(ab, 0, text);
@@ -1525,7 +1529,7 @@ function Aec(opt) {
 // quantum: the echo canceller's reference is sample-locked to the mic.
 const WORKLET = "class T extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];" +
   "if(c){const r=i[1]&&i[1][0];this.port.postMessage([c.slice(0),r?r.slice(0):null])}return true}}registerProcessor('tap2',T)";
-let floor = 0.003, inSpeech = false, voiced = 0, silent = 0, above = 0;
+let floor = 0.003, inSpeech = false, voiced = 0, silent = 0, above = 0, speechAt = 0;
 const HIST = 50; const hist = new Float32Array(HIST).fill(0.003); let hn = 0;   // 1 s of frame levels
 let pre = [], utt = [];
 function resetVad() { streamDrop(); inSpeech = false; voiced = silent = above = 0; pre = []; utt = []; orb.classList.remove("hear"); }
@@ -1654,7 +1658,7 @@ function frame(raw, ref) {
       const seed = pre.slice();
       aecPauses++;
       pauseVoice(false);
-      quietUntil = 0; inSpeech = true; utt = seed; voiced = 10; silent = 0; above = 0;
+      quietUntil = 0; inSpeech = true; speechAt = performance.now(); utt = seed; voiced = 10; silent = 0; above = 0;
       streamStart(utt);
       orb.classList.add("hear"); setStatus("hearing you");
     }
@@ -1675,7 +1679,7 @@ function frame(raw, ref) {
   if (!inSpeech) {
     pre.push(f); if (pre.length > 15) pre.shift();          // 300 ms pre-roll
     above = rms > Math.max(0.005, floor * 2.2) ? above + 1 : 0;
-    if (above >= 3) { inSpeech = true; utt = pre.slice(); voiced = 3; silent = 0; streamStart(utt); orb.classList.add("hear"); setStatus("hearing you"); }
+    if (above >= 3) { inSpeech = true; speechAt = performance.now(); utt = pre.slice(); voiced = 3; silent = 0; streamStart(utt); orb.classList.add("hear"); setStatus("hearing you"); }
     return;
   }
   utt.push(f); streamPush(f);
