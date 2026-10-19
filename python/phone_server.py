@@ -1474,6 +1474,16 @@ class PhoneServer:
             self._from_phone()
             await self.app._heard(text, None, None, "phone")
             return
+        ga = sys.modules.get(type(self.app).__module__)
+        bare, core = (getattr(ga, "BARE_STOP_RE", None),
+                      getattr(ga, "BARE_STOP_CORE", None))
+        if bare is not None and bare.match(text.strip()) and core.search(text):
+            # Only a stop: stop, no reply (2026-10-19: "Stop, wait a minute."
+            # cut my story here, then cost a model turn for "Sir, stopped.").
+            print(f"[barge] he said stop over my voice: {text!r}", flush=True)
+            self._voice_end = 0.0
+            await self.app._echo_stop(text)
+            return
         print(f"[phone] barge-in over my voice: {text!r}", flush=True)
         self._voice_end = 0.0
         self.app.tts.cancel()
