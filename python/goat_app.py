@@ -2205,8 +2205,20 @@ class GoatApp:
         if phone and self.phone is not None and self.phone.is_echo(text):
             # My own voice, heard by the phone's mic after I finished (the
             # panel path had no echo check: 2026-10-18 14:1x).
-            print("[phone] dropped: my own voice", repr(text))
-            return
+            stop = self.phone.stop_inside_echo(text)
+            if stop:
+                # ...with his "stop" inside it (2026-10-19 10:58: a 13 s clip
+                # of my story carried "Okay, stop … No, no, no … Stop.").
+                print(f"[barge] his stop inside my echo: {stop!r} in {text[:80]!r}")
+                await self._echo_stop(stop)
+                return
+            run = self.phone.his_run(text)
+            if not run:
+                print("[phone] dropped: my own voice", repr(text))
+                return
+            # ...or a real request riding on it: keep just his words.
+            print(f"[phone] his words inside my echo: {run!r}")
+            text = run
         if not phone and self._mishearing(text):
             return
         if self._voice_command(text, source):
@@ -2385,6 +2397,19 @@ class GoatApp:
         await self._work(text, hard=bool(WORK_HARD_RE.search(text[:80])),
                          echo_you=False)
         self._last_exchange = time.monotonic()
+
+    async def _echo_stop(self, his: str):
+        """He said stop over my voice and the phone clip was mostly my echo:
+        stop like the bare-stop cut-in does — voice off on every device (the
+        cancel reaches the page), a running turn cut, no reply."""
+        self.tts.cancel()
+        self._say_buf = ""
+        self._cut_in = None
+        self.emit("you", his)
+        self._last_exchange = time.monotonic()
+        if self.busy:
+            await self._cut_turn(None)
+            self.emit("work_fail", "Stopped.")
 
     async def _reflex(self, text: str, rx):
         """Run one reflex: speak and act at the same instant.

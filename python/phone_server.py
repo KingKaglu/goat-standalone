@@ -69,6 +69,11 @@ _TAILNET = ipaddress.ip_network("100.64.0.0/10")
 # Fallback for goat_app.WAKE_RE (tests run without goat_app loaded).
 import re as _re
 _WAKE = _re.compile(r"\b(goat|goats|goad|goot|gote|coat|გოატ|გოუთ|გოთ)\b", _re.I)
+# What "stop talking" sounds like when it's all that's left of a clip once my
+# own words are taken out (stop_inside_echo).
+_STOP_LEFT = _re.compile(
+    r"\b(?:stop|wait|enough|hold on|shut up|be quiet|quiet|pause|cancel)\b|"
+    r"\bno no\b|გაჩერდი|მოიცა|გაჩუმდი|კმარა|შეწყვიტე", _re.I)
 _TOKEN_ABC = "abcdefghjkmnpqrstuvwxyz23456789"   # no 0/o/1/l/i: typed on a phone
 ROOT = os.path.dirname(HERE)
 SHOT = os.path.join(HERE, "live-shot.png")       # screen_tools.SHOT_PATH
@@ -1330,6 +1335,72 @@ class PhoneServer:
             None, mine, words, autojunk=False).get_matching_blocks())
         return got >= ECHO_RUN and got / len(words) >= ECHO_SHARE
 
+    def leftover(self, text: str, overlap: bool = True) -> str:
+        """His words inside a clip that is mostly my own voice: every run of
+        2+ words that repeats what I said recently (in order) is my echo; the
+        rest is what's left over — usually him."""
+        import difflib
+        import re
+        words = re.findall(r"[a-z']+|[ა-ჿ]+", (text or "").lower())
+        cut = time.time() - (ECHO_WINDOW_S * 3 if overlap else ECHO_WINDOW_S)
+        mine = re.findall(r"[a-z']+|[ა-ჿ]+", " ".join(
+            t for at, t in self._said if at >= cut).lower())
+        taken = set()
+        for b in difflib.SequenceMatcher(None, mine, words,
+                                         autojunk=False).get_matching_blocks():
+            if b.size >= 2:
+                taken.update(range(b.b, b.b + b.size))
+        return " ".join(w for i, w in enumerate(words) if i not in taken)
+
+    def his_run(self, text: str, overlap: bool = True) -> str | None:
+        """A real request riding on my echo, or None: the longest stretch of
+        4+ words in a row that aren't a replay of mine, most of them words I
+        haven't said. 2026-10-19 10:57: "…you can test talking over me
+        whenever you like. No, could you please tell me a story so I can test
+        it out." was dropped whole as my own voice."""
+        import difflib
+        import re
+        words = re.findall(r"[a-z']+|[ა-ჿ]+", (text or "").lower())
+        cut = time.time() - (ECHO_WINDOW_S * 3 if overlap else ECHO_WINDOW_S)
+        mine = re.findall(r"[a-z']+|[ა-ჿ]+", " ".join(
+            t for at, t in self._said if at >= cut).lower())
+        taken = set()
+        for b in difflib.SequenceMatcher(None, mine, words,
+                                         autojunk=False).get_matching_blocks():
+            if b.size >= 2:
+                taken.update(range(b.b, b.b + b.size))
+        best, cur = [], []
+        for i, w in enumerate(words):
+            if i in taken:
+                cur = []
+                continue
+            cur.append(w)
+            if len(cur) > len(best):
+                best = list(cur)
+        if len(best) < 4:
+            return None
+        known = set(mine)
+        if sum(w in known for w in best) / len(best) > 0.75:
+            return None     # my words, just shuffled by the ear
+        return " ".join(best)
+
+    def stop_inside_echo(self, text: str, overlap: bool = True) -> str | None:
+        """His "stop" buried in my echo, or None. 2026-10-19 10:58: "Okay,
+        stop … No, no, no, no … Stop." rode a 13 s clip of my story and the
+        whole clip was dropped as my own voice — he could not stop me. A stop
+        word I said myself only counts when he says it twice."""
+        import re
+        left = self.leftover(text, overlap)
+        hits = [m.group(0).lower() for m in _STOP_LEFT.finditer(left)]
+        if not hits:
+            return None
+        cut = time.time() - ECHO_WINDOW_S * 3
+        mine = set(re.findall(r"[a-z']+|[ა-ჿ]+", " ".join(
+            t for at, t in self._said if at >= cut).lower()))
+        if len(hits) < 2 and hits[0].split()[0] in mine:
+            return None
+        return left
+
     async def _overlap_clip(self, audio, overlap: bool, media: bool, peak: float):
         """A clip recorded while I was talking (echo of me, or him cutting
         in?) or while another app played sound (a video, or him?)."""
@@ -1344,9 +1415,19 @@ class PhoneServer:
             return
         # Inside my voice the bar is lower: it IS mostly echo.
         if overlap and self.is_echo(text, overlap=True):
-            print(f"[phone] dropped clip: my own voice ({text!r})", flush=True)
-            self._send(json.dumps({"type": "idle"}))
-            return
+            stop = self.stop_inside_echo(text, overlap=True)
+            if stop:
+                print(f"[barge] his stop inside my echo: {stop!r} in {text[:80]!r}",
+                      flush=True)
+                await self.app._echo_stop(stop)
+                return
+            run = self.his_run(text, overlap=True)
+            if not run:
+                print(f"[phone] dropped clip: my own voice ({text!r})", flush=True)
+                self._send(json.dumps({"type": "idle"}))
+                return
+            print(f"[phone] his words inside my echo: {run!r}", flush=True)
+            text = run
         if media:
             wake = getattr(sys.modules.get("goat_app"), "WAKE_RE", None) or _WAKE
             if not wake.search(text):

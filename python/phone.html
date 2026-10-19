@@ -1572,6 +1572,7 @@ function makeRs() {
 }
 const rsMic = makeRs(), rsRef = makeRs();
 function resample(m, r) {
+  micFrameAt = performance.now();
   rsMic.push(m); rsRef.push(r || new Float32Array(m.length));
   while (rsMic.pend.length >= FRAME) {
     const f = Float32Array.from(rsMic.pend.splice(0, FRAME));
@@ -1712,6 +1713,8 @@ async function startMic() {
     const url = URL.createObjectURL(new Blob([WORKLET], {type: "application/javascript"}));
     await ctx.audioWorklet.addModule(url);
   }
+  await wakeCtx();
+  micStartAt = performance.now();
   srcNode = ctx.createMediaStreamSource(stream);
   tap = new AudioWorkletNode(ctx, "tap2", {numberOfInputs: 2});
   tap.port.onmessage = e => resample(e.data[0], e.data[1]);
@@ -1725,6 +1728,36 @@ function stopMic() {
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null; srcNode = null; resetVad();
 }
+
+// Mic watchdog (his bug 2026-10-19: "I have to press mute, unmute so it
+// starts recording, even though it isn't on mute"). Back from the background
+// the panel said "listening" while nothing reached the worklet: the audio
+// context still parked, or Android had handed the mic to the bubble and the
+// track came back dead. His mute/unmute was the only thing that rebuilt it.
+// Now the page does that itself: no frame for 1.5 s while live and visible ->
+// wake the context; still nothing (or the track is dead) -> rebuild the mic.
+let micFrameAt = 0, micStartAt = 0, micHeal = 0, micHealing = false;
+// resume() can wait forever for a gesture the panel never gets: 500 ms cap.
+function wakeCtx() {
+  if (!ctx || ctx.state === "running") return Promise.resolve();
+  return Promise.race([ctx.resume().catch(() => {}), new Promise(r => setTimeout(r, 500))]);
+}
+setInterval(async () => {
+  if (!live || document.hidden || micHealing) return;
+  const t = performance.now();
+  if (t - micFrameAt < 1500 || t - micStartAt < 1500) { micHeal = 0; return; }
+  const tr = stream && stream.getAudioTracks()[0];
+  const dead = !tr || tr.readyState === "ended";
+  await wakeCtx();
+  if (++micHeal < 2 && !dead) return;
+  micHeal = 0; micHealing = true;
+  const why = (dead ? "track ended" : tr.muted ? "track muted" : "no frames") +
+              " ctx " + (ctx ? ctx.state : "none");
+  stopMic();
+  const ok = await startMic();
+  micHealing = false;
+  send({type: "aec", line: "mic healed (" + why + ")" + (ok ? "" : " FAILED")});
+}, 700);
 
 async function setLive(on) {
   if (on && !(await startMic())) return;

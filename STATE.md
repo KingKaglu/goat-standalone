@@ -3,6 +3,37 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Phone interruption, real-world pass (2026-10-19 ~11:10, his /goal:
+## "interruption not perfect on the phone, dead in the bubble, and I must
+## press mute/unmute before it records")
+- Evidence (goat-app.log + adb logcat GoatMic, his 10:57 story test): the AEC
+  never locked (`ready 0` everywhere). In the bubble at 10:58:02 BgMic said
+  "he was talking as I started" (my own first syllable opened a clip — the
+  page's speak flag reaches the app late), the page did not pause (aecStrict
+  cap), and the clip ran 13.4 s of my story with his "Okay, stop … No, no,
+  no, no … Stop." inside -> dropped whole as my own voice. Same day his
+  request "No, could you please tell me a story…" died the same way.
+- Laptop: phone_server.leftover/stop_inside_echo/his_run — take out every
+  2+ word run of my recent speech; a stop word left over (stop/wait/enough/
+  no no/shut up/გაჩერდი/მოიცა/…) -> goat_app._echo_stop (tts.cancel -> page
+  "cancel", turn cut, no reply); 4+ consecutive leftover words mostly not
+  mine -> that run is his message. Hooked at both drops (_overlap_clip,
+  goat_app._heard). test_echo_rescue.py = the real transcripts, 8/8.
+- Page (live on reload, no APK): mic watchdog — live + visible + no worklet
+  frame for 1.5 s -> wakeCtx() (resume capped 500 ms), then rebuild the mic;
+  logs "[phone-aec] page: mic healed (why)". startMic resumes the context
+  before wiring. Fixes the mute/unmute-to-record bug class (dead track /
+  parked context after the panel comes back).
+- APK 29873349 (BgMic): my voice counts as playing as soon as Ref holds it
+  (250 ms hold) — no more fake "he was talking as I started"; a clip that
+  keeps running under my voice (page `speaking`) for 500 ms ships as a soft
+  <= 3 s clip so his stop reaches the laptop in seconds; health line counts
+  ref frames over all of my speech (the old `ref 0/1` was a counting
+  artifact: logged on the first frame, then a clip opened).
+- NOT solved: why the AEC never reaches `ready` on the real phone — the
+  rescue above works without it.
+
+
 ## Phone echo canceller (2026-10-19 ~08:20, dd57598 + APK 29873177, his
 ## order: "I cannot interrupt you on the phone" -> "make it your goal")
 - Root cause chain: phone mic hears my voice ~full volume; old level rule
