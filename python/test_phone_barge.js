@@ -142,6 +142,18 @@ check("bubble: laptop says echo -> carry on", !T.paused && T.sources >= 1);
 T.barge(); T.bargeEnd(true); T.msg({type: "you", text: "hey"});
 check("bubble: laptop heard him -> stopped", !T.paused && T.sources === 0 && T.held === 0);
 check("bubble barge while silent does nothing", T.barge() === false && !T.paused);
+// 11b. Paused for "him", but the laptop's streaming ear has no word of his
+// (room noise holding the VAD open, 2026-10-19): "carry" resumes me at once,
+// and noise does not make the echo rule stricter.
+T.msg({type: "reply"}); T.bin(new Int16Array(16000 * 3).buffer);
+const s0 = T.strict;
+check("carry: paused for noise", T.barge() === true && T.paused > 0);
+T.msg({type: "carry"});
+check("carry: the laptop heard no words -> I carry on", !T.paused && T.sources >= 1);
+check("carry: noise is not an echo false alarm", T.strict === s0, `strict ${s0} -> ${T.strict}`);
+T.msg({type: "carry"});
+check("carry while not paused does nothing", !T.paused && T.sources >= 1);
+T.msg({type: "cancel"});
 // 12. The echo canceller, with real speech through the page's own frame():
 // my voice (Edge) through a fake phone speaker + room into the mic, him
 // (Piper) cutting in. testdata/aec/*.wav
