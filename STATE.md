@@ -3,6 +3,38 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Device commands by command (2026-10-19 ~04:05, 602f7a8, his order:
+## "change or open something on my PC or phone — fast, no visuals, by commands")
+- Replayed his transcript through reflex.match: EVERY phone order and every
+  polite one ("can you close all the tabs for me, please?") missed the
+  reflex lane -> brain (4-7 s) -> taps on the phone.
+- `python/device_reflex.py`, called from reflex.match(): normalize() strips
+  politeness/hesitation/device ("would you mind, uh, opening X on my
+  phone?" -> "open X", phone). Phone lane -> /phone/do: open app
+  (Georgian/nickname -> label map, site fallback), alarm/timer intents with
+  SKIP_UI (alarms, timers, torch go to the PHONE even unasked), home/back/
+  lock/notifications, settings pages, dial digits, search, maps, and
+  volume/media/torch (NEW APK ops). PC: dark/light mode (registry +
+  off-thread repaint), Wi-Fi/Bluetooth via WinRT Radios (~0.4 s, no admin;
+  Wi-Fi OFF asks first — close_guard.ask(no_line=...) — it cuts my ear and
+  the phone link), ms-settings: pages, user folders, "restart"/"restart
+  GOAT" -> restart-goat.ps1 via WMI (bare "reboot"/"reload" are NOT me).
+- Falls through to the brain: looking ("show me my phone screen"), people
+  ("text mom"), the machine ("restart the computer", "turn off my phone"),
+  ambiguous "12 in the morning", compound "… and then …".
+- phone_server: /phone/do says "phone offline" at once when the app hasn't
+  polled for 40 s (was a silent 20 s); a poll skips commands whose caller
+  gave up (a stale "open Facebook" used to fire on reconnect).
+- APK 29872920 (workspace/goat-bubble; GoatAccess volume/media/torch, panel
+  stays up for them) BUILT, NOT INSTALLED — until then those three say
+  "Sir, that needs the new phone app."
+- Prompt HANDS line: settings/open by command, phone via phone_hands.py,
+  never taps, no screenshot to re-check what a command already confirmed.
+- Tests: test_reflex 200/200, side_talk, brain_route, phone_server,
+  engine_router pass; test_screen "stand_aside drops always-on-top" fails
+  on the old code too (pre-existing).
+
+
 ## Phone voice audit (2026-10-18 ~13:10, 498bbb6, his order: "hearing,
 ## interruption, talking-over-the-app problems — fix everything")
 - Root cause of "you texted me but didn't talk": phone.html barge-in fired on
