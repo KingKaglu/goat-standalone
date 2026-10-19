@@ -58,6 +58,7 @@ ECHO_RUN = 4
 ECHO_SHARE = 0.6
 STREAM_TTL_S = 30.0   # a stream with no chunk and no clip for this long is dead
 BARGE_MARK_S = 40.0   # a paused page's next clip (<=30 s of him) is the cut-in
+BARGE_HEAR_S = 2.5    # paused for him and the streaming ear has no word yet: carry on
 BOOT_GRACE_S = 12   # after a restart, wait this long for the phone to return (was 90: left the laptop mute when the phone was off)
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
 PAGE = os.path.join(HERE, "phone.html")
@@ -1160,6 +1161,27 @@ class PhoneServer:
         except Exception:  # noqa: BLE001
             pass
 
+    async def _barge_watch(self, mark):
+        """The page paused my voice for "him". Room noise holds its VAD open
+        for 4-20 s at a time (2026-10-19: every reply opened with "paused for
+        him (heard up to '')", then a noise clip, an empty ear and "carrying
+        on"). His real words reach the streaming ear within a second; if it
+        has heard nothing by now, tell the page to carry on. His clip still
+        arrives as a cut-in and is judged as usual."""
+        await asyncio.sleep(BARGE_HEAR_S)
+        if self._barge is not mark:
+            return                      # his clip is in: its verdict decides
+        now = time.monotonic()
+        live = [x for x in self._streams.values() if now - x["t"] < 1.0]
+        if not live:
+            return                      # not streamed: no way to tell
+        rt = max(live, key=lambda x: x["t"]).get("rt")
+        if rt is None or (getattr(rt, "last_partial", "") or "").strip():
+            return
+        print("[phone] paused for him, but no words in "
+              f"{BARGE_HEAR_S:.1f}s: carrying on", flush=True)
+        self._send(json.dumps({"type": "carry"}))
+
     def _take_stream(self, sid):
         """The clip is complete: commit its stream and hand the session on."""
         s = self._streams.pop(sid, None) if sid else None
@@ -1496,6 +1518,7 @@ class PhoneServer:
             self._barge = (time.time(), str(m.get("heard", ""))[:300])
             print(f"[phone] paused for him (heard up to {self._barge[1][:60]!r})",
                   flush=True)
+            asyncio.create_task(self._barge_watch(self._barge))
         elif kind == "cut":
             # The phone's Stop button: end the running turn, like talking
             # over it on the laptop.

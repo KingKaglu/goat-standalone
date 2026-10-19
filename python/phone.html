@@ -1083,6 +1083,8 @@ function connect() {
     else if (m.type === "turn_done") { goatBubble = null; }
     else if (m.type === "status") { if (!sources.length) setStatus(m.text); }
     else if (m.type === "cancel") { if (sources.length || paused) stopPlayback(); }
+    // Paused for "him" but the laptop's ear has no word of his: noise.
+    else if (m.type === "carry") { if (paused) resumeVoice(true); }
     else if (m.type === "idle") {
       if (paused && pauseWait) resumeVoice();               // echo or a cough: carry on
       if (!sources.length && !inSpeech) setStatus(live ? "listening" : "Tap the mic to talk");
@@ -1243,10 +1245,12 @@ function waitVerdict() {
   pauseWait = performance.now(); clearTimeout(pauseT);
   pauseT = setTimeout(resumeVoice, 6000);
 }
-function resumeVoice() {
+function resumeVoice(noise) {
   if (!paused) return;
   paused = 0; pauseWait = 0; clearTimeout(pauseT);
-  if (held.length) aecStrict++;            // that pause was a false alarm
+  // That pause was a false alarm: be stricter about my echo. Room noise
+  // ("carry") says nothing about the echo canceller.
+  if (held.length && !noise) aecStrict++;
   if (!inSpeech) orb.classList.remove("hear");
   const h = held; held = [];
   if (!ctx || !h.length) { setSpeaking(false); parkCtx(); return; }

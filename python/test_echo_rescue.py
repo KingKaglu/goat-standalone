@@ -36,5 +36,56 @@ for text, want in CASES:
     ok = got == want
     fails += not ok
     print(("PASS " if ok else "FAIL ") + f"{want:4} {text[:70]!r}" + ("" if ok else f" -> {got}"))
+
+# Paused for "him" at a reply's onset: room noise (no words from the streaming
+# ear in BARGE_HEAR_S) tells the page to carry on; his words keep it paused.
+import asyncio
+ps.BARGE_HEAR_S = 0.01
+
+
+class Ear:
+    def __init__(self, p): self.last_partial = p
+
+
+def watch(partial, clip_in=False):
+    sent = []
+    s._send = sent.append
+    s._streams = {"a": {"rt": Ear(partial), "t": time.monotonic()}}
+    s._barge = mark = (time.time(), "")
+
+    async def go():
+        t = asyncio.create_task(s._barge_watch(mark))
+        if clip_in:
+            s._barge = None
+        await t
+    asyncio.run(go())
+    return any('"carry"' in x for x in sent)
+
+
+for name, ok in [("noise -> carry on", watch("")),
+                 ("his words -> stay paused", not watch("stop")),
+                 ("clip already in -> its verdict", not watch("", clip_in=True))]:
+    fails += not ok
+    print(("PASS " if ok else "FAIL ") + name)
+
+# A stray word cut in over my voice carries on; his stop/order/answer don't.
+import goat_app as g
+
+
+class App:
+    turn_lang = "en"
+
+
+for text, heard, want in [("I am.", "Bruno climbed.", True), ("Okay", "x", True),
+                          ("Wait", "x", False), ("მოიცა", "x", False),
+                          ("Goat.", "x", False), ("Yes.", "Shall I close it?", False),
+                          ("volume up", "x", False), ("Tell me another one", "x", False)]:
+    ok = g.GoatApp._murmur(App(), text, heard) == want
+    fails += not ok
+    print(("PASS " if ok else "FAIL ") + f"murmur={want} {text!r}")
+for text in ("Stop. Stop. Wait a second.", "wait a sec", "okay one second"):
+    ok = bool(g.BARE_STOP_RE.match(text) and g.BARE_STOP_CORE.search(text))
+    fails += not ok
+    print(("PASS " if ok else "FAIL ") + f"bare stop {text!r}")
 print("ALL PASS" if not fails else f"{fails} FAILED")
 sys.exit(1 if fails else 0)

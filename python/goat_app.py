@@ -484,9 +484,11 @@ STOP_RE = re.compile(
 BARE_STOP_RE = re.compile(
     r"^(?:(?:okay|ok|please|goat|sir|hey|just|now|no|oh|man|bro|dude|it|"
     r"that's|thats|enough|stop|stop it|wait|hold on|shut up|be quiet|quiet|"
+    r"wait a (?:second|sec|minute|moment)|one (?:second|sec|moment)|"
     r"pause|silence|გაჩერდი|მოიცა|გაჩუმდი|კარგი)[\s,.!?…-]*)+$", re.IGNORECASE)
 BARE_STOP_CORE = re.compile(
-    r"\b(enough|stop|wait|hold on|shut up|quiet|pause|silence)\b|გაჩერდი|მოიცა|გაჩუმდი",
+    r"\b(enough|stop|wait|hold on|shut up|quiet|pause|silence|"
+    r"one (?:second|sec|moment))\b|გაჩერდი|მოიცა|გაჩუმდი",
     re.IGNORECASE)
 CUT_IN_S = 45.0   # a phone cut-in mark older than this is stale
 
