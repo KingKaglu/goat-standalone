@@ -3,6 +3,32 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## Phone echo canceller (2026-10-19 ~08:20, dd57598 + APK 29873177, his
+## order: "I cannot interrupt you on the phone" -> "make it your goal")
+- Root cause chain: phone mic hears my voice ~full volume; old level rule
+  learned echoK from the first 300 ms of each reply (echo not arrived yet)
+  -> my first loud word = "him" -> false pause -> one-false-alarm lockout
+  (noBarge) -> no voice interrupt for the rest of the reply.
+- phone.html `// ==AEC==` block: PBFDAF AEC (64-sample blocks, 16
+  partitions, fg/bg two-filter, rotating gradient constraint), bulk delay
+  by envelope correlation (0-600 ms, localStorage goatAecDelay), barge =
+  cleaned mic > 4x residue (resK x held echo est., decays 0.75/frame) +
+  not coherent with the echo estimate + not explained by the bg filter.
+  Worklet 'tap2' has 2 inputs (mic, master) = sample-locked reference.
+  getUserMedia now RAW (no platform AEC/NS/AGC). Fallback rule until lock.
+  aecStrict = false alarms this reply (stricter, cap 3); lockout gone.
+- App: page sends each sentence to GoatApp.ref(b64, wallMs)/refCut; Ref.java
+  (32 s wall-indexed ring) -> BgMic looks up anchorIdx+F+3200 (200 ms ahead)
+  -> Aec.java (line-for-line twin; zero frame mismatches in lab). Platform
+  AcousticEchoCanceler no longer attached. Prefs aecDelay.
+- Health lines every 5 s while I talk: "[phone-aec] page|bubble: delay ..
+  ready .. erle .. ref n/m" in GOAT's log (ws 'aec', POST /phone/aec).
+  If "ref 0/x" in bubble lines: the JS bridge isn't delivering my voice.
+- Lab: workspace/aec-lab (sim.js, AecSim.java, README); page test
+  python/test_phone_barge.js 27/27 (was 9 failing on the old code).
+- UNVERIFIED on the real phone until he installs APK 29873177 and talks
+  over me; check the [phone-aec] lines after.
+
 ## Device commands by command (2026-10-19 ~04:05, 602f7a8, his order:
 ## "change or open something on my PC or phone — fast, no visuals, by commands")
 - Replayed his transcript through reflex.match: EVERY phone order and every
