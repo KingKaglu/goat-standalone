@@ -1357,16 +1357,34 @@ class PhoneServer:
             None, mine, words, autojunk=False).get_matching_blocks())
         return got >= ECHO_RUN and got / len(words) >= ECHO_SHARE
 
-    def leftover(self, text: str, overlap: bool = True) -> str:
-        """His words inside a clip that is mostly my own voice: every run of
-        2+ words that repeats what I said recently (in order) is my echo; the
-        rest is what's left over — usually him."""
+    def _echo_words(self, text: str, overlap: bool):
+        """(heard words, my recent words). A heard word one letter or two off
+        a word I said is that word: the ear mishears my echo ("up the
+        cliffs, and Elio" came back "off a cliff, and Emilio", 2026-10-19,
+        and passed as his request). Stop words stay exact."""
         import difflib
         import re
         words = re.findall(r"[a-z']+|[ა-ჿ]+", (text or "").lower())
         cut = time.time() - (ECHO_WINDOW_S * 3 if overlap else ECHO_WINDOW_S)
         mine = re.findall(r"[a-z']+|[ა-ჿ]+", " ".join(
             t for at, t in self._said if at >= cut).lower())
+        known = set(mine)
+        out = []
+        for w in words:
+            if w not in known and len(w) >= 3 and not _STOP_LEFT.fullmatch(w):
+                near = difflib.get_close_matches(w, known, n=1, cutoff=0.75)
+                if near:
+                    w = near[0]
+            out.append(w)
+        return out, mine
+
+    def leftover(self, text: str, overlap: bool = True) -> str:
+        """His words inside a clip that is mostly my own voice: every run of
+        2+ words that repeats what I said recently (in order) is my echo; the
+        rest is what's left over — usually him."""
+        import difflib
+        import re
+        words, mine = self._echo_words(text, overlap)
         taken = set()
         for b in difflib.SequenceMatcher(None, mine, words,
                                          autojunk=False).get_matching_blocks():
@@ -1382,10 +1400,7 @@ class PhoneServer:
         it out." was dropped whole as my own voice."""
         import difflib
         import re
-        words = re.findall(r"[a-z']+|[ა-ჿ]+", (text or "").lower())
-        cut = time.time() - (ECHO_WINDOW_S * 3 if overlap else ECHO_WINDOW_S)
-        mine = re.findall(r"[a-z']+|[ა-ჿ]+", " ".join(
-            t for at, t in self._said if at >= cut).lower())
+        words, mine = self._echo_words(text, overlap)
         taken = set()
         for b in difflib.SequenceMatcher(None, mine, words,
                                          autojunk=False).get_matching_blocks():

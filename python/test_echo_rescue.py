@@ -37,6 +37,22 @@ for text, want in CASES:
     fails += not ok
     print(("PASS " if ok else "FAIL ") + f"{want:4} {text[:70]!r}" + ("" if ok else f" -> {got}"))
 
+# My echo misheard by the ear is still my echo (2026-10-19 11:59: "up the
+# cliffs, and Elio" came back "off a cliff, and Emilio" and was answered).
+said0 = s._said
+s._said = [(time.time() - 3, "On a quiet slope in the Dolomites lived a goat named Elio, who was "
+            "the smallest in his herd. The big goats raced each other up the cliffs, "
+            "and Elio always finished last.")]
+for text, want in [("... Off a cliff, and Emilio always finished last.", "drop"),
+                   ("the big goats raced each other stop stop wait", "stop"),
+                   ("up the cliffs could you tell me about the weather instead", "run")]:
+    stop = s.stop_inside_echo(text)
+    got = "stop" if stop else "run" if s.his_run(text) else "drop"
+    ok = got == want
+    fails += not ok
+    print(("PASS " if ok else "FAIL ") + f"{want:4} {text!r}" + ("" if ok else f" -> {got}"))
+s._said = said0
+
 # Paused for "him" at a reply's onset: room noise (no words from the streaming
 # ear in BARGE_HEAR_S) tells the page to carry on; his words keep it paused.
 import asyncio
