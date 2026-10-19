@@ -63,7 +63,9 @@ def main(a):
     op, r = a[0], a[1:]
     c = {"op": op}
     if op in ("tap", "hold"): c.update(x=float(r[0]), y=float(r[1]))
-    elif op == "swipe": c.update(x1=float(r[0]), y1=float(r[1]), x2=float(r[2]), y2=float(r[3]))
+    elif op == "swipe":
+        c.update(x1=float(r[0]), y1=float(r[1]), x2=float(r[2]), y2=float(r[3]))
+        if len(r) > 4: c["ms"] = int(r[4])
     elif op == "scroll": c["up"] = bool(r and r[0] == "up")
     elif op == "tap_text": c["text"] = r[0]
     elif op == "type": c.update(text=r[0], submit=len(r) > 1 and r[1] == "submit")
