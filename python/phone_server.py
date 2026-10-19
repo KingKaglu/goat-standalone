@@ -818,10 +818,17 @@ class PhoneServer:
             return web.Response(status=401)
         q = self.__dict__.setdefault("_hq", asyncio.Queue())
         self._hands_seen = time.monotonic()
-        try:
-            cmd = await asyncio.wait_for(q.get(), 25)
-        except asyncio.TimeoutError:
-            return web.json_response({})
+        while True:
+            try:
+                cmd = await asyncio.wait_for(q.get(), 25)
+            except asyncio.TimeoutError:
+                return web.json_response({})
+            # A command whose caller already gave up (phone was offline) must
+            # not fire when the phone comes back — "open Facebook" an hour
+            # late, over whatever he is doing.
+            if cmd.get("id") in self.__dict__.get("_hw", {}):
+                break
+        self._hands_seen = time.monotonic()
         return web.json_response({"cmd": cmd})
 
     async def _bg_utt(self, request):
@@ -860,6 +867,11 @@ class PhoneServer:
             cmd = await request.json()
         except Exception:
             return web.Response(status=400)
+        # The app long-polls every <=25 s; silent for 40 s = offline. Say so
+        # now instead of holding a voice command for the full 20 s.
+        if time.monotonic() - getattr(self, "_hands_seen", -1e9) > 40:
+            return web.json_response(
+                {"ok": False, "error": "phone offline (GOAT app not connected)"})
         cmd["id"] = secrets.token_hex(6)
         fut = asyncio.get_running_loop().create_future()
         self.__dict__.setdefault("_hw", {})[cmd["id"]] = fut

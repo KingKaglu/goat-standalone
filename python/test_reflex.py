@@ -196,7 +196,9 @@ hits("Google-ი გახსენი.", "open_url", "ka", "google.com")
 # Unknown targets never get a process killed or the front window closed.
 falls_through("close zzzznotawindow")
 falls_through("დახურე ზზზზარაფერი", "ka")
-falls_through("turn off the wifi")
+# Wi-Fi off cuts GOAT's own ear and the phone link: a reflex, but one that
+# ASKS first (device_reflex, 2026-10-19) — never flips it outright.
+hits("turn off the wifi", "confirm", detail="wifi off")
 falls_through("გამორთე ლეპტოპი", "ka")
 check("a named window that is not open reports an error, never closes the "
       "front one",
@@ -292,6 +294,62 @@ hits("Okay, close it now.", "window", detail="close")
 hits("click Node.js", "click", detail="node.js")
 # The ear heard "click stop. First image you see." — a description, not a name.
 falls_through("Okay, click stop. First image you see.")
+
+# ------------------------------------------- phone + settings (2026-10-19)
+# His order: "when I tell it to change or open something on my PC or my
+# phone, fast, without visuals — by commands". Every line below is from his
+# transcript; each one went to the brain (4-7 s, and taps on the phone).
+hits("Can you close all the tabs for me, please?", "keys", detail="close all tabs")
+hits("Would you mind opening Messenger on my phone?", "phone", detail="open messenger")
+hits("Now open Facebook on my phone", "phone", detail="open facebook")
+hits("გახსენი ფეისბუქი ტელეფონზე", "phone", "ka", detail="open facebook")
+hits("ok goat open insta on my phone", "phone", detail="open instagram")
+hits("Set the alarm at 11 in the morning today for me please on phone",
+     "phone", detail="alarm 11:00")
+hits("Okay set alarm ar 14 today", "phone", detail="alarm 14:00")   # his typo
+hits("set an alarm for 6:30 pm", "phone", detail="alarm 18:30")
+hits("wake me up at 7", "phone", detail="alarm 07:00")
+hits("მაღვიძარა 7-ზე", "phone", "ka", detail="alarm 07:00")
+hits("set a timer for 5 minutes", "phone", detail="timer 300s")
+hits("set a 10 minute timer on my phone", "phone", detail="timer 600s")
+hits("lock my phone", "phone", detail="lock")
+hits("set phone volume to 40", "phone", detail="volume 40%")
+hits("turn up the volume on my phone", "phone", detail="volume up")
+hits("mute my phone", "phone", detail="mute")
+hits("next song on my phone", "phone", detail="next")
+hits("turn on the flashlight", "phone", detail="torch on")
+hits("open wifi settings on my phone", "phone", detail="settings wifi")
+hits("turn off wifi on my phone", "phone", detail="wifi panel")
+hits("navigate to Tbilisi Mall on my phone", "phone", detail="navigate")
+hits("call 555 123 456 on my phone", "phone", detail="dial 555123456")
+hits("turn on dark mode", "setting", detail="dark mode")
+hits("switch to light mode", "setting", detail="light mode")
+hits("მუქი რეჟიმი ჩართე", "setting", "ka", detail="dark mode")
+hits("turn off bluetooth", "setting", detail="bluetooth off")
+hits("ჩართე ბლუთუზი", "setting", "ka", detail="bluetooth on")
+hits("turn on wifi", "setting", detail="wifi on")
+hits("open bluetooth settings", "open_app", detail="bluetooth settings")
+hits("open display settings on my laptop", "open_app", detail="display settings")
+hits("open Google on my laptop", "open_url", detail="google.com")
+hits("open the downloads folder", "open_path", detail="downloads")
+hits("open documents", "open_path", detail="documents")
+hits("Restart GOAT.", "restart")
+hits("Restart.", "restart")
+hits("Hello GOAT, please restart now.", "restart")
+hits("reload", "keys", detail="refresh")       # the page, not GOAT
+# Looking, people, the machine itself and anything unsure: a brain.
+falls_through("show me my phone screen")
+falls_through("what is on my phone screen")
+falls_through("Turn off my phone.")
+falls_through("text mom on my phone")
+falls_through("restart the computer")
+falls_through("reboot")
+falls_through("Can I restart phone server ?")
+falls_through("Can I use my phone camera for this?")
+falls_through("open Messenger on my phone and then text my girlfriend")
+falls_through("Thanks. Would you mind, uh, putting alarm at 12 in the morning, please?")
+check("an alarm/timer ack names the time it set",
+      "06:30" in (reflex.match("set an alarm for 6:30 am").speak or ""))
 
 # ------------------------------------------------------------------- speed
 # The claim is "instant". Prove the router itself is not the cost.

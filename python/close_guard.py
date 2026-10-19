@@ -71,11 +71,13 @@ _pending: dict | None = None
 _grant_until = 0.0
 
 
-def ask(what: str, run=None) -> None:
+def ask(what: str, run=None, no_line: str = "") -> None:
     """Remember the question GOAT just asked. `run` is the close to perform
-    on his yes (reflex lane); None means "let the brain retry"."""
+    on his yes (reflex lane); None means "let the brain retry". `no_line` is
+    what his no gets back when the question wasn't a close (Wi-Fi off)."""
     global _pending
-    _pending = {"what": what, "run": run, "t": time.monotonic()}
+    _pending = {"what": what, "run": run, "t": time.monotonic(),
+                "no_line": no_line}
 
 
 def pending() -> dict | None:

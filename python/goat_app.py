@@ -333,7 +333,7 @@ STT SELF-LEARNING: when you're confident a transcript said X but he meant Y (his
 
 PROJECTS: you build together; each new project gets its own subfolder in the workspace. ATTACHMENTS arrive as "[files from Giorgi]" with absolute paths — Read each (images render) and answer his note; no note = say briefly what you see.
 
-HANDS: full control of this laptop: apps, volume, media, Wi-Fi, processes, sites, files, clipboard. Just do it; confirm voice-sized ("Spotify's up."). Destructive/outward actions: one confirmation line first.
+HANDS: full control of this laptop: apps, volume, media, Wi-Fi, processes, sites, files, clipboard. Just do it; confirm voice-sized ("Spotify's up."). Destructive/outward actions: one confirmation line first. Change or open things by COMMAND, never by pixels: PowerShell/registry/`Start-Process`/`ms-settings:` URIs on the laptop; on his phone `python C:/Users/user/goat-standalone/python/phone_hands.py` (open, alarm, timer, settings, intent, volume, media, torch) — never tap, swipe or click through Settings for something a command can do, and don't screenshot to check what the command's own output already confirms.
 
 SCREEN: the `computer` tool is real sight and hands. Never say you can't see the screen.
 - Loop: screenshot → act → verify. No blind clicks. Wrong result = say so and fix.
@@ -2330,7 +2330,7 @@ class GoatApp:
                 if asked["run"] is not None:
                     close_guard.clear()
                     await self._reflex(text, reflex.Reflex(
-                        "window", "close (he said yes)", asked["run"]))
+                        "window", f"{asked['what']} (he said yes)", asked["run"]))
                     return
                 close_guard.grant()
             elif close_guard.NO_RE.match(text):
@@ -2338,8 +2338,9 @@ class GoatApp:
                 self.tts.cancel()
                 self.tts.mark_reply()
                 self.emit("delta", "")
-                self.tts.say("Sir, leaving it open." if self.turn_lang != "ka"
-                             else "კარგი, არ დავხურავ.")
+                self.tts.say(asked.get("no_line") or (
+                    "Sir, leaving it open." if self.turn_lang != "ka"
+                    else "კარგი, არ დავხურავ."))
                 return
             else:
                 close_guard.clear()
@@ -2427,6 +2428,17 @@ class GoatApp:
             return
         if isinstance(result, str) and result.startswith("ERROR"):
             line = REFLEX_FAIL.get(self.turn_lang) or REFLEX_FAIL["en"]
+            if "phone offline" in result or "phone link" in result:
+                line = ("Sir, your phone isn't connected." if self.turn_lang != "ka"
+                        else "ბატონო, ტელეფონი არ არის დაკავშირებული.")
+            elif "phone app too old" in result:
+                line = ("Sir, that needs the new phone app." if self.turn_lang != "ka"
+                        else "ბატონო, ამას ტელეფონის ახალი აპი სჭირდება.")
+            elif result.startswith("ERROR: phone"):
+                line = ("Sir, the phone didn't take it." if self.turn_lang != "ka"
+                        else "ბატონო, ტელეფონმა ვერ შეასრულა.")
+            elif not rx.kind.startswith("open") and self.turn_lang != "ka":
+                line = "Sir, that didn't work."     # not everything "opens"
             self._say_now(line)
             spoken = line
             self.emit("status", result[:80].lower())

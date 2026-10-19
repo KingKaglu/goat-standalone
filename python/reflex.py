@@ -534,6 +534,20 @@ def resolve_target(raw: str, lang: str = "en") -> Reflex | None:
     the last resort before giving up. Giving up is a FEATURE — an unresolved
     name goes to the talking brain instead of opening something random.
     """
+    # His own known folders by name: "open the downloads folder" missed
+    # (2026-10-19) — the index holds what is IN them, not the folders, and
+    # _clean_target eats "documents" as a noun. Checked on the raw words;
+    # "music"/"videos" only with "folder", or they'd shadow an app.
+    m = re.fullmatch(r"(?:the\s+|my\s+)?(?P<k>[a-z]+?)s?(?P<f>\s+(?:folder|"
+                     r"directory))?", (raw or "").strip(" .!?").lower())
+    if m:
+        dirs = reflex_index.user_dirs()
+        k = m.group("k") + "s" if m.group("k") + "s" in dirs else m.group("k")
+        if k in dirs and (m.group("f") or k in ("downloads", "documents",
+                                                "desktop", "pictures")):
+            return Reflex("open_path", f"{k} — folder",
+                          lambda p=dirs[k]: _open_path(p))
+
     name, where, want_dir = _clean_target(raw)
     if not name or _WORKISH_RE.match(name) or _WORKISH_RE.match(raw.strip()):
         return None
@@ -986,6 +1000,24 @@ def match(text: str, lang: str = "en") -> Reflex | None:
 
     if _QUESTION_RE.match(t):
         return None
+
+    # Politeness and the device (2026-10-19): "can you close all the tabs for
+    # me, please?" and "would you mind opening Messenger on my phone?" both
+    # went to the brain — the anchored patterns below sank on one "please".
+    # Phone orders go to the phone's own command channel, never to taps.
+    import device_reflex
+    bare, device = device_reflex.normalize(t)
+    if device == "phone":
+        return device_reflex.phone(bare)
+    if bare:
+        t = bare
+    if device != "pc":
+        got = device_reflex.alarm_or_timer(t)    # alarms live on the phone
+        if got is not None:
+            return got
+    got = device_reflex.pc(t)
+    if got is not None:
+        return got
 
     # The realtime ear punctuates speech — "გამორთე, ხმა." — and a comma must
     # not break a fixed command. The open patterns below keep the original,

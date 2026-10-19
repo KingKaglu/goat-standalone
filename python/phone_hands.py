@@ -5,6 +5,7 @@
   python phone_hands.py url URL | maps "place" | search "query" | settings [wifi|bluetooth|display|sound|battery|apps|location]
   python phone_hands.py intent '{"action":..,"data":..,"package":..,"extras":{..}}'  (any Android intent, instant)
   python phone_hands.py tap_text "Send" | type "hello" [submit] | open "WhatsApp"
+  python phone_hands.py volume up|down|mute|unmute|set 40 | media play_pause|next|previous | torch [on|off]
 `screen` lists on-screen text with tap coordinates; `shot` saves a screenshot to
 workspace/phone-uploads/phone-shot.jpg. Needs the GOAT app's accessibility
 service switched on (Settings > Accessibility > GOAT)."""
@@ -67,6 +68,10 @@ def main(a):
     elif op == "tap_text": c["text"] = r[0]
     elif op == "type": c.update(text=r[0], submit=len(r) > 1 and r[1] == "submit")
     elif op == "open": c["app"] = r[0]
+    elif op == "volume": c.update(action=r[0] if r else "up", percent=int(r[1]) if len(r) > 1 else 50)
+    elif op == "media": c["action"] = r[0] if r else "play_pause"
+    elif op == "torch":
+        if r: c["on"] = r[0] == "on"
     elif op in SHORT:
         c = SHORT[op](r)
     res = call(c)
