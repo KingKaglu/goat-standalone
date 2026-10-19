@@ -1143,16 +1143,13 @@ function playLevel() {
 // pick up again from the start of the sentence he cut into. (The old duck to
 // 12% kept talking under him for seconds and still ended in a lost "stop".)
 let sched = [], held = [], paused = 0, pauseWait = 0, pauseT = 0, sayText = "";
-// One false alarm per reply: after a pause that turned out not to be him, I
-// don't pause again until this reply has played out. Without it my own echo
-// re-triggered the pause on every resume and the phone repeated the first
-// syllables of a sentence over and over (2026-10-18 19:21, "Ha, noted, Sir").
-let noBarge = false;
-let soft = null; const SOFT_MAX = 150;      // soft-barge clip: <= 3 s of him over me
-function endSoft() {
-  const frames = soft; soft = null;
-  if (frames && frames.length >= 15) send(toPcm(frames).buffer);
-}
+// False alarms this reply. The old rule stopped pausing for him after ONE
+// (my echo re-triggered every resume: "Ha, noted, Sir" x10, 2026-10-18), and
+// then he couldn't stop me by voice at all (2026-10-19, "I cannot interrupt
+// you"). With my voice cancelled out of the mic false alarms are rare, so a
+// false alarm now only makes the next one stricter; a runaway loop is still
+// capped at 3 per reply.
+let aecStrict = 0;
 function play(buf, text) {
   if (!ctx) return;                        // no tap yet: text only
   const pcm = new Int16Array(buf);
@@ -1174,15 +1171,44 @@ function schedule(ab, off, text) {
   const t = Math.max(ctx.currentTime + 0.04, playEnd);
   s.start(t, off); playEnd = t + ab.duration - off;
   const it = {ab, at: t - off, text, s};   // at: when its first sample would play
+  aecShare(ab, off, t);
   sched.push(it); sources.push(s);
   s.onended = () => {
     sources = sources.filter(x => x !== s); sched = sched.filter(x => x !== it);
-    if (!sources.length && !paused) { noBarge = false; setSpeaking(false); parkCtx(); }
+    if (!sources.length && !paused) { aecStrict = 0; setSpeaking(false); parkCtx(); }
   };
 }
 function silence() {
+  if (sources.length && window.GoatApp && GoatApp.refCut) try { GoatApp.refCut(ctxWall(ctx.currentTime)); } catch (e) {}
   const ss = sources; sources = []; sched = []; playEnd = 0;
   ss.forEach(s => { s.onended = null; try { s.stop(); } catch (e) {} });
+}
+// The bubble's native mic (BgMic.java) cancels my voice too: it gets every
+// sentence I schedule, with the wall-clock moment it leaves the speaker, and
+// pairs that with its own mic timestamps (Aec.java finds what's left of the
+// offset). One mapping is kept so back-to-back sentences stay sample-aligned.
+let wallOff = null;
+function ctxWall(t) {
+  let off = null;
+  try {
+    const ts = ctx.getOutputTimestamp && ctx.getOutputTimestamp();
+    if (ts && ts.performanceTime > 0) off = Date.now() - (performance.now() - ts.performanceTime) - ts.contextTime * 1000;
+  } catch (e) {}
+  if (off === null || !isFinite(off)) off = Date.now() - ctx.currentTime * 1000 + ((ctx.outputLatency || 0) + (ctx.baseLatency || 0)) * 1000;
+  if (wallOff === null || Math.abs(off - wallOff) > 30) wallOff = off;   // re-anchor after a suspend
+  return t * 1000 + wallOff;
+}
+function aecShare(ab, off, t) {
+  const app = window.GoatApp;
+  if (!app || !app.ref) return;
+  try {
+    const ch = ab.getChannelData(0), s0 = Math.round(off * SR);
+    const pcm = new Int16Array(Math.max(0, ch.length - s0));
+    for (let i = 0; i < pcm.length; i++) pcm[i] = Math.max(-1, Math.min(1, ch[s0 + i])) * 32767;
+    const b = new Uint8Array(pcm.buffer);
+    let bin = ""; for (let i = 0; i < b.length; i += 4096) bin += String.fromCharCode.apply(null, b.subarray(i, i + 4096));
+    app.ref(btoa(bin), ctxWall(t));
+  } catch (e) {}
 }
 // Pause for him. Returns false when I wasn't talking (nothing to pause).
 function pauseVoice(waiting) {
@@ -1216,7 +1242,7 @@ function waitVerdict() {
 function resumeVoice() {
   if (!paused) return;
   paused = 0; pauseWait = 0; clearTimeout(pauseT);
-  noBarge = held.length > 0;               // that pause was a false alarm
+  if (held.length) aecStrict++;            // that pause was a false alarm
   if (!inSpeech) orb.classList.remove("hear");
   const h = held; held = [];
   if (!ctx || !h.length) { setSpeaking(false); parkCtx(); return; }
@@ -1224,14 +1250,14 @@ function resumeVoice() {
   setSpeaking(true);
 }
 function stopPlayback() {
-  silence(); noBarge = false; soft = null;
+  silence(); aecStrict = 0;
   held = []; paused = 0; pauseWait = 0; clearTimeout(pauseT);
   if (!inSpeech) orb.classList.remove("hear");
   setSpeaking(false); parkCtx();
 }
 // The bubble's native mic (BgMic.java) hears him over me while this page is
 // hidden: it calls these through evaluateJavascript.
-window.goatBarge = () => !noBarge && pauseVoice(false);
+window.goatBarge = () => aecStrict < 3 && pauseVoice(false);
 window.goatBargeEnd = sent => { if (!paused) return; if (sent) waitVerdict(); else resumeVoice(); };
 // After a cut, sentences the laptop already sent are still on the wire.
 // Playing them restarted the speaker for a blink and setSpeaking(true) wiped
@@ -1260,10 +1286,245 @@ function setSpeaking(on) {
   }
 }
 
+// ==AEC== Echo canceller for the phone (twin: goat-bubble Aec.java; test: test_phone_aec.js).
+// The laptop's trick on the phone: I know exactly what I'm playing, so I take it
+// out of the mic before listening. Partitioned-block frequency-domain adaptive
+// filter (overlap-save, 64-sample blocks, 16 partitions = 64 ms of echo tail),
+// two filters (background adapts always, foreground does the cancelling and only
+// takes the background's taps when they cancel better: his voice over mine
+// can't wreck it), and the bulk delay (output + input latency, 100-400 ms on a
+// phone) found by correlating mic and reference envelopes.
+function aecFft(n) {
+  const lev = Math.round(Math.log2(n)), rev = new Uint16Array(n);
+  const cs = new Float64Array(n / 2), sn = new Float64Array(n / 2);
+  for (let i = 0; i < n; i++) { let r = 0; for (let b = 0; b < lev; b++) r |= ((i >> b) & 1) << (lev - 1 - b); rev[i] = r; }
+  for (let i = 0; i < n / 2; i++) { cs[i] = Math.cos(2 * Math.PI * i / n); sn[i] = Math.sin(2 * Math.PI * i / n); }
+  return (re, im, inv) => {
+    for (let i = 0; i < n; i++) {
+      const j = rev[i];
+      if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+    }
+    for (let size = 2; size <= n; size <<= 1) {
+      const half = size >> 1, step = n / size;
+      for (let i = 0; i < n; i += size) {
+        for (let j = 0, k = 0; j < half; j++, k += step) {
+          const wr = cs[k], wi = inv ? sn[k] : -sn[k], a = i + j, b = a + half;
+          const tr = re[b] * wr - im[b] * wi, ti = re[b] * wi + im[b] * wr;
+          re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+        }
+      }
+    }
+  };
+}
+function Aec(opt) {
+  opt = opt || {};
+  const B = 64, N = 128, K = 65, P = opt.P || 16, FR = 320, NB = FR / B;
+  const LEAD = opt.lead || 256;         // the filter starts 16 ms before the echo
+  const MAXD = opt.maxDelay || 9600;    // delay search: 0..600 ms
+  const MU = opt.mu || 0.5, CONS = 2, DECAY = opt.decay || 0.75;             // step; partitions re-constrained per block
+  const fft = aecFft(N), re = new Float64Array(N), im = new Float64Array(N);
+  const mk = () => { const a = []; for (let p = 0; p < P; p++) a.push(new Float64Array(K)); return a; };
+  const XR = mk(), XI = mk(), FR_ = mk(), FI = mk(), BR = mk(), BI = mk();
+  const px = new Float64Array(K), xPrev = new Float64Array(B);
+  const Yr = new Float64Array(K), Yi = new Float64Array(K), Er = new Float64Array(K), Ei = new Float64Array(K);
+  const yf = new Float64Array(B), yb = new Float64Array(B), eb = new Float64Array(B);
+  const RING = 16384, ring = new Float32Array(RING);   // reference history (> MAXD + a frame)
+  let head = 0, wpos = 0, cc = 0, sff = 0, see = 0;
+  // envelopes for the delay search: one value per 32 samples (2 ms)
+  const EW = 1000, EL = Math.ceil(MAXD / 32), EN = 2048;
+  const em = new Float32Array(EN), er = new Float32Array(EN);
+  let en = 0, envAcc = 0, envAccR = 0, envK = 0, sinceEst = 0, refOn = 0;
+  const out = new Float32Array(FR);
+  const s = {                           // public state, read by the barge detector
+    delay: -1, ready: false, erle: 0, dE: 0, eE: 0, yE: 0, xE: 0, dy: 0, coh: 0, hot: false,
+    resK: 0.1, nfE: 1e-6, dS: 0, eS: 0, poorFor: 0, resets: 0,
+  };
+  function reset() {
+    for (let p = 0; p < P; p++) { FR_[p].fill(0); FI[p].fill(0); BR[p].fill(0); BI[p].fill(0); XR[p].fill(0); XI[p].fill(0); }
+    px.fill(0); xPrev.fill(0); sff = see = 0; s.dS = s.eS = 0; s.erle = 0; s.ready = false; s.resK = 0.1; s.poorFor = 0;
+  }
+  function estimateDelay() {
+    // Pearson correlation of mic vs reference envelopes over the last 2 s.
+    const W = Math.min(EW, en - EL);          // up to 2 s, at least 0.8 s
+    if (W < 400) return -1;
+    let best = -2, bestL = -1, mm = 0;
+    for (let t = 0; t < W; t++) mm += em[(en - 1 - t) & (EN - 1)];
+    mm /= W;
+    let vm = 0;
+    for (let t = 0; t < W; t++) { const v = em[(en - 1 - t) & (EN - 1)] - mm; vm += v * v; }
+    if (vm <= 0) return -1;
+    for (let L = 0; L < EL; L++) {
+      let mr = 0;
+      for (let t = 0; t < W; t++) mr += er[(en - 1 - t - L) & (EN - 1)];
+      mr /= W;
+      let c = 0, vr = 0;
+      for (let t = 0; t < W; t++) {
+        const a = em[(en - 1 - t) & (EN - 1)] - mm, b = er[(en - 1 - t - L) & (EN - 1)] - mr;
+        c += a * b; vr += b * b;
+      }
+      const r = vr > 0 ? c / Math.sqrt(vm * vr) : 0;
+      if (r > best) { best = r; bestL = L; }
+    }
+    s.corr = best;
+    return best > 0.45 ? bestL * 32 : -1;
+  }
+  function ifftHerm(R, I) {
+    re[0] = R[0]; im[0] = 0; re[K - 1] = R[K - 1]; im[K - 1] = 0;
+    for (let k = 1; k < K - 1; k++) { re[k] = R[k]; im[k] = I[k]; re[N - k] = R[k]; im[N - k] = -I[k]; }
+    fft(re, im, true);
+  }
+  function block(d, d0, x) {
+    // reference spectrum of [previous block, this block]
+    for (let i = 0; i < B; i++) { re[i] = xPrev[i]; re[B + i] = x[i]; im[i] = 0; im[B + i] = 0; xPrev[i] = x[i]; }
+    fft(re, im, false);
+    head = (head + P - 1) % P;
+    const xr = XR[head], xi = XI[head];
+    let pmean = 0;
+    for (let k = 0; k < K; k++) {
+      xr[k] = re[k]; xi[k] = im[k];
+      px[k] = 0.85 * px[k] + 0.15 * (re[k] * re[k] + im[k] * im[k]);
+      pmean += px[k];
+    }
+    pmean /= K;
+    // both filters' echo estimates
+    for (let f = 0; f < 2; f++) {
+      const WR = f ? BR : FR_, WI = f ? BI : FI, y = f ? yb : yf;
+      Yr.fill(0); Yi.fill(0);
+      for (let p = 0; p < P; p++) {
+        const q = (head + p) % P, ar = XR[q], ai = XI[q], wr = WR[p], wi = WI[p];
+        for (let k = 0; k < K; k++) { Yr[k] += wr[k] * ar[k] - wi[k] * ai[k]; Yi[k] += wr[k] * ai[k] + wi[k] * ar[k]; }
+      }
+      ifftHerm(Yr, Yi);
+      for (let i = 0; i < B; i++) y[i] = re[B + i] / N;
+    }
+    let Sff = 0, See = 0, Sxx = 0;
+    for (let i = 0; i < B; i++) {
+      const ef = d[d0 + i] - yf[i];
+      out[d0 + i] = ef; eb[i] = d[d0 + i] - yb[i];
+      Sff += ef * ef; See += eb[i] * eb[i]; Sxx += x[i] * x[i]; s.ebE += eb[i] * eb[i];
+      s.yE += yf[i] * yf[i]; s.dy += ef * yf[i];
+    }
+    const far = Sxx / B > 1e-6;          // reference rms > 0.001: something to cancel
+    if (far) {
+      // adapt the background filter
+      for (let i = 0; i < B; i++) { re[i] = 0; im[i] = 0; re[B + i] = eb[i]; im[B + i] = 0; }
+      fft(re, im, false);
+      for (let k = 0; k < K; k++) { Er[k] = re[k]; Ei[k] = im[k]; }
+      const delta = 1e-3 * pmean + 1e-9;
+      for (let p = 0; p < P; p++) {
+        const q = (head + p) % P, ar = XR[q], ai = XI[q], wr = BR[p], wi = BI[p];
+        const con = ((cc + p) % P) < CONS;
+        for (let k = 0; k < K; k++) {
+          const g = MU / (P * px[k] + delta);
+          Yr[k] = (ar[k] * Er[k] + ai[k] * Ei[k]) * g;   // conj(X) * E
+          Yi[k] = (ar[k] * Ei[k] - ai[k] * Er[k]) * g;
+        }
+        if (con) {                        // gradient constraint: keep it a linear convolution
+          ifftHerm(Yr, Yi);
+          for (let i = 0; i < B; i++) { re[i] /= N; im[i] = 0; re[B + i] = 0; im[B + i] = 0; }
+          fft(re, im, false);
+          for (let k = 0; k < K; k++) { Yr[k] = re[k]; Yi[k] = im[k]; }
+        }
+        for (let k = 0; k < K; k++) { wr[k] += Yr[k]; wi[k] += Yi[k]; }
+      }
+      cc = (cc + CONS) % P;
+      sff = 0.7 * sff + 0.3 * Sff; see = 0.7 * see + 0.3 * See;
+      if (see < 0.6 * sff) {              // background cancels better: it becomes the canceller
+        for (let p = 0; p < P; p++) { FR_[p].set(BR[p]); FI[p].set(BI[p]); }
+        sff = see;
+      } else if (see > 4 * sff + 1e-9) {  // background diverged (his voice over mine): undo
+        for (let p = 0; p < P; p++) { BR[p].set(FR_[p]); BI[p].set(FI[p]); }
+        see = sff;
+      }
+    }
+    return far;
+  }
+  const xa = new Float64Array(B);
+  let yHold = 0;
+  // One 20 ms frame: d = mic, x = what I played at the same instant. Returns the cleaned mic.
+  s.process = (d, x, strict) => {
+    // keep the reference history and the envelopes
+    for (let i = 0; i < FR; i++) {
+      const xv = x ? x[i] : 0;
+      ring[wpos & (RING - 1)] = xv; wpos++;
+      envAcc += d[i] * d[i]; envAccR += xv * xv;
+      if (++envK === 32) {
+        em[en & (EN - 1)] = Math.sqrt(envAcc / 32); er[en & (EN - 1)] = Math.sqrt(envAccR / 32);
+        en++; envAcc = envAccR = 0; envK = 0;
+      }
+    }
+    let xE = 0;
+    for (let i = 0; i < FR; i++) { const xv = x ? x[i] : 0; xE += xv * xv; }
+    const on = xE / FR > 1e-6;
+    refOn = on ? Math.min(150, refOn + 1) : Math.max(0, refOn - 1);
+    // find (or re-check) the bulk delay while I'm talking
+    if (on && ++sinceEst >= (s.delay < 0 ? 10 : 50) && refOn > (s.delay < 0 ? 25 : 40)) {
+      sinceEst = 0;
+      const D = estimateDelay();
+      if (D >= 0 && (s.delay < 0 || (Math.abs(D - s.delay) > 64 && s.poorFor > 100))) {
+        s.delay = D; reset(); s.resets++;
+      }
+    }
+    let dE = 0;
+    for (let i = 0; i < FR; i++) dE += d[i] * d[i];
+    s.yE = 0; s.dy = 0; s.ebE = 0;
+    if (s.delay < 0) {                     // no delay yet: nothing to cancel with
+      out.set(d); s.dE = dE; s.eE = dE; s.xE = xE; s.hot = false; return out;
+    }
+    const sh = Math.max(0, s.delay - LEAD);
+    let far = false;
+    for (let b = 0; b < NB; b++) {
+      const base = wpos - FR + b * B - sh;
+      for (let i = 0; i < B; i++) xa[i] = ring[(base + i) & (RING - 1)];
+      far = block(d, b * B, xa) || far;
+    }
+    let eE = 0;
+    for (let i = 0; i < FR; i++) eE += out[i] * out[i];
+    s.dE = dE; s.eE = eE; s.xE = xE;
+    // Him over my voice: the cleaned mic is well above what my echo leaves
+    // behind. The room keeps ringing after each word, longer than the filter
+    // reaches, so the echo estimate is held and fades (a quarter of its energy per
+    // frame) instead of dropping to zero. In my word gaps it's gone within
+    // ~100 ms and he stands out at once.
+    yHold = Math.max(s.yE, yHold * DECAY);
+    const yMax = yHold;
+    const T = (strict ? 2 : 1) * (opt.T || 4);
+    const expect = s.resK * yMax;
+    // And what's left must not move in step with my voice: distorted echo
+    // (a phone speaker at full volume) leaves residue the filter can't
+    // model, but it still follows my waveform; his voice doesn't.
+    s.coh = s.yE > 1e-9 ? (s.dy * s.dy) / (eE * s.yE + 1e-12) : 0;
+    const cohMax = opt.coh || 0.3;
+    s.hot = s.ready && eE > T * expect + 8 * s.nfE && eE / FR > 6.4e-5   // > 0.008 rms
+      && (s.coh < cohMax || s.yE < 0.05 * eE)
+      // the phone moved: the background filter already explains what's
+      // left (it adapts fast), so it's my echo on a new path, not him
+      && !(s.ebE < (opt.bgk || 0.4) * eE);
+    if (far && !s.hot && s.yE > 20 * s.nfE + 1e-7) {
+      s.dS = 0.97 * s.dS + 0.03 * dE; s.eS = 0.97 * s.eS + 0.03 * eE;
+      s.erle = s.eS > 0 ? 10 * Math.log10(s.dS / s.eS) : 0;
+      const r = Math.min(2, Math.max(1e-4, eE / s.yE));
+      // Down fast, up slowly, and barely at all on a frame far above it:
+      // that's more likely him than my residue (it learned his voice as
+      // echo in the lab and stopped hearing him mid-sentence).
+      s.resK += (r - s.resK) * (r < s.resK ? 0.1 : r < 2 * s.resK ? 0.02 : 0.003);
+      s.poorFor = s.erle < 6 ? s.poorFor + 1 : 0;
+      if (!s.ready && s.erle > 6) s.ready = true;
+    }
+    if (!far) s.nfE = s.nfE * 0.995 + Math.min(eE, s.nfE * 4) * 0.005;
+    return out;
+  };
+  if (opt.delay > 0) s.delay = opt.delay;   // remembered from last time: no search
+  s.reset = reset;
+  return s;
+}
+// ==/AEC==
+
 // ---- voice in: 16 kHz, energy endpointing ----
+// Input 0 = mic, input 1 = everything I play (master), in the same render
+// quantum: the echo canceller's reference is sample-locked to the mic.
 const WORKLET = "class T extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];" +
-  "if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor('tap',T)";
-let rsLeft = new Float32Array(0), rsPhase = 0, pend = [];
+  "if(c){const r=i[1]&&i[1][0];this.port.postMessage([c.slice(0),r?r.slice(0):null])}return true}}registerProcessor('tap2',T)";
 let floor = 0.003, inSpeech = false, voiced = 0, silent = 0, above = 0;
 const HIST = 50; const hist = new Float32Array(HIST).fill(0.003); let hn = 0;   // 1 s of frame levels
 let pre = [], utt = [];
@@ -1291,72 +1552,113 @@ function streamPush(f) { if (!sid) return; sbuf.push(f); if (sbuf.length >= 5) s
 function streamEnd() { streamFlush(); const s = sid; sid = ""; sbuf = []; return s; }
 function streamDrop() { if (sid) send({type: "utt_drop", sid}); sid = ""; sbuf = []; }
 
-function resample(f32) {
-  const r = ctx.sampleRate / SR;
-  const inp = new Float32Array(rsLeft.length + f32.length);
-  inp.set(rsLeft); inp.set(f32, rsLeft.length);
-  let pos = rsPhase;
-  while (pos + r <= inp.length) {
-    const a = Math.floor(pos), b = Math.max(a + 1, Math.floor(pos + r));
-    let s = 0; for (let k = a; k < b; k++) s += inp[k];
-    pend.push(s / (b - a)); pos += r;
+// Mic and reference go through identical resamplers, so they stay in step.
+function makeRs() {
+  let left = new Float32Array(0), phase = 0;
+  const pend = [];
+  return {pend, push(f32) {
+    const r = ctx.sampleRate / SR;
+    const inp = new Float32Array(left.length + f32.length);
+    inp.set(left); inp.set(f32, left.length);
+    let pos = phase;
+    while (pos + r <= inp.length) {
+      const a = Math.floor(pos), b = Math.max(a + 1, Math.floor(pos + r));
+      let s = 0; for (let k = a; k < b; k++) s += inp[k];
+      pend.push(s / (b - a)); pos += r;
+    }
+    const keep = Math.floor(pos);
+    left = inp.slice(keep); phase = pos - keep;
+  }};
+}
+const rsMic = makeRs(), rsRef = makeRs();
+function resample(m, r) {
+  rsMic.push(m); rsRef.push(r || new Float32Array(m.length));
+  while (rsMic.pend.length >= FRAME) {
+    const f = Float32Array.from(rsMic.pend.splice(0, FRAME));
+    const x = rsRef.pend.length >= FRAME ? Float32Array.from(rsRef.pend.splice(0, FRAME)) : null;
+    frame(f, x);
   }
-  const keep = Math.floor(pos);
-  rsLeft = inp.slice(keep); rsPhase = pos - keep;
-  while (pend.length >= FRAME) frame(Float32Array.from(pend.splice(0, FRAME)));
 }
 
-// Echo guard for the barge-in. The mic always hears some of my own voice
-// (more with auto-gain on), and the speaker's output reaches the mic ~50-150
-// ms late, so the mic level is compared with the LOUDEST playing level of
-// the last 300 ms. echoK = how much of that comes back as echo, learned from
-// frames that are not a barge, and freely during the first 300 ms of every
-// stretch of my speech. He counts as talking over me when he is clearly above
-// my echo in 6 of the last 10 frames: speech dips between syllables, and the
-// old "8 frames in a row" let a plain "stop, stop" slip through (2026-10-18:
-// "I tried several times to interrupt you").
+// Talking over me. My voice is cancelled out of the mic first (Aec above,
+// reference = exactly what I play), so "him over me" is simply the cleaned
+// mic standing out from what my echo leaves behind: caught in ~150 ms in the
+// lab, including in my word gaps, with no false alarms on my own voice.
+// Until the canceller has locked on (the first second or two of the very
+// first reply; the delay is remembered after that) the old level rule runs:
+// the raw mic against the LOUDEST playing level of the last 300 ms, echoK =
+// how much of that comes back, learned while he's quiet. Either way he
+// counts as talking over me in 6 of the last 10 frames: speech dips between
+// syllables, and "8 in a row" let a plain "stop, stop" slip through.
 let echoK = 0.5, playN = 0, bargeHits = 0, bwI = 0;
 const plHist = new Float32Array(15); let plI = 0;
 const bargeWin = new Uint8Array(10);
-function frame(f) {
+let aec = null, aecSaved = 0, aecLogAt = 0, aecHot = 0, aecPauses = 0;
+function aecGet() {
+  if (!aec) {
+    let d = 0; try { d = +localStorage.getItem("goatAecDelay") || 0; } catch (e) {}
+    aec = Aec({delay: d}); aecSaved = d;
+  }
+  return aec;
+}
+// One line every 5 s while I talk, so the laptop log shows how it does on the real phone.
+function aecReport() {
+  const now = performance.now();
+  if (now - aecLogAt < 5000) return;
+  aecLogAt = now;
+  const a = aec;
+  send({type: "aec", line: "delay " + (a.delay < 0 ? "?" : Math.round(a.delay / 16) + "ms") +
+    " ready " + (a.ready ? 1 : 0) + " erle " + a.erle.toFixed(1) + "dB resK " + a.resK.toFixed(3) +
+    " corr " + (a.corr || 0).toFixed(2) + " hot " + aecHot + " pauses " + aecPauses + " strict " + aecStrict + " resets " + a.resets});
+  aecHot = 0;
+}
+function frame(raw, ref) {
+  const a = aecGet();
+  const f = Float32Array.from(a.process(raw, ref, aecStrict > 0));   // my own voice taken out
+  if (a.delay > 0 && a.delay !== aecSaved) {
+    aecSaved = a.delay;
+    try { localStorage.setItem("goatAecDelay", String(a.delay)); } catch (e) {}
+  }
   let e = 0; for (let i = 0; i < f.length; i++) e += f[i] * f[i];
   const rms = Math.sqrt(e / f.length);
   if (sources.length) {                      // I'm talking: is that him, over me?
-    if (soft) {                              // soft barge: keep his words, I keep talking
-      soft.push(f);
-      if (soft.length >= SOFT_MAX) endSoft();
-      return;
-    }
     plHist[plI] = playLevel(); plI = (plI + 1) % plHist.length;
     let pl = 0; for (let i = 0; i < plHist.length; i++) if (plHist[i] > pl) pl = plHist[i];
     playN++;
-    const learning = playN <= 15;
-    const loud = !learning && rms > 0.05 && rms > 2.5 * echoK * pl;
-    if (!loud && pl > 0.02) {
-      const r = Math.min(2, rms / pl);
-      echoK += (r - echoK) * (learning || r < echoK ? 0.15 : 0.02);
+    let loud;
+    if (a.ready) { loud = a.hot; if (loud) aecHot++; }
+    else {
+      let er = 0; for (let i = 0; i < raw.length; i++) er += raw[i] * raw[i];
+      // The first second only RAISES echoK: my echo reaches the mic 100-400 ms
+      // after I start, so learning from the onset set the bar so low that my
+      // own first loud word "was him" -> false pause -> (old rule) no more
+      // pausing for him that reply. That was the "can't interrupt you" chain.
+      const rr = Math.sqrt(er / raw.length), learning = playN <= 50;
+      // Until the canceller locks on (the first ~2 s ever, ~1 s after a reload)
+      // he has to be clearly louder than my echo.
+      loud = !learning && rr > 0.05 && rr > (aecStrict ? 4 : 3.5) * echoK * pl;
+      if (!loud && pl > 0.02) {
+        const r = Math.min(2, rr / pl);
+        if (learning) echoK = Math.max(echoK * 0.98, r);
+        else echoK += (r - echoK) * (r < echoK ? 0.15 : 0.02);
+      }
     }
+    aecReport();
     bargeHits += (loud ? 1 : 0) - bargeWin[bwI];
     bargeWin[bwI] = loud ? 1 : 0; bwI = (bwI + 1) % bargeWin.length;
-    pre.push(f); if (pre.length > 25) pre.shift();          // 500 ms: his words over me
-    if (bargeHits >= 6 && !noBarge) {
+    pre.push(f); if (pre.length > 25) pre.shift();          // 500 ms: his words over me (cleaned)
+    if (bargeHits >= 6 && aecStrict < 3) {
       // He talked over me: stop and listen, and what he's saying IS his next
       // message — record it from the pre-roll instead of throwing it away.
       const seed = pre.slice();
+      aecPauses++;
       pauseVoice(false);
       quietUntil = 0; inSpeech = true; utt = seed; voiced = 10; silent = 0; above = 0;
       streamStart(utt);
       orb.classList.add("hear"); setStatus("hearing you");
-    } else if (bargeHits >= 6 && noBarge) {
-      // One false alarm already this reply, so I don't pause again — but
-      // his words still go to the laptop: real words stop me there, my own
-      // echo is dropped there (2026-10-18: after one false pause he could
-      // no longer stop me by voice at all).
-      soft = pre.slice(); bargeHits = 0; bargeWin.fill(0);
     }
     return;
   }
-  if (soft) endSoft();                       // my answer ended while he spoke
   if (!sources.length) { playN = 0; plHist.fill(0); }
   bargeWin.fill(0); bargeHits = 0;
   if (performance.now() < quietUntil) return;
@@ -1401,21 +1703,25 @@ async function startMic() {
   ensureCtx();
   try {
     stream = await navigator.mediaDevices.getUserMedia({audio: {
-      echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1}});
+      // Raw mic: my own canceller (Aec) needs a linear echo path. The
+      // platform's canceller left my voice at almost full volume anyway,
+      // and its gating + auto-gain only made the echo harder to model.
+      echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1}});
   } catch (e) { setStatus("Mic blocked: " + e.name); return false; }
   if (!tap) {
     const url = URL.createObjectURL(new Blob([WORKLET], {type: "application/javascript"}));
     await ctx.audioWorklet.addModule(url);
   }
   srcNode = ctx.createMediaStreamSource(stream);
-  tap = new AudioWorkletNode(ctx, "tap");
-  tap.port.onmessage = e => resample(e.data);
-  srcNode.connect(tap);
+  tap = new AudioWorkletNode(ctx, "tap2", {numberOfInputs: 2});
+  tap.port.onmessage = e => resample(e.data[0], e.data[1]);
+  srcNode.connect(tap, 0, 0);
+  master.connect(tap, 0, 1);
   const sink = ctx.createGain(); sink.gain.value = 0; tap.connect(sink).connect(ctx.destination);
   return true;
 }
 function stopMic() {
-  try { srcNode && srcNode.disconnect(); tap && tap.disconnect(); } catch (e) {}
+  try { srcNode && srcNode.disconnect(); tap && tap.disconnect(); master && tap && master.disconnect(tap); } catch (e) {}
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null; srcNode = null; resetVad();
 }

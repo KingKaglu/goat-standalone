@@ -520,6 +520,7 @@ class PhoneServer:
         self._streams = {}     # stream id -> {"rt": realtime ear session, "t": last chunk}
         self._said = deque(maxlen=40)   # my last sentences, to tell echo from him
         self._barge = None   # (time, words he'd heard) when a page paused for him
+        self.aec_last = {}   # echo canceller reports: src -> (time, line)
         self._you_n = 0        # how many of his messages the app has taken
 
     # ---- lifecycle ----
@@ -555,6 +556,7 @@ class PhoneServer:
         wapp.router.add_post("/phone/do", self._hands_do)
         wapp.router.add_post("/phone/utt", self._bg_utt)
         wapp.router.add_post("/phone/chunk", self._bg_chunk)
+        wapp.router.add_post("/phone/aec", self._bg_aec)
         wapp.router.add_get("/push/key", self._push_key)
         wapp.router.add_post("/push/sub", self._push_sub)
         self._runner = web.AppRunner(wapp, access_log=None)
@@ -1170,6 +1172,20 @@ class PhoneServer:
                            drop=request.headers.get("X-Drop") == "1")
         return web.Response(text="ok")
 
+    async def _bg_aec(self, request):
+        """The bubble mic's echo canceller reporting in (one line, ~every 5 s
+        while I talk): lets me check from here that it works on the phone."""
+        from aiohttp import web
+        if not self._authed(request):
+            return web.Response(status=401)
+        line = (await request.text())[:300]
+        self._aec_log("bubble", line)
+        return web.Response(text="ok")
+
+    def _aec_log(self, src: str, line: str):
+        self.aec_last[src] = (time.time(), line)
+        print(f"[phone-aec] {src}: {line}", flush=True)
+
     def _utterance(self, data: bytes, st=None, media: bool = False,
                    barge: bool = False, sid: str = ""):
         rt = self._take_stream(sid)
@@ -1378,6 +1394,8 @@ class PhoneServer:
             st["sid"] = str(m.get("sid", ""))[:40]   # the next binary clip closes it
         elif kind == "utt_drop":
             self._stream_chunk(str(m.get("sid", ""))[:40], drop=True)
+        elif kind == "aec":
+            self._aec_log("page", str(m.get("line", ""))[:300])
         elif kind == "barge":
             # He started talking over me and the page paused my voice (it
             # resumes on "idle", drops the rest on "you"). His clip follows,
