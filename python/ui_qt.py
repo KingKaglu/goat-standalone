@@ -362,6 +362,7 @@ IC = {
     "video": "", "music": "", "copy": "", "add": "",
     "folder": "", "lang": "", "brain": "", "hand": "",
     "sync": "", "down": "", "open": "", "check": "",
+    "phone": "\ue8ea", "mail": "\ue715", "bell": "\uea8f",
 }
 
 
@@ -2800,7 +2801,18 @@ CAPABILITIES = [
      ["Close this tab", "Click Subscribe", "Scroll down", "Mute"]),
     ("globe", "Web", "Searches and reads the live web, then answers from "
      "what it found — not from memory.",
-     ["Search the web for today's news in Georgia"]),
+     ["What's the weather in Essen today?"]),
+    ("phone", "Phone", "Lives on your phone too: the floating orb, the side "
+     "button assistant, and hands that open apps by command, never by "
+     "tapping over you. Replies speak on whichever device you used last.",
+     ["Open WhatsApp on my phone", "Speak on the laptop"]),
+    ("mail", "Mail & calendar", "Reads your Gmail and Google Calendar "
+     "through your own signed-in Chrome — no keys, nothing stored.",
+     ["Any new mail?", "What's on today?"]),
+    ("bell", "Watchers", "Keeps an eye on the machine while you work: "
+     "finished downloads, low disk, low battery, a flapping charger, RAM "
+     "pressure — told aloud and pushed to your phone.",
+     ["How's my laptop?"]),
     ("doc", "Files", "Drop, paste (Ctrl+V) or pick files and images; Goat "
      "reads them and hands back the files it makes.",
      ["Summarise the file I just sent"]),
@@ -4045,15 +4057,15 @@ class GoatWindow(QWidget):
         if ka:
             hi = ("დილა მშვიდობისა" if 5 <= h < 12 else
                   "გამარჯობა" if 12 <= h < 18 else "საღამო მშვიდობისა")
-            name = "გიორგი"
+            name = "ბატონო"   # "Sir" — his order 2026-10-18
             sub = ("მზად ვარ, როცა შენ იქნები. მკითხე რამე, მომეცი საქმე ან "
                    "უბრალოდ დამელაპარაკე — ვხედავ ეკრანს და ვმართავ კომპიუტერს.")
         else:
             hi = ("Up late" if h < 5 else "Good morning" if h < 12 else
                   "Good afternoon" if h < 18 else "Good evening")
-            name = "Giorgi"
+            name = "Sir"      # his order 2026-10-18
             sub = ("Ready when you are. Ask me anything, hand me a task, or just "
-                   "talk — I can see your screen and run this PC.")
+                   "talk — I can see your screen and run this PC and your phone.")
         acc = self._theme()["accent2"]
         self.hello.setText(f"{hi}, <span style='color:{acc}'>{name}.</span>")
         self.hello_sub.setText(sub)

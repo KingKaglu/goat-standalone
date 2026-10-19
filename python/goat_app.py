@@ -404,13 +404,13 @@ def _greeting() -> str:
     Also the AEC warm-up audio, so it must stay a full spoken sentence."""
     h = datetime.datetime.now().hour
     if 5 <= h < 12:
-        part = "Good morning, Giorgi"
+        part = "Good morning, Sir"
     elif 12 <= h < 18:
-        part = "Good afternoon, Giorgi"
+        part = "Good afternoon, Sir"
     elif 18 <= h < 23:
-        part = "Good evening, Giorgi"
+        part = "Good evening, Sir"
     else:
-        part = "Up late again, Giorgi"
+        part = "Up late again, Sir"
     return f"{part}. GOAT online — one second to learn the room, then talk to me."
 
 
@@ -3616,7 +3616,7 @@ class GoatApp:
         elif away_h is not None and away_h >= BRIEFING_AFTER_H:
             now = datetime.datetime.now()
             await self._talk(
-                "[boot-briefing] Giorgi just started you after about "
+                "[boot-briefing] Greet him as Sir. Giorgi just started you after about "
                 f"{away_h:.0f} hours away. It is {now:%A}, {now:%H:%M}.",
                 echo=False)
         else:

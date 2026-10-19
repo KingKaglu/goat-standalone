@@ -58,7 +58,7 @@ ECHO_RUN = 4
 ECHO_SHARE = 0.6
 STREAM_TTL_S = 30.0   # a stream with no chunk and no clip for this long is dead
 BARGE_MARK_S = 40.0   # a paused page's next clip (<=30 s of him) is the cut-in
-BOOT_GRACE_S = 90   # after a restart, wait this long for the phone to return
+BOOT_GRACE_S = 12   # after a restart, wait this long for the phone to return (was 90: left the laptop mute when the phone was off)
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
 PAGE = os.path.join(HERE, "phone.html")
 COOKIE = "goat_k"
