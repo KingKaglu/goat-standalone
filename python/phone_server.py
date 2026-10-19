@@ -850,7 +850,8 @@ class PhoneServer:
         # X-Barge: 1 = he talked over my voice; the page has paused it.
         self._utterance(data, media=request.headers.get("X-Media") == "1",
                         barge=request.headers.get("X-Barge") == "1",
-                        sid=request.headers.get("X-Stream", ""))
+                        sid=request.headers.get("X-Stream", ""),
+                        spot=request.headers.get("X-Spot") == "1")
         return web.Response(text="ok")
 
     async def _hands_result(self, request):
@@ -1214,7 +1215,7 @@ class PhoneServer:
         print(f"[phone-aec] {src}: {line}", flush=True)
 
     def _utterance(self, data: bytes, st=None, media: bool = False,
-                   barge: bool = False, sid: str = ""):
+                   barge: bool = False, sid: str = "", spot: bool = False):
         rt = self._take_stream(sid)
         # Dial the voice socket now, under the time the ear takes on this
         # clip (a streamed clip already primed it when he started talking).
@@ -1279,6 +1280,14 @@ class PhoneServer:
         if 0.002 < pk < 0.5:
             audio = np.clip(audio * min(12.0, 0.6 / pk), -1.0, 1.0)
         media = media and started >= self._voice_end + SELF_AUDIO_S
+        if spot:
+            # The bubble's on-device spotter heard a stop word over my voice:
+            # this clip may stop me and nothing else (its guesses on my echo
+            # came back as gibberish like "It's lifting opening struggle."
+            # and got answered, 2026-10-19 12:02).
+            asyncio.create_task(self._overlap_clip(audio, overlap=True, media=False,
+                                                   peak=pk, rt=rt, spot=True))
+            return
         if overlap or media:
             # Dropping every overlapping clip also ate his barge-ins (his
             # report 2026-10-18 12:45: "I could not interrupt you"). Hear it
@@ -1439,7 +1448,7 @@ class PhoneServer:
         return left
 
     async def _overlap_clip(self, audio, overlap: bool, media: bool, peak: float,
-                            rt=None):
+                            rt=None, spot: bool = False):
         """A clip recorded while I was talking (echo of me, or him cutting
         in?) or while another app played sound (a video, or him?)."""
         import stt_whisper
@@ -1461,6 +1470,16 @@ class PhoneServer:
             return
         if not text:
             self._send(json.dumps({"type": "idle"}))
+            return
+        if spot:
+            stop = self.stop_inside_echo(text, overlap=True)
+            if stop:
+                print(f"[barge] spotter: his stop over my voice: {stop!r} in {text[:80]!r}",
+                      flush=True)
+                self._voice_end = 0.0
+                await self.app._echo_stop(stop)
+            else:
+                print(f"[phone] spotter clip, no stop of his: {text[:80]!r}", flush=True)
             return
         # Inside my voice the bar is lower: it IS mostly echo.
         if overlap and self.is_echo(text, overlap=True):
