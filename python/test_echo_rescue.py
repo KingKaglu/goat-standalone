@@ -51,6 +51,15 @@ for text, want in [("... Off a cliff, and Emilio always finished last.", "drop")
     ok = got == want
     fails += not ok
     print(("PASS " if ok else "FAIL ") + f"{want:4} {text!r}" + ("" if ok else f" -> {got}"))
+# A cut-in is my echo only if it repeats me IN ORDER: his question about my
+# story reuses my words (2026-10-19 21:2x).
+s._said = [(time.time() - 3, "Sir, one moment."),
+           (time.time() - 2, "Loud and clear. Deep in a quiet forest lived a little fox named Pip.")]
+for text, mine_ok in [("I'm sorry, deep in where.", False), ("Sir, one moment.", True),
+                      ("Deep in a quiet forest lived a little", True)]:
+    ok = (s.echo_cover(text) >= 0.6) == mine_ok
+    fails += not ok
+    print(("PASS " if ok else "FAIL ") + f"echo in order={mine_ok} {text!r} ({s.echo_cover(text):.2f})")
 s._said = said0
 
 # Paused for "him" at a reply's onset: room noise (no words from the streaming

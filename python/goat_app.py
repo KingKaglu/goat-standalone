@@ -2225,7 +2225,8 @@ class GoatApp:
             text = run
         cut = getattr(self, "_cut_in", None)
         if (phone and cut is not None and self.phone is not None
-                and self.phone.is_echo(text, overlap=True)):
+                and self.phone.is_echo(text, overlap=True)
+                and self.phone.echo_cover(text) >= 0.6):
             # A cut-in that is my own words coming back ("Sir, one moment."
             # stopped my own story, 2026-10-19 12:05) — the loose over-my-voice
             # bar: it was recorded while I talked.

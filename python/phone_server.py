@@ -1387,6 +1387,19 @@ class PhoneServer:
             out.append(w)
         return out, mine
 
+    def echo_cover(self, text: str, overlap: bool = True) -> float:
+        """Share of the clip's words that repeat what I said recently IN
+        ORDER (runs of 2+). Word overlap alone calls his questions about my
+        story my echo: "I'm sorry, deep in where?" after "Deep in a quiet
+        forest" (2026-10-19 21:2x) was dropped as my own voice."""
+        import difflib
+        words, mine = self._echo_words(text, overlap)
+        if not words:
+            return 1.0
+        got = sum(b.size for b in difflib.SequenceMatcher(
+            None, mine, words, autojunk=False).get_matching_blocks() if b.size >= 2)
+        return got / len(words)
+
     def leftover(self, text: str, overlap: bool = True) -> str:
         """His words inside a clip that is mostly my own voice: every run of
         2+ words that repeats what I said recently (in order) is my echo; the
