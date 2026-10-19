@@ -99,9 +99,13 @@ for text, heard, want in [("I am.", "Bruno climbed.", True), ("Okay", "x", True)
     ok = g.GoatApp._murmur(App(), text, heard) == want
     fails += not ok
     print(("PASS " if ok else "FAIL ") + f"murmur={want} {text!r}")
-for text in ("Stop. Stop. Wait a second.", "wait a sec", "okay one second"):
+for text in ("Stop. Stop. Wait a second.", "wait a sec"):
     ok = bool(g.BARE_STOP_RE.match(text) and g.BARE_STOP_CORE.search(text))
     fails += not ok
     print(("PASS " if ok else "FAIL ") + f"bare stop {text!r}")
+# "one moment" is my own filler: its echo must not stop me (2026-10-19 12:05).
+ok = not (g.BARE_STOP_RE.match("Sir, one moment.") and g.BARE_STOP_CORE.search("Sir, one moment."))
+fails += not ok
+print(("PASS " if ok else "FAIL ") + "my filler is not a stop")
 print("ALL PASS" if not fails else f"{fails} FAILED")
 sys.exit(1 if fails else 0)

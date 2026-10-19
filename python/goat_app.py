@@ -484,11 +484,12 @@ STOP_RE = re.compile(
 BARE_STOP_RE = re.compile(
     r"^(?:(?:okay|ok|please|goat|sir|hey|just|now|no|oh|man|bro|dude|it|"
     r"that's|thats|enough|stop|stop it|wait|hold on|shut up|be quiet|quiet|"
-    r"wait a (?:second|sec|minute|moment)|one (?:second|sec|moment)|"
+    r"wait a (?:second|sec|minute|moment)|"
     r"pause|silence|გაჩერდი|მოიცა|გაჩუმდი|კარგი)[\s,.!?…-]*)+$", re.IGNORECASE)
+# Not "one moment": that's my own filler ("Sir, one moment.") — its echo
+# stopped my own story (2026-10-19 12:05).
 BARE_STOP_CORE = re.compile(
-    r"\b(enough|stop|wait|hold on|shut up|quiet|pause|silence|"
-    r"one (?:second|sec|moment))\b|გაჩერდი|მოიცა|გაჩუმდი",
+    r"\b(enough|stop|wait|hold on|shut up|quiet|pause|silence)\b|გაჩერდი|მოიცა|გაჩუმდი",
     re.IGNORECASE)
 CUT_IN_S = 45.0   # a phone cut-in mark older than this is stale
 HUSH_S = 8.0      # a bare "wait"/"stop" this soon after I stopped needs no reply
@@ -2223,6 +2224,22 @@ class GoatApp:
             print(f"[phone] his words inside my echo: {run!r}")
             text = run
         cut = getattr(self, "_cut_in", None)
+        if (phone and cut is not None and self.phone is not None
+                and self.phone.is_echo(text, overlap=True)):
+            # A cut-in that is my own words coming back ("Sir, one moment."
+            # stopped my own story, 2026-10-19 12:05) — the loose over-my-voice
+            # bar: it was recorded while I talked.
+            stop = self.phone.stop_inside_echo(text)
+            if stop:
+                print(f"[barge] his stop inside my echo: {stop!r} in {text[:80]!r}")
+                await self._echo_stop(stop)
+                return
+            run = self.phone.his_run(text)
+            if not run:
+                print(f"[barge] cut-in was my own voice, carrying on: {text!r}")
+                return
+            print(f"[phone] his words inside my echo: {run!r}")
+            text = run
         if phone and cut is not None and self._murmur(text, cut[1]):
             # A cut-in that is one or two stray words — a cough or a click
             # under my voice (2026-10-19 11:2x: a 1.7 s clip peaking at 1.000
