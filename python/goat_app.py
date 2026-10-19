@@ -491,6 +491,7 @@ BARE_STOP_CORE = re.compile(
     r"one (?:second|sec|moment))\b|გაჩერდი|მოიცა|გაჩუმდი",
     re.IGNORECASE)
 CUT_IN_S = 45.0   # a phone cut-in mark older than this is stale
+HUSH_S = 8.0      # a bare "wait"/"stop" this soon after I stopped needs no reply
 
 # Manual voice/typed dispatch to the WORK lane: he ADDRESSES the working brain
 # by name at the start of the message ("Fable, build…", "working brain: …",
@@ -2319,6 +2320,14 @@ class GoatApp:
             cut_in = None
         if echo:
             self.emit("you", text)
+        if (cut_in is None and BARE_STOP_RE.match(text)
+                and BARE_STOP_CORE.search(text)
+                and time.monotonic() - getattr(self, "_hushed_at", 0.0) < HUSH_S):
+            # The rest of his stop, after I'd already stopped ("Stop. Stop."
+            # cut me off, then "Wait a second." got a reply, 2026-10-19).
+            print(f"[barge] still stopped: {text!r}", flush=True)
+            self._hushed_at = time.monotonic()
+            return
         if cut_in is not None:
             # He talked over me on the phone and it was real words (his order
             # 2026-10-18: interruptions like a normal conversation). Like a
@@ -2329,6 +2338,7 @@ class GoatApp:
             if (BARE_STOP_RE.match(text.strip())
                     and BARE_STOP_CORE.search(text)):
                 print(f"[barge] he said stop: {text!r}", flush=True)
+                self._hushed_at = time.monotonic()
                 if self.busy:
                     await self._cut_turn(None)
                     self.emit("work_fail", "Stopped.")
@@ -2436,6 +2446,7 @@ class GoatApp:
         self.tts.cancel()
         self._say_buf = ""
         self._cut_in = None
+        self._hushed_at = time.monotonic()
         self.emit("you", his)
         self._last_exchange = time.monotonic()
         if self.busy:
