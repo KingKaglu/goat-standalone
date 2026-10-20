@@ -42,6 +42,7 @@ import self_check
 import self_update
 import side_talk
 import brain_route
+import body_sense
 import stt_gladia
 import stt_realtime
 import stt_whisper
@@ -1365,6 +1366,8 @@ class GoatApp:
         self.claude_reset = ""                # reset clock from the limit error
         self.claude_reset_at = 0.0            # same, as a time.time() epoch
         self._limit_hit_at = 0.0
+        self._body = body_sense.BodySense(self)
+        self._body_client = None              # client that heard the full body
         self._resume_text = ""                # the order the limit cut off
         self._resume_watch = None             # task that waits for the reset
         # token economy: last work-turn context size, rolling exchange log for
@@ -1399,10 +1402,14 @@ class GoatApp:
                          and not self._compacting and not self.suppressed
                          and not self.tts.local_mute),
                 lambda: self.audio.is_tts_playing or self.tts.speaking())
-            self._thinker.start()
+            # thinking sound deleted 2026-10-20 (his order)
             from watchers import Watchers
             self._watchers = Watchers(self)
             self._watchers.start()
+            # 2026-10-20 ("give the GOAT the consciousness"): each finished
+            # day remembered as an episode, in the background.
+            import episodes
+            episodes.start(self)
         except Exception as e:  # noqa: BLE001 — extras never block the boot
             print(f"[extras] {type(e).__name__}: {e}")
         self._limit_warned = False
@@ -2699,7 +2706,18 @@ class GoatApp:
             view = await asyncio.to_thread(live_view.note)
         except Exception as e:  # noqa: BLE001
             view = f"[live desktop unavailable: {e}]"
-        send = view + "\n\n" + text
+        # Body (2026-10-20): only what changed since the last turn, or the
+        # whole picture once per fresh session / when he asks how I am —
+        # never a fixed block per turn (it would pile up in the history).
+        try:
+            full = (self.client is not self._body_client
+                    or bool(body_sense.ASKED_RE.search(text)))
+            body = self._body.note(full=full)
+            self._body_client = self.client
+        except Exception as e:  # noqa: BLE001 — never costs a turn
+            body = ""
+            print(f"[body] {type(e).__name__}: {e}")
+        send = view + ("\n" + body if body else "") + "\n\n" + text
         # Daily self-update results: he asked to hear only when something
         # actually changed — so it rides along on his next turn, once.
         news = self_update.take_notice()

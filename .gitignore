@@ -49,3 +49,4 @@ python/live-shot.png.tmp
 
 # Voice lock: his voiceprint is biometric data, models are 50MB — never public
 voiceid/
+.episodes.json
