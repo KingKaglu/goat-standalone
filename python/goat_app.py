@@ -401,10 +401,23 @@ def _save_route(to: str):
         pass
 
 
-def _greeting() -> str:
+def _greeting(lang: str = "en") -> str:
     """Boot line, time-aware — JARVIS never said the same hello twice a day.
-    Also the AEC warm-up audio, so it must stay a full spoken sentence."""
+    Also the AEC warm-up audio, so it must stay a full spoken sentence.
+    Georgian mode gets a Georgian hello (his order 2026-10-21): the Georgian
+    voice reading the English line sounded broken."""
     h = datetime.datetime.now().hour
+    if lang == "ka":
+        if 5 <= h < 12:
+            part = "დილა მშვიდობისა, ბატონო"
+        elif 12 <= h < 18:
+            part = "დღე მშვიდობისა, ბატონო"
+        elif 18 <= h < 23:
+            part = "საღამო მშვიდობისა, ბატონო"
+        else:
+            part = "ისევ გვიან ფხიზლობ, ბატონო"
+        return (f"{part}. გოუთი ჩართულია — ერთი წამით ოთახს მოვუსმენ, "
+                "მერე დამელაპარაკე.")
     if 5 <= h < 12:
         part = "Good morning, Sir"
     elif 12 <= h < 18:
@@ -3568,7 +3581,8 @@ class GoatApp:
         disabled so it can adapt before anything can false-trigger."""
         self.emit("status", "learning the room — one moment")
         tts_edge.prime()
-        samples = await asyncio.to_thread(self.tts.synth, _greeting())
+        samples = await asyncio.to_thread(self.tts.synth,
+                                          _greeting(self.turn_lang))
         self.audio.warming_up = True
         self.audio.queue_playback(samples)
         while self.audio.is_tts_playing:
@@ -3713,8 +3727,11 @@ class GoatApp:
             # while every word he says silently goes nowhere.
             self.emit("status", "HEARING OFFLINE — whisper-server did not start")
             self.emit("delta", "")  # creates the reply label for the reveal
-            self.tts.say("Heads up — my hearing did not come up. "
-                         "I can't transcribe you until you restart me.")
+            self.tts.say(
+                "ყურადღება — სმენა ვერ ჩაირთო. სანამ გადამტვირთავ, "
+                "ვერ გაგიგებ." if self.turn_lang == "ka" else
+                "Heads up — my hearing did not come up. "
+                "I can't transcribe you until you restart me.")
         else:
             self.emit("status", "listening — just talk")
         # Boot footer: the talking brain is the always-on voice, so the footer
