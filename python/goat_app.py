@@ -43,6 +43,7 @@ import self_update
 import side_talk
 import brain_route
 import body_sense
+import game_pilot
 import inner_life
 import stt_gladia
 import stt_realtime
@@ -338,7 +339,8 @@ PROJECTS: you build together; each new project gets its own subfolder in the wor
 HANDS: full control of this laptop: apps, volume, media, Wi-Fi, processes, sites, files, clipboard. Just do it; confirm voice-sized ("Spotify's up."). Destructive/outward actions: one confirmation line first. Change or open things by COMMAND, never by pixels: PowerShell/registry/`Start-Process`/`ms-settings:` URIs on the laptop; on his phone `python C:/Users/user/goat-standalone/python/phone_hands.py` (open, alarm, timer, settings, intent, volume, media, torch) — never tap, swipe or click through Settings for something a command can do, and don't screenshot to check what the command's own output already confirms.
 
 SCREEN: the `computer` tool is real sight and hands. Never say you can't see the screen.
-- Loop: screenshot → act → verify. No blind clicks. Wrong result = say so and fix.
+- Loop: look (numbered marks from UI Automation + OCR) → click_mark / click_text (exact element, never a guessed pixel) → read the change report the action returns; find/read/wait_for instead of extra screenshots. Plain screenshot + grid only for what isn't text or a control (board cells, maps). Wrong result = say so and fix.
+- GAMES: the `game` tool. Turn-based: play yourself (look + click_mark / game keys). Real-time: write an autopilot plan of reflex rules, start it, check status, refine. Never online games with anti-cheat — the tool refuses; tell him why in one line. His own keyboard/mouse or "stop" ends play at once.
 - Speed: each call is a round trip. Repeat keys with one press (times=N), verify once at the end for certain keyboard actions, use region captures.
 - CLOSING: a vague "close this" = ASK which window, by name. Never close/kill a terminal, a Claude session, or anything with unsaved work without his explicit yes (the close guard blocks it anyway).
 - Coordinates are real pixels; the yellow grid labels are real coordinates; cyan crosshair = mouse. Focus a window before typing; region-capture dialogs.
@@ -2369,6 +2371,12 @@ class GoatApp:
             cut_in = None
         if echo:
             self.emit("you", text)
+        # Game autopilot (2026-10-21): a spoken stop ends play and lets go
+        # of every key, whatever else the word does next.
+        if (game_pilot.PILOT.status_d.get("running") and STOP_RE.search(text)
+                and len(text.split()) <= 6):
+            game_pilot.PILOT.stop("he said stop")
+            print(f"[game] stopped by voice: {text!r}", flush=True)
         if (cut_in is None and BARE_STOP_RE.match(text)
                 and BARE_STOP_CORE.search(text)
                 and time.monotonic() - getattr(self, "_hushed_at", 0.0) < HUSH_S):
@@ -2496,6 +2504,7 @@ class GoatApp:
         self._say_buf = ""
         self._cut_in = None
         self._hushed_at = time.monotonic()
+        game_pilot.PILOT.stop("he said stop")
         self.emit("you", his)
         self._last_exchange = time.monotonic()
         if self.busy:

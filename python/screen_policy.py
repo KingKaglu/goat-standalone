@@ -85,12 +85,15 @@ def classify(action: str, args: dict, window_title: str = "") -> tuple[str, str]
     # GOAT loses the ability to check what it just did.
     if action in ("screenshot", "cursor", "pixel", "windows", "monitors",
                   "foreground", "wait", "log", "move", "hide_self",
-                  "show_self", "coords"):
+                  "show_self", "coords", "look", "find", "read", "changes",
+                  "wait_for", "status", "probe", "snip", "check", "stop"):
         return AUTO, ""
 
     where = _hit(window_title, RISKY_WINDOWS)
     if where and action in ("click", "double_click", "right_click", "drag",
-                            "type", "key", "scroll", "middle_click"):
+                            "type", "key", "scroll", "middle_click",
+                            "click_mark", "click_text", "keys", "mouse",
+                            "autopilot"):
         return CONFIRM, (f"the active window looks like banking or checkout "
                          f"({where!r} in {window_title[:60]!r}) - every action "
                          f"there is confirmed first")
@@ -112,7 +115,7 @@ def classify(action: str, args: dict, window_title: str = "") -> tuple[str, str]
         return AUTO, ""
 
     if action in ("click", "double_click", "right_click", "middle_click", "drag",
-                  "click_selector", "fill_selector"):
+                  "click_selector", "fill_selector", "click_mark", "click_text"):
         target = " ".join(str(args.get(k) or "") for k in
                           ("label", "selector", "value", "target", "description"))
         word = _hit(target, RISKY_WORDS)
