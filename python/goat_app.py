@@ -1697,9 +1697,15 @@ class GoatApp:
         """Audio thread, every quiet block: does what the streaming ear has
         heard so far sound like a finished sentence? None = nothing yet."""
         rt = self._rt
-        if rt is None:
-            return None
-        return endpoint.sounds_finished(getattr(rt, "last_partial", ""))
+        state = (None if rt is None
+                 else endpoint.sounds_finished(getattr(rt, "last_partial", "")))
+        if state is None and self.language != "en":
+            # 2026-10-21: the Georgian ear's partials lag his voice, so on his
+            # first pause there was "nothing yet" and the short 500 ms cut
+            # fired — his Georgian arrived as 1.1-1.5 s stubs ("გოგი
+            # ხარობა") and the rest was lost. Unknown = not finished.
+            return False
+        return state
 
     def _on_utt_start(self, preroll):
         self._utt_began = time.monotonic()
