@@ -847,7 +847,10 @@ actions:
               frame, rules are tried in order; the first that fires acts
               (add "continue":true to let later rules fire too).
               RULE = {"name":..., "if":COND, "do":ACT, "cooldown_ms":120,
-                      "max_hits":N}
+                      "max_hits":N, "after_s":S, "until_s":S}
+              (after_s/until_s = seconds since start: games speed up, so
+              give each phase its own rule, e.g. a jump zone further ahead
+              later on.) Probe colours first — themes/dark mode change them.
               COND (coordinates = real screen pixels; "in":[x,y,w,h] limits
               the area, default the game view):
                 {"color":[r,g,b],"tol":30,"min_px":12,"in":[...]} -> match =

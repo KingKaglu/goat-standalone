@@ -65,6 +65,7 @@ class Pilot:
         self.events = collections.deque(maxlen=12)
         self._last_frame = None
         self._templates: dict = {}
+        self._t0 = time.monotonic()
         self._lock = threading.Lock()
 
     # ---- control ----
@@ -262,9 +263,40 @@ class Pilot:
         return ""
 
     # ---- loop ----
+    def _apply(self, rules, names, states, last_hit, frame, fbox, prev,
+               tick) -> str:
+        """Try the rules on one frame; the first that fires acts (unless it
+        says continue). Returns a stop reason, or ''."""
+        for i, r in enumerate(rules):
+            if self._stop.is_set():
+                return ""
+            if tick - last_hit[i] < r.get("cooldown_ms", 120) / 1000:
+                continue
+            # Time gates: games speed up, so a rule can own a phase of play
+            # ("after_s": 20 -> only from 20 s in; "until_s": 20 -> only before).
+            el = tick - self._t0
+            if el < r.get("after_s", 0) or el >= r.get("until_s", 1e9):
+                continue
+            mh = r.get("max_hits")
+            if mh and self.status_d["hits"][names[i]] >= mh:
+                continue
+            hit, match = self.test(r["if"], frame, fbox, prev, states[i])
+            if not hit:
+                continue
+            last_hit[i] = tick
+            self.status_d["hits"][names[i]] += 1
+            self.events.append(f"{time.strftime('%H:%M:%S')} {names[i]}"
+                               + (f" at {match}" if match else ""))
+            if self._act(r["do"], match, fbox) == "stop":
+                self._stop.set()
+                return f"rule {names[i]!r} said stop"
+            if not r.get("continue", False):
+                return ""         # one action per frame by default
+        return ""
+
     def _run(self, plan, rules, win, fps, limit):
-        import mss
         watch = gh.HumanWatch(lambda why: self.stop(why))
+        self._watch = watch
         hooked = watch.start()
         if not hooked:
             self.events.append("human-watch hook unavailable: stop by voice")
@@ -279,59 +311,40 @@ class Pilot:
         last_hit = [0.0] * len(rules)
         names = [r.get("name") or f"rule{i}" for i, r in enumerate(rules)]
         prev, t0, n, last_fg = None, time.monotonic(), 0, 0.0
+        self._t0 = t0
         period = 1.0 / fps
         reason = "time limit reached"
+        cap = Capture(fbox)
+        self.status_d["capture"] = cap.kind
         try:
-            with mss.mss() as cap:
-                while not self._stop.is_set():
-                    tick = time.monotonic()
-                    if tick - t0 > limit:
+            while not self._stop.is_set():
+                tick = time.monotonic()
+                if tick - t0 > limit:
+                    break
+                if tick - last_fg > 0.5:
+                    last_fg = tick
+                    if _user32_fg() != win["hwnd"]:
+                        reason = "the game lost focus"
                         break
-                    if tick - last_fg > 0.5:
-                        last_fg = tick
-                        if _user32_fg() != win["hwnd"]:
-                            reason = "the game lost focus"
-                            break
-                    raw = cap.grab({"left": fbox[0], "top": fbox[1],
-                                    "width": fbox[2], "height": fbox[3]})
-                    frame = np.frombuffer(raw.bgra, np.uint8).reshape(
-                        raw.height, raw.width, 4)[..., :3]
-                    for i, r in enumerate(rules):
-                        if self._stop.is_set():
-                            break
-                        cd = r.get("cooldown_ms", 120) / 1000
-                        if tick - last_hit[i] < cd:
-                            continue
-                        mh = r.get("max_hits")
-                        if mh and self.status_d["hits"][names[i]] >= mh:
-                            continue
-                        hit, match = self.test(r["if"], frame, fbox, prev,
-                                               states[i])
-                        if not hit:
-                            continue
-                        last_hit[i] = tick
-                        self.status_d["hits"][names[i]] += 1
-                        self.events.append(
-                            f"{time.strftime('%H:%M:%S')} {names[i]}"
-                            + (f" at {match}" if match else ""))
-                        if self._act(r["do"], match, fbox) == "stop":
-                            reason = f"rule {names[i]!r} said stop"
-                            self._stop.set()
-                            break
-                        if not r.get("continue", False):
-                            break         # one action per frame by default
-                    prev = frame.copy()
-                    self._last_frame = frame
-                    n += 1
-                    self.status_d["frames"] = n
-                    el = time.monotonic() - t0
-                    self.status_d["fps"] = round(n / el, 1) if el else 0.0
-                    rest = period - (time.monotonic() - tick)
-                    if rest > 0:
-                        time.sleep(rest)
+                frame = cap.grab()
+                said = self._apply(rules, names, states, last_hit, frame,
+                                   fbox, prev, tick)
+                if said:
+                    reason = said
+                    break
+                prev = frame.copy()
+                self._last_frame = frame
+                n += 1
+                self.status_d["frames"] = n
+                el = time.monotonic() - t0
+                self.status_d["fps"] = round(n / el, 1) if el else 0.0
+                rest = period - (time.monotonic() - tick)
+                if rest > 0:
+                    time.sleep(rest)
         except Exception as e:  # noqa: BLE001
             reason = f"crashed: {type(e).__name__}: {e}"
         finally:
+            cap.close()
             gh.release_all()
             watch.stop()
             if watch.fired.is_set():
@@ -341,6 +354,54 @@ class Pilot:
             self.status_d["running"] = False
             self.status_d["reason"] = reason
             self.events.append(f"{time.strftime('%H:%M:%S')} stopped: {reason}")
+
+
+class Capture:
+    """Game frames as BGR arrays. Desktop Duplication (dxcam) first: ~2.4 ms
+    a frame against mss's ~7.8 ms, and it sees what the GPU actually shows —
+    which BitBlt-based mss misses for many fullscreen games (they come out
+    black). mss stays as the fallback (multi-monitor regions, no dxcam)."""
+
+    _cam = None
+
+    def __init__(self, box):
+        self.box = box
+        self.kind = "mss"
+        self._last = None
+        self._mss = None
+        try:
+            import dxcam
+            if Capture._cam is None:
+                Capture._cam = dxcam.create(output_color="BGR")
+            cam = Capture._cam
+            l, t, w, h = box
+            if l >= 0 and t >= 0 and l + w <= cam.width and t + h <= cam.height:
+                self.kind = "dxcam"
+        except Exception:  # noqa: BLE001 — no dxcam: mss still works
+            pass
+        if self.kind == "mss":
+            import mss
+            self._mss = mss.mss()
+
+    def grab(self):
+        l, t, w, h = self.box
+        if self.kind == "dxcam":
+            f = Capture._cam.grab(region=(l, t, l + w, t + h))
+            if f is not None:            # None = nothing new since last grab
+                self._last = f
+            if self._last is not None:
+                return self._last
+        if self._mss is None:
+            import mss
+            self._mss = mss.mss()
+        raw = self._mss.grab({"left": l, "top": t, "width": w, "height": h})
+        self._last = np.frombuffer(raw.bgra, np.uint8).reshape(
+            raw.height, raw.width, 4)[..., :3]
+        return self._last
+
+    def close(self):
+        if self._mss is not None:
+            self._mss.close()
 
 
 def _user32_fg() -> int:

@@ -312,6 +312,19 @@ def look(target_spec=None, ocr: bool = True, image: bool = True,
     win = target(target_spec)
     box = (win["left"], win["top"], win["width"], win["height"])
     t0 = time.monotonic()
+    # Marks taken while the window is still laying itself out point at
+    # buttons that then move (Calculator, 2026-10-21: "=" landed on the
+    # decimal point). Wait up to 1 s for two frames 120 ms apart to agree.
+    try:
+        prev = _small(box)
+        while time.monotonic() - t0 < 1.0:
+            time.sleep(0.12)
+            cur = _small(box)
+            if not diff_boxes(prev, cur, box):
+                break
+            prev = cur
+    except Exception:  # noqa: BLE001
+        pass
     ui, lines, notes = [], [], []
     try:
         ui = uia_elements(win)
@@ -360,8 +373,10 @@ def mark(n: int) -> dict:
     if hwnd:
         try:
             x, y, w, h = screen_hands.client_rect(hwnd)
-            if abs(x - box[0]) > 8 or abs(y - box[1]) > 8:
-                raise ValueError("the window moved since the last look: look again")
+            if (abs(x - box[0]) > 8 or abs(y - box[1]) > 8
+                    or abs(w - box[2]) > 8 or abs(h - box[3]) > 8):
+                raise ValueError("the window moved or resized since the last "
+                                 "look: look again")
         except OSError:
             pass
     return m
@@ -450,15 +465,22 @@ def read(target_spec=None, limit: int = 8000) -> str:
         cur_y = y
     if cur:
         rows.append("   ".join(cur))
-    extra = []
+    extra, known = [], []
+    seen = _norm(" ".join(rows))
     try:
-        for e in uia_elements(win, kinds=("Edit", "ComboBox")):
+        for e in uia_elements(win, kinds=("Edit", "ComboBox", "Text")):
             if e.get("value"):
                 extra.append(f"{e['kind']} {e['name'] or '(unnamed)'!r} = "
                              f"{e['value']!r}")
+            elif e["kind"] == "text" and e["name"] and _norm(e["name"]) not in seen:
+                # Text the app reports but OCR couldn't read (thin display
+                # fonts, Calculator's result: "Display is 12").
+                known.append(e["name"])
     except Exception:  # noqa: BLE001
         pass
     text = "\n".join(rows)
+    if known:
+        text += "\n\n[text the app reports]\n" + "\n".join(known[:40])
     if extra:
         text += "\n\n[fields]\n" + "\n".join(extra)
     return (f"{win.get('title', '')[:70]!r}:\n" + text)[:limit]
@@ -513,9 +535,15 @@ def _describe_change(boxes: list, box, ocr: bool = True) -> str:
             w, h = r[2] - r[0], r[3] - r[1]
             if w < 8 or h < 8:
                 continue
+            # Pad the crop: OCR can't read one big glyph cut out tight
+            # (Calculator's display digit came back empty).
+            pad = 40
+            ox, oy = max(box[0], r[0] - pad), max(box[1], r[1] - pad)
+            ow = min(box[0] + box[2], r[2] + pad) - ox
+            oh = min(box[1] + box[3], r[3] + pad) - oy
             try:
                 got = " | ".join(ln["name"] for ln in
-                                 ocr_lines((r[0], r[1], w, h)))[:160]
+                                 ocr_lines((ox, oy, ow, oh)))[:160]
             except Exception:  # noqa: BLE001
                 got = ""
             texts.append(f"({r[0]},{r[1]} {w}x{h})"
@@ -557,9 +585,18 @@ def act_and_report(fn, settle: float = 0.35, target_spec=None) -> tuple:
         if fg and fg.get("title") and fg.get("title") != title \
                 and fg.get("pid") != __import__("os").getpid():
             return result, f"a different window is in front now: {fg['title'][:70]!r}"
+        # Some apps redraw late (Calculator's "=" landed after 0.35 s and
+        # was reported as "nothing changed", 2026-10-21): keep watching a
+        # little longer before calling it no-op. Each check costs ~15 ms.
         after = _small(box)
+        boxes = diff_boxes(before, after, box)
+        deadline = time.monotonic() + 0.8
+        while not boxes and time.monotonic() < deadline:
+            time.sleep(0.1)
+            after = _small(box)
+            boxes = diff_boxes(before, after, box)
         _last_small[_key(box)] = after
-        return result, _describe_change(diff_boxes(before, after, box), box)
+        return result, _describe_change(boxes, box)
     except Exception as e:  # noqa: BLE001
         return result, f"(couldn't check the result: {e})"
 
@@ -575,6 +612,16 @@ def wait_for(text: str | None = None, gone: str | None = None,
     box = (win["left"], win["top"], win["width"], win["height"])
     prev, still_since = _small(box), time.monotonic()
     while time.monotonic() - t0 < timeout:
+        if text and not target_spec:
+            # "wait for Calculator" right after launching it: the app shows
+            # up as a new window, not as text inside the old one (2026-10-21,
+            # GOAT's brain timed out on exactly this).
+            want = _norm(text)
+            hit = next((w for w in screen_hands.windows()
+                        if want in _norm(w["title"])), None)
+            if hit:
+                return (f"window {hit['title'][:60]!r} is open after "
+                        f"{time.monotonic() - t0:.1f}s (hwnd {hit['hwnd']})")
         if text or gone:
             body = _norm(" ".join(ln["name"] for ln in ocr_lines(box)))
             if text and _norm(text) in body:

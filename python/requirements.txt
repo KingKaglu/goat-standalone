@@ -22,3 +22,4 @@ winrt-Windows.Media.Control       # phone Control tab: now playing
 pycaw                             # volume (phone Control tab, music ducking)
 comtypes
 pywebpush
+dxcam>=0.0.5           # game capture via Desktop Duplication (game_pilot)

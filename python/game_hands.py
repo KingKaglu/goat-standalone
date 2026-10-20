@@ -284,6 +284,7 @@ class HumanWatch:
         self._ready = threading.Event()
         self._start_pt = None
         self._ok = False
+        self.injected = 0     # GOAT's own events the hook saw (and ignored)
 
     def start(self) -> bool:
         threading.Thread(target=self._loop, daemon=True,
@@ -313,12 +314,16 @@ class HumanWatch:
                 k = ctypes.cast(l, ctypes.POINTER(_KBD)).contents
                 if not k.flags & LLKHF_INJECTED:
                     self._fire("he pressed a key")
+                else:
+                    self.injected += 1
             return _user32.CallNextHookEx(None, n, w, l)
 
         def ms(n, w, l):
             if n == 0:
                 m = ctypes.cast(l, ctypes.POINTER(_MSL)).contents
-                if not m.flags & LLMHF_INJECTED:
+                if m.flags & LLMHF_INJECTED:
+                    self.injected += 1
+                else:
                     if w != WM_MOUSEMOVE:
                         self._fire("he clicked")
                     else:
