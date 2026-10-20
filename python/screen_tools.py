@@ -436,7 +436,10 @@ async def computer(args: dict) -> dict:
                 f"shown at {s['width']}x{s['height']} (scale {meta['scale']}). "
                 f"Grid labels are REAL screen coordinates"
                 + (f", every {meta['grid_step']}px. " if meta['grid_step'] else ". ")
-                + f"Mouse is at ({meta['cursor']['x']}, {meta['cursor']['y']}).")
+                + f"Mouse is at ({meta['cursor']['x']}, {meta['cursor']['y']}). "
+                "To click a button, link or text here, don't compute "
+                "coordinates from this picture: use click_text text=... or "
+                "look + click_mark (exact).")
         return {"content": [
             {"type": "image", "data": base64.b64encode(png).decode("ascii"),
              "mimeType": "image/png"},
@@ -447,11 +450,25 @@ async def computer(args: dict) -> dict:
         button = {"right_click": "right", "middle_click": "middle"}.get(
             action, str(args.get("button") or "left"))
         clicks = 2 if action == "double_click" else int(args.get("clicks") or 1)
+        # A raw coordinate is a guess: land it on the real element instead.
+        snapped = ""
+        if x is not None and y is not None:
+            try:
+                hit = await asyncio.wait_for(asyncio.to_thread(
+                    screen_sense.snap, x, y, args.get("label")), 2.5)
+            except Exception:  # noqa: BLE001 — no snap: the guess stands
+                hit = None
+            if hit:
+                snapped = (f" Your ({x},{y}) missed; snapped onto {hit[2]} at "
+                           f"({hit[0]},{hit[1]}). Next time: look + click_mark.")
+                x, y = hit[0], hit[1]
+                args = dict(args, x=x, y=y)
         out = await _run("computer", action, args, screen_sense.act_and_report,
                          lambda: screen_hands.click(x, y, button, clicks))
         if isinstance(out, dict):
             return out
-        return _text(f"{action} at {out[0]} ({button}, {clicks}x). {out[1]}")
+        return _text(f"{action} at {out[0]} ({button}, {clicks}x).{snapped} "
+                     f"{out[1]}")
 
     if action == "move":
         x, y = _xy()

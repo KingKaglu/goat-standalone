@@ -39,6 +39,23 @@ def test_diff_boxes():
     assert "nothing" in ss._describe_change([], (0, 0, 10, 10))
 
 
+def test_snap():
+    send = {"src": "ui", "kind": "button", "name": "Send", "rect": (440, 920, 490, 950)}
+    save = {"src": "ui", "kind": "button", "name": "Save draft", "rect": (600, 920, 700, 950)}
+    para = {"src": "ocr", "kind": "text", "name": "Send us your details",
+            "rect": (100, 500, 400, 520)}
+    c = [send, save, para]
+    # the live case: a scaled guess that lands beside "Send"
+    assert ss.snap_pick(c, 498, 960, "Send")[:2] == (465, 935)
+    assert ss.snap_pick(c, 465, 935, "Send") is None          # already on it
+    assert ss.snap_pick(c, 495, 935)[:2] == (465, 935)         # near miss, no label
+    assert ss.snap_pick(c, 800, 700) is None                   # nothing near: leave it
+    assert ss.snap_pick(c, 250, 510) is None                   # inside text: leave it
+    assert ss.snap_pick(c, 650, 600, "Save draft") is None     # too far to be it
+    hit = ss.snap_pick(c, 610, 960, "save")
+    assert hit and hit[:2] == (650, 935) and "Save draft" in hit[2]
+
+
 def test_sequence_language():
     st = gh.parse("w:800 space*2 a+d:300 wait:200 rclick:150 mouse:+5,-7 "
                   "down:shift up:shift up:300")
@@ -123,7 +140,7 @@ def test_plan_checks():
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
-    for fn in (test_merge_names_and_dedup, test_diff_boxes,
+    for fn in (test_merge_names_and_dedup, test_diff_boxes, test_snap,
                test_sequence_language, test_anticheat, test_pilot_conditions,
                test_plan_checks):
         fn()

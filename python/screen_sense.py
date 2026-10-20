@@ -382,6 +382,72 @@ def mark(n: int) -> dict:
     return m
 
 
+# ------------------------------------------------------------------ snap --
+# 2026-10-21, his live session: replying to OpenAI support, the brain still
+# did "Send button at (242,487)/0.5208 ≈ (465, 935)" — coordinate maths off
+# a downscaled screenshot, the exact guessing he asked to end. Habits from a
+# long session outlast a new tool description, so raw clicks are corrected
+# where they land: onto the real element.
+
+SNAP_NEAR_PX = 24          # a miss this close to a control is that control
+SNAP_LABEL_PX = 140        # a labelled click finds its element this far off
+
+
+def _rect_dist(x, y, r) -> float:
+    dx = max(r[0] - x, 0, x - r[2])
+    dy = max(r[1] - y, 0, y - r[3])
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def snap_pick(cands: list, x: int, y: int, label: str | None = None):
+    """(x, y, why) for the element a raw click at (x, y) means, or None to
+    leave it alone. With a label, the nearest element whose name matches it
+    wins; without, a click already inside a control stays, and a near miss
+    moves onto the closest control (not onto plain text)."""
+    want = _norm(label or "")
+    if want:
+        named = [e for e in cands if e.get("name")
+                 and (want in _norm(e["name"]) or _norm(e["name"]) in want)
+                 and len(_norm(e["name"])) >= 2]
+        named.sort(key=lambda e: _rect_dist(x, y, e["rect"]))
+        if named and _rect_dist(x, y, named[0]["rect"]) <= SNAP_LABEL_PX:
+            e = named[0]
+            if _inside((x, y), e["rect"], pad=0):
+                return None
+            cx, cy = _center(e["rect"])
+            return cx, cy, f"{e['kind']} {e['name'][:40]!r}"
+    controls = [e for e in cands if e.get("src") == "ui"]
+    if any(_inside((x, y), e["rect"], pad=0) for e in cands):
+        return None
+    controls.sort(key=lambda e: _rect_dist(x, y, e["rect"]))
+    if controls and _rect_dist(x, y, controls[0]["rect"]) <= SNAP_NEAR_PX:
+        e = controls[0]
+        cx, cy = _center(e["rect"])
+        return cx, cy, f"{e['kind']} {e['name'][:40]!r}"
+    return None
+
+
+def snap(x: int, y: int, label: str | None = None):
+    """Live version of snap_pick over the window under (x, y)."""
+    import fast_hands
+    w = fast_hands.target_window()
+    if w is None:
+        return None
+    win = target(str(w["hwnd"]))
+    box = (win["left"], win["top"], win["width"], win["height"])
+    if not _inside((x, y), (box[0], box[1], box[0] + box[2], box[1] + box[3])):
+        return None
+    try:
+        ui = uia_elements(win, timeout=0.8)
+    except Exception:  # noqa: BLE001
+        ui = []
+    try:
+        lines = ocr_lines(box)
+    except Exception:  # noqa: BLE001
+        lines = []
+    return snap_pick(merge(ui, lines, box[2] * box[3]), x, y, label)
+
+
 # ------------------------------------------------------------ find / read --
 
 def _norm(s: str) -> str:
