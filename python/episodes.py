@@ -121,11 +121,12 @@ def render(entries: list) -> str:
     return text
 
 
-async def _ask(prompt: str) -> str:
+async def _ask(prompt: str, system: str = SYSTEM) -> str:
+    """One tool-less Haiku turn (also used by inner_life's reflections)."""
     from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions,
                                   TextBlock, query)
     opts = ClaudeAgentOptions(
-        model=MODEL, system_prompt=SYSTEM, tools=[], setting_sources=[],
+        model=MODEL, system_prompt=system, tools=[], setting_sources=[],
         strict_mcp_config=True, max_turns=1, cwd=ROOT)
     out = []
     async for m in query(prompt=prompt, options=opts):

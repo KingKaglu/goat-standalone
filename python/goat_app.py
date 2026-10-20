@@ -43,6 +43,7 @@ import self_update
 import side_talk
 import brain_route
 import body_sense
+import inner_life
 import stt_gladia
 import stt_realtime
 import stt_whisper
@@ -1368,6 +1369,7 @@ class GoatApp:
         self._limit_hit_at = 0.0
         self._body = body_sense.BodySense(self)
         self._body_client = None              # client that heard the full body
+        self._inner = inner_life.InnerLife(self)
         self._resume_text = ""                # the order the limit cut off
         self._resume_watch = None             # task that waits for the reset
         # token economy: last work-turn context size, rolling exchange log for
@@ -1410,6 +1412,9 @@ class GoatApp:
             # day remembered as an episode, in the background.
             import episodes
             episodes.start(self)
+            # Same ask, layers 4-6: mood, quiet-moment thoughts, and
+            # speaking first when a thought is worth it (inner_life.py).
+            self._inner.start()
         except Exception as e:  # noqa: BLE001 — extras never block the boot
             print(f"[extras] {type(e).__name__}: {e}")
         self._limit_warned = False
@@ -2717,6 +2722,12 @@ class GoatApp:
         except Exception as e:  # noqa: BLE001 — never costs a turn
             body = ""
             print(f"[body] {type(e).__name__}: {e}")
+        try:     # mood on change, thoughts from a quiet moment once
+            inner = self._inner.turn_note(text)
+            if inner:
+                body = (body + "\n" + inner) if body else inner
+        except Exception as e:  # noqa: BLE001
+            print(f"[inner] {type(e).__name__}: {e}")
         send = view + ("\n" + body if body else "") + "\n\n" + text
         # Daily self-update results: he asked to hear only when something
         # actually changed — so it rides along on his next turn, once.

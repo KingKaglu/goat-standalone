@@ -7,6 +7,7 @@ import tempfile
 
 import body_sense
 import episodes
+import inner_life
 
 
 class App:
@@ -55,8 +56,61 @@ def test_self_block():
     assert "keep this" in doc and doc.rstrip().endswith("tail")
 
 
+def test_mood():
+    noon = datetime.datetime(2026, 10, 20, 12, 0)
+    e = lambda u, r="Sir, done.": {"t": 0, "user": u, "reply": r}  # noqa: E731
+    assert inner_life.read_mood("open chrome", [], noon)[0] == "steady"
+    k, hint = inner_life.read_mood("it's still not working",
+                                   [e("why did you close it")], noon)
+    assert k == "frustrated" and "fix it first" in hint
+    assert inner_life.read_mood("repeat the list", [e("repeat the list")],
+                                noon)[0] == "frustrated"
+    fails = [e(u, "Sir, that failed.") for u in ("fix wifi", "open the app",
+                                                  "check the phone")]
+    assert inner_life.read_mood("ok", fails, noon)[0] == "struggling"
+    late = datetime.datetime(2026, 10, 21, 3, 10)
+    assert inner_life.read_mood("open spotify", [], late)[0] == "late"
+    assert inner_life.read_mood("next", [e("a")] * 0 + [e(f"step {i}")
+                                for i in range(9)], noon)[0] == "flow"
+
+
+def test_moment_and_note():
+    class Eng:
+        _last_exchange = None
+        busy = False
+    x = inner_life.InnerLife.__new__(inner_life.InnerLife)
+    x.app, x._prev_idle = Eng(), 20 * 60
+    x._mood, x._note = "steady", ""
+    import threading
+    x._lock = threading.Lock()
+    assert x._moment(5) == "back"          # he came back after 20 min away
+    x._prev_idle = 30
+    assert x._moment(5) == ""              # he never left
+    x._note = "- a thought"
+    assert "on your mind" in x.turn_note("open chrome")
+    assert "on your mind" not in x.turn_note("open chrome")   # once only
+
+
+def test_thoughts_block():
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "self.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"top\n{inner_life.T_START}\n{inner_life.T_END}\nend\n")
+    old, episodes.SELF_MD = episodes.SELF_MD, path
+    try:
+        inner_life.write_thoughts(["a", "b", "c"], "10-20 23:00")
+        inner_life.write_thoughts(["d", "e"], "10-21 01:00")
+        doc = open(path, encoding="utf-8").read()
+    finally:
+        episodes.SELF_MD = old
+    lines = [ln for ln in doc.splitlines() if ln.startswith("- ")]
+    assert len(lines) == inner_life.KEEP_THOUGHTS
+    assert lines[0] == "- 10-21 01:00: d" and doc.startswith("top")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
-    for fn in (test_body, test_day_boundary, test_self_block):
+    for fn in (test_body, test_day_boundary, test_self_block, test_mood,
+               test_moment_and_note, test_thoughts_block):
         fn()
         print("PASS", fn.__name__)
