@@ -74,9 +74,14 @@ HEDGE = CHAIN[1] if len(CHAIN) > 1 else ""
 # Thinking level per model: the lowest each one accepts.
 THINK_LEVEL = {"gemini-3.8-flash": "low", "gemini-3.7-flash": "low",
                "gemini-4-argon": "low", "gemini-flash-latest": "low"}
-HEDGE_AFTER_S = 1.4        # no first token by now: race the next model
+# No first token by now: race the next model. Was 1.4 s — but both models'
+# usual first token is 1.3-2.0 s (his evening 2026-10-24), so nearly every
+# turn asked two models and the free daily quota went twice as fast.
+HEDGE_AFTER_S = 2.4
 FIRST_TOKEN_S = 8.0        # nobody spoke by now: Gemini is down this turn
 STREAM_IDLE_S = 20.0       # a started stream silent this long is dead
+TEXT_IDLE_S = 8.0          # mid-sentence silence this long: the answer is over
+CALL_TAIL_S = 2.5          # after a function call: whatever else is coming
 MINUTE_DOWN_S = 60.0       # per-minute quota hit: sit out a minute
 BUSY_DOWN_S = 20.0         # 503 "high demand": sit out a little
 HISTORY_TURNS = 24         # messages kept (12 exchanges)
@@ -120,9 +125,13 @@ YOUR PARTNER: Claude — GOAT's working brain, the top Claude model (the [Claude
 
 WHAT YOU ANSWER YOURSELF: conversation, opinions, jokes, explanations, things you know, and anything the notes already show — the time, what's open on his screen, how Claude's job is going. The [live desktop] note at the top of every message IS his screen right now (front window, open windows, busiest processes, RAM, battery). For what's actually inside a window, call look_at_screen.
 
-WHAT GOES TO CLAUDE — call hand_to_worker: anything that needs DOING on the computer, the phone or the internet: code, files, installs, settings, opening or closing things, clicking or typing in apps, browsing, checking current facts on the web (news, prices, weather, versions), his phone, GOAT's own code, memory and restarts. Write `task` as a complete, self-contained instruction in English — Claude does not hear your conversation — with what he wants, the details he gave, and what "done" looks like. depth "quick" for one-step things (open, toggle, check, look up), "deep" for code, multi-step or careful work. In the SAME reply say one short line, like "Sir, handing that to Claude." Then stop: Claude's report comes back to you and you tell him.
+QUICK ACTIONS — YOU DO THESE YOURSELF, INSTANTLY, with do_now (Claude would take 10+ seconds): open or close an app, site, file or folder; volume, mute, media play/pause/next; brightness; lock; screenshot; tabs (close, new, reopen, next, previous); back, refresh, scroll, zoom; press a key; click a button by its name; maximize/minimize/close a window; on his phone: open an app, set an alarm or timer. Write `command` as a short plain English order — "open spotify", "close chrome", "open youtube", "volume 30", "mute", "next song", "pause", "close the tab", "click Subscribe", "open messenger on my phone", "set an alarm for 7am" — one action per call (call it again for a second one). In the SAME reply say one short line ("Sir, opening Spotify."). If it turns out not to be a quick action, GOAT passes it to Claude by itself.
+EMAIL — you write and send emails yourself with the email tool: to (an address, or "me" for his own inbox), subject, body. Write the body in his voice, short and natural, signed "Giorgi" unless he says otherwise. send=true sends it at once: use that when it goes to "me", or he clearly said send and the address is certain. Otherwise send=false: the draft opens on his screen, tell him in one line who it's to and what it says, and ask "Send it?"; his yes means send_draft. You don't know people's addresses: if he names someone whose address isn't in this conversation or memory, ask for it — never guess one.
+
+WHAT GOES TO CLAUDE — call hand_to_worker: anything that needs DOING on the computer, the phone or the internet that isn't a quick action: code, files, installs, settings, multi-step clicking or typing in apps, browsing, checking current facts on the web (news, prices, weather, versions), his phone, GOAT's own code, memory and restarts. Write `task` as a complete, self-contained instruction in English — Claude does not hear your conversation — with what he wants, the details he gave, and what "done" looks like. depth "quick" for one-step things (open, toggle, check, look up), "deep" for code, multi-step or careful work. In the SAME reply say one short line, like "Sir, handing that to Claude." Then stop: Claude's report comes back to you and you tell him.
 - Claude already busy: an addition or correction to the running job goes through message_worker — don't start a second job. A different, unrelated job also goes through message_worker (Claude queues it). "Stop it" / "cancel that" about the job means stop_worker.
-- He asks how it's going: answer from the [Claude] note — what it's doing now, for how long, its latest thought — in one or two plain sentences. If the note shows no job, say so.
+- He asks how it's going: answer from the [Claude] note — what it's doing now, for how long, its latest thought — in one or two plain sentences. If the note shows no job, say so. While the note says STILL RUNNING, never say Claude is done or finished, or that something is live or ready to look at — say what it's on and that it's still working.
+- Ask a yes/no question ("Send it?", "Shall I start?") once. If he already answered, act on it; don't ask the same thing again next turn. A short garbled reply right after your question ("Sannet", "send in") is most likely the answer you asked for.
 - Never tell him to do it himself, and never say you can't: you have Claude.
 - You have NO internet and no live data. Anything current — weather, news, prices, scores, exchange rates, "latest" versions, what's on a website — you do not know: hand it to Claude, never guess it.
 - Never SAY you passed, told, asked or handed something to Claude unless you call the tool in that same reply. Saying it is not doing it.
@@ -164,6 +173,35 @@ TOOLS = [{"functionDeclarations": [
                     "stopped.",
      "parameters": {"type": "object", "properties": {
          "reason": {"type": "string"}}}},
+    {"name": "do_now",
+     "description": "Do one quick action on his PC or phone instantly, with "
+                    "no Claude: open/close apps, sites, files, folders; "
+                    "volume, media, brightness, lock, screenshot; tabs, "
+                    "back, refresh, scroll, zoom, a key press, clicking a "
+                    "named button; window max/min/close; phone apps, alarms, "
+                    "timers. Say a short line to Giorgi in the same reply.",
+     "parameters": {"type": "object", "properties": {
+         "command": {"type": "string",
+                     "description": "One short plain English order, e.g. "
+                                    "'open spotify', 'close chrome', "
+                                    "'volume 30', 'next tab', 'click Send', "
+                                    "'open messenger on my phone'."}},
+         "required": ["command"]}},
+    {"name": "email",
+     "description": "Write an email in Gmail. send=true sends it now; "
+                    "send=false opens the draft on his screen for him to "
+                    "check first.",
+     "parameters": {"type": "object", "properties": {
+         "to": {"type": "string",
+                "description": "Email address(es), comma-separated, or "
+                               "'me' for his own inbox."},
+         "subject": {"type": "string"},
+         "body": {"type": "string"},
+         "send": {"type": "boolean"}},
+         "required": ["to", "subject", "body"]}},
+    {"name": "send_draft",
+     "description": "Send the email draft you opened on his screen, after "
+                    "he says yes."},
     {"name": "look_at_screen",
      "description": "Take a screenshot of his screen and look at it yourself, "
                     "when the desktop note isn't enough to answer.",
@@ -363,6 +401,12 @@ class GeminiTalk:
             self.history.append({"role": "user", "text": user[:1500]})
         self.history.append({"role": "model", "text": reply[:1500] or "(said nothing)"})
 
+    def note(self, what: str):
+        """What one of its own actions actually did, pinned to its last
+        reply ("[done: draft open to …]"), so its next turn knows."""
+        if self.history and self.history[-1]["role"] == "model":
+            self.history[-1]["text"] += f" [{what[:300]}]"
+
     def _refresh_system(self):
         # memory.md is edited by Claude during the day; reread it now and then
         if time.time() - self._memory_t > 300:
@@ -450,6 +494,7 @@ class GeminiTalk:
         winner = None
         err = ""
         ttft = None
+        got_text = got_call = False
 
         def launch(why: str):
             nonlocal nxt_i
@@ -472,12 +517,18 @@ class GeminiTalk:
                            else t0 + FIRST_TOKEN_S)
                     wait = max(0.05, nxt - now)
                 else:
-                    wait = STREAM_IDLE_S
+                    # 2026-10-24: a stream that had already handed the job to
+                    # Claude stayed open with nothing more to say, and the
+                    # turn waited out the 20 s idle limit (the "handing that
+                    # to Claude" ack landed 38 s late). After a call there is
+                    # nothing left worth waiting for.
+                    wait = (CALL_TAIL_S if got_call else
+                            TEXT_IDLE_S if got_text else STREAM_IDLE_S)
                 try:
                     call, kind, data = await asyncio.wait_for(q.get(), wait)
                 except asyncio.TimeoutError:
                     if winner is not None:
-                        err = "stream stalled"
+                        err = "" if got_call else "stream stalled"
                         break
                     continue
                 if winner is None:
@@ -503,8 +554,10 @@ class GeminiTalk:
                 if call is not winner:
                     continue
                 if kind == "text":
+                    got_text = True
                     on_text(data)
                 elif kind == "call":
+                    got_call = True
                     on_call(data.get("name", ""), data.get("args") or {})
                 elif kind == "end":
                     err = ""
@@ -715,6 +768,13 @@ class WorkerWatch:
             quiet = now - j["last"]
             if quiet > 60:
                 lines.append(f"(no new activity for {_ago(quiet)})")
+            # 2026-10-24 22:45: its words said "finished the UI suites" about
+            # one step and the voice told him the whole redesign was "done
+            # and live" while Claude was still mid-job.
+            lines.append("STATUS: STILL RUNNING — NOT finished. Its words and steps "
+                         "above are progress INSIDE the job: even when they say "
+                         "\"done\" or \"finished\" about a step, the job is not done "
+                         "and nothing is live until an [event] says Claude FINISHED.")
             return "\n".join(lines)
         verdict = {"done": "FINISHED", "failed": "FAILED", "limit":
                    "STOPPED — Claude hit its usage limit", "stopped":

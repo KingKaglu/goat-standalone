@@ -124,6 +124,10 @@ class FakeTalker:
         self.history.append({"role": "user", "text": user})
         self.history.append({"role": "model", "text": reply})
 
+    def note(self, what):
+        if self.history and self.history[-1]["role"] == "model":
+            self.history[-1]["text"] += f" [{what}]"
+
     async def reply(self, parts, on_text, on_call):
         text = parts[0]["text"]
         self.seen.append(text)
@@ -548,6 +552,107 @@ async def main():
     check("voice prompt: knows its partner and its tools",
           "YOUR PARTNER: Claude" in tb.TALK_SYSTEM and "hand_to_worker" in tb.TALK_SYSTEM
           and "[event]" in tb.TALK_SYSTEM)
+
+    # ---- 17. the voice's own hands: quick actions ---------------------------
+    import reflex
+    ran = []
+    real_match = reflex.match
+
+    def fake_match(cmd, lang="en"):
+        if cmd.lower() in ("open spotify", "next song"):
+            return reflex.Reflex("open_app", cmd, lambda c=cmd: (ran.append(c), "opened")[1])
+        if cmd.lower() == "close chrome":
+            return reflex.Reflex("quit", "chrome", lambda: "ERROR: chrome wouldn't close")
+        return None
+    reflex.match = fake_match
+    try:
+        def script_do(text):
+            if "Giorgi: yo pop open spotify" in text:
+                return ([], [("do_now", {"command": "open spotify"})])
+            if "Giorgi: skip it" in text:
+                return (["Sir, skipping."], [("do_now", {"command": "media next"})])
+            if "Giorgi: kill chrome" in text:
+                return ([], [("do_now", {"command": "close chrome"})])
+            if "Giorgi: set up my vpn" in text:
+                return (["Sir, on it."], [("do_now", {"command": "configure the vpn"})])
+            return (["Sir, noted."], [])
+        t = FakeTalker(script_do)
+        app = make_app(t)
+        await app._talk("yo pop open spotify")
+        await app._front_task
+        await settle()
+        check("quick action runs on the voice's own hands, no Claude",
+              ran == ["open spotify"] and not app.client.queries, (ran, app.client.queries))
+        check("silent tool call still gets a fitting ack",
+              "Sir, opening spotify." in app.tts.spoken, app.tts.spoken)
+        check("the voice's history learns what its action did",
+              "done: open_app" in t.history[-1]["text"], t.history[-1])
+        await app._talk("skip it")
+        await app._front_task
+        await settle()
+        check("Gemini's 'media next' is matched as 'next song'", ran[-1:] == ["next song"], ran)
+        await app._talk("kill chrome")
+        await app._front_task
+        await settle()
+        check("a failed quick action is said after the voice's line",
+              app.tts.spoken[-1] == "Sir, that didn't work.", app.tts.spoken[-2:])
+        await app._talk("set up my vpn")
+        await app._front_task
+        await settle()
+        check("not a quick action after all -> Claude does it",
+              app.client.queries and "configure the vpn" in app.client.queries[-1],
+              app.client.queries[-1:])
+    finally:
+        reflex.match = real_match
+
+    # ---- 18. the voice's own hands: email -----------------------------------
+    import mail_hands
+    os.environ["GOAT_MY_EMAIL"] = "giorgi@example.com"
+    good, bad = mail_hands.resolve_to("me, nika.b@example.ge, Nika")
+    check("'me' resolves locally to his address; a bare name is never guessed",
+          good == ["giorgi@example.com", "nika.b@example.ge"] and bad == ["Nika"], (good, bad))
+    url = mail_hands.compose_url(["a@b.com"], "Call mom", "At 6, don't forget & smile")
+    check("compose URL carries to/subject/body, encoded",
+          "view=cm" in url and "to=a%40b.com" in url and "su=Call%20mom" in url
+          and "%26%20smile" in url and "/mail/u/" in url, url)
+    sent = []
+    real_send, real_draft = mail_hands.send, mail_hands.open_draft
+    mail_hands.send = lambda to, su, body: (sent.append(("send", to, su)), "sent (clicked Send)")[1]
+    mail_hands.open_draft = lambda to, su, body: (sent.append(("draft", to, su)), f"draft open to {to[0]}")[1]
+    try:
+        def script_mail(text):
+            if "Giorgi: email me" in text:
+                return ([], [("email", {"to": "me", "subject": "Call mom", "body": "Call mom at 6.",
+                                        "send": True})])
+            if "Giorgi: email nika" in text:
+                return ([], [("email", {"to": "nika", "subject": "Late", "body": "Running late."})])
+            if "Giorgi: email the landlord" in text:
+                return ([], [("email", {"to": "landlord@example.com", "subject": "Rent",
+                                        "body": "Paid.", "send": False})])
+            return (["Sir, noted."], [])
+        t = FakeTalker(script_mail)
+        app = make_app(t)
+        await app._talk("email me to call mom")
+        await app._front_task
+        await settle()
+        check("'email me' sends straight away, to his own address",
+              sent[-1:] == [("send", ["giorgi@example.com"], "Call mom")], sent)
+        check("he hears it was sent", app.tts.spoken[-1] == "Sir, it's sent.", app.tts.spoken[-2:])
+        await app._talk("email nika I'm late")
+        await app._front_task
+        await settle()
+        check("no address -> asks for it, sends nothing",
+              len(sent) == 1 and "full email address for nika" in app.tts.spoken[-1],
+              app.tts.spoken[-1:])
+        await app._talk("email the landlord that rent is paid")
+        await app._front_task
+        await settle()
+        check("a draft for someone else opens and asks 'Send it?'",
+              sent[-1][0] == "draft" and app.tts.spoken[-1].endswith("Send it?"),
+              (sent[-1], app.tts.spoken[-1:]))
+    finally:
+        mail_hands.send, mail_hands.open_draft = real_send, real_draft
+        os.environ.pop("GOAT_MY_EMAIL", None)
 
     # ---- 16. the side card's names ------------------------------------------
     import ui_qt

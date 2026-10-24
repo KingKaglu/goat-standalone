@@ -424,6 +424,19 @@ ACK_HANDOFF = {
 }
 ACK_NOTE = {"en": "Sir, I've told Claude.", "ka": "ბატონო, Claude-ს გადავეცი."}
 ACK_STOP = {"en": "Sir, I've stopped Claude.", "ka": "ბატონო, Claude გავაჩერე."}
+COVER_NOTE = ("[GOAT's voice (Gemini) can't answer this turn, so YOU speak to Giorgi "
+              "directly, out loud: start with \"Sir,\", call him \"you\" (never \"he\"), "
+              "one to three short spoken sentences, no markdown. Just talk — this "
+              "turn is conversation.]\n")
+VOICE_OUT_JOB = {"en": "Sir, my voice brain is resting, but Claude's on it.",
+                 "ka": "ბატონო, ხმის ტვინი ისვენებს, მაგრამ Claude უკვე მუშაობს."}
+# The voice's own email hands (mail_hands.py): what it says once Gmail answers.
+ACK_MAIL = {"en": "Sir, writing it now.", "ka": "ბატონო, ახლავე ვწერ."}
+MAIL_SENT = {"en": "Sir, it's sent.", "ka": "ბატონო, გაიგზავნა."}
+MAIL_FAIL = {"en": "Sir, the email didn't go — the draft's still open on your screen.",
+             "ka": "ბატონო, წერილი ვერ გაიგზავნა — დრაფტი ეკრანზე გახსნილია."}
+MAIL_NO_DRAFT = {"en": "Sir, Gmail didn't open — are you signed in?",
+                 "ka": "ბატონო, Gmail არ გაიხსნა — შესული ხარ?"}
 VOICE_DOWN = {
     "en": "Sir, my voice link just dropped. Give me a moment.",
     "ka": "ბატონო, ხმის კავშირი გაწყდა. ერთი წამი.",
@@ -2733,18 +2746,7 @@ class GoatApp:
             self._last_exchange = time.monotonic()
             return
         if isinstance(result, str) and result.startswith("ERROR"):
-            line = REFLEX_FAIL.get(self.turn_lang) or REFLEX_FAIL["en"]
-            if "phone offline" in result or "phone link" in result:
-                line = ("Sir, your phone isn't connected." if self.turn_lang != "ka"
-                        else "ბატონო, ტელეფონი არ არის დაკავშირებული.")
-            elif "phone app too old" in result:
-                line = ("Sir, that needs the new phone app." if self.turn_lang != "ka"
-                        else "ბატონო, ამას ტელეფონის ახალი აპი სჭირდება.")
-            elif result.startswith("ERROR: phone"):
-                line = ("Sir, the phone didn't take it." if self.turn_lang != "ka"
-                        else "ბატონო, ტელეფონმა ვერ შეასრულა.")
-            elif not rx.kind.startswith("open") and self.turn_lang != "ka":
-                line = "Sir, that didn't work."     # not everything "opens"
+            line = self._reflex_fail_line(result, rx.kind)
             self._say_now(line)
             spoken = line
             self.emit("status", result[:80].lower())
@@ -2761,6 +2763,22 @@ class GoatApp:
             self._local_unseen.append((text[:200], reply[:200]))
         self._log_exchange(text, reply)
         self.emit("turn_done", "")
+
+    def _reflex_fail_line(self, result: str, kind: str) -> str:
+        """The spoken correction when a reflex's action failed."""
+        ka = self.turn_lang == "ka"
+        if "phone offline" in result or "phone link" in result:
+            return ("ბატონო, ტელეფონი არ არის დაკავშირებული." if ka
+                    else "Sir, your phone isn't connected.")
+        if "phone app too old" in result:
+            return ("ბატონო, ამას ტელეფონის ახალი აპი სჭირდება." if ka
+                    else "Sir, that needs the new phone app.")
+        if result.startswith("ERROR: phone"):
+            return ("ბატონო, ტელეფონმა ვერ შეასრულა." if ka
+                    else "Sir, the phone didn't take it.")
+        if not kind.startswith("open") and not ka:
+            return "Sir, that didn't work."     # not everything "opens"
+        return REFLEX_FAIL.get(self.turn_lang) or REFLEX_FAIL["en"]
 
     # ==== TWO BRAINS: the voice (Gemini) and its partner (Claude) ==========
     # His order 2026-10-24 — see talk_brain.py for the why and the numbers.
@@ -2891,6 +2909,7 @@ class GoatApp:
         self.talk_busy = True
         spoken: list = []
         acted: list = []
+        do_cmds: list = []
         look: list = []
         lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
         started_speaking = False
@@ -2921,6 +2940,14 @@ class GoatApp:
                     str(args.get("message") or text), his=his))
             elif name == "stop_worker":
                 asyncio.create_task(self._stop_worker())
+            elif name == "do_now":
+                do_cmds.append(str(args.get("command") or ""))
+                asyncio.create_task(self._voice_do(
+                    str(args.get("command") or text), his=his))
+            elif name == "email":
+                asyncio.create_task(self._voice_email(args, his=his))
+            elif name == "send_draft":
+                asyncio.create_task(self._voice_send_draft())
             elif name == "look_at_screen":
                 look.append(str(args.get("question") or ""))
 
@@ -2985,6 +3012,16 @@ class GoatApp:
                         line = self._watch.local_status(lang)
                         self.tts.say(line)
                         spoken.append(line)
+                    elif (not self.busy and not self.claude_out
+                          and brain_route.classify(text, False) != brain_route.TALK):
+                        # An order with the voice down: Claude does it as a
+                        # normal silent job and the watch's own words report
+                        # it — not a talking turn that works for 40 s first.
+                        line = VOICE_OUT_JOB[lang]
+                        self.tts.say(line)
+                        spoken.append(line)
+                        acted.append("hand_to_worker")
+                        asyncio.create_task(self._give_worker(text, "quick", his=text))
                     elif not self.busy and not self.claude_out:
                         # Claude covers this one turn and speaks it itself (the
                         # one-brain path), so the voice never just goes silent.
@@ -3047,6 +3084,10 @@ class GoatApp:
                     ack = ACK_NOTE[lang]
                 elif "stop_worker" in acted:
                     ack = ACK_STOP[lang]
+                elif "do_now" in acted:
+                    ack = self._do_ack(do_cmds[0] if do_cmds else "", lang)
+                elif "email" in acted or "send_draft" in acted:
+                    ack = ACK_MAIL[lang]
                 if ack:
                     self.tts.say(ack)
                     reply = ack
@@ -3148,6 +3189,149 @@ class GoatApp:
             self._watch.finish("stopped", "")
         await self._cut_turn(None, voice=False)
         self.emit("work_fail", "Stopped — Giorgi asked")
+
+    # ---- the voice's own hands (his ask 2026-10-24: "small tasks like open,
+    # close and send me an email — if Gemini can handle it"). Gemini words the
+    # order as a plain command and the reflex lane runs it: the same tested
+    # matcher, close guard and phone channel as a spoken reflex, in
+    # milliseconds instead of a 10-second Claude job. ----
+
+    async def _say_after_voice(self, line: str, gen: int, must: bool = False):
+        """A follow-up line (a failure, "sent") once the voice's own sentence
+        is out — never spliced into the middle of it. Dropped if he has
+        started another turn since, unless he must hear it (an email's fate)."""
+        for _ in range(300):
+            if not self.talk_busy or (self._front_gen != gen and not must):
+                break
+            await asyncio.sleep(0.1)
+        if self._front_gen == gen or must:
+            self.tts.say(line)
+            self.talker.note(f"then said: {line}")
+
+    @staticmethod
+    def _do_variants(command: str) -> list:
+        """Gemini's wording of a quick order, plus the plain forms the reflex
+        lane knows ("media next" -> "next song"; "... in chrome" dropped)."""
+        c = " ".join((command or "").split()).strip(" .!")
+        out = [c]
+        bare = re.sub(r"\s+(?:in|on|with|using)\s+(?:the\s+|my\s+)?(?:chrome|brave|edge|"
+                      r"firefox|browser|default browser)$", "", c, flags=re.IGNORECASE)
+        bare = re.sub(r"^media\s+(?:next|skip)\b.*", "next song", bare, flags=re.IGNORECASE)
+        bare = re.sub(r"^media\s+(?:prev|previous|back)\b.*", "previous song", bare,
+                      flags=re.IGNORECASE)
+        bare = re.sub(r"^(?:media\s+)?(?:play_pause|play|pause|resume|stop)\b.*",
+                      "pause", bare, flags=re.IGNORECASE)
+        bare = re.sub(r"^skip\b.*", "next song", bare, flags=re.IGNORECASE)
+        if bare != c:
+            out.append(bare)
+        return out
+
+    @staticmethod
+    def _do_ack(command: str, lang: str) -> str:
+        """His ack when the voice called do_now without saying a word."""
+        c = " ".join((command or "").split())
+        m = re.match(r"(?i)(open|close|quit)\s+(.+)", c)
+        if m and lang != "ka":
+            what = re.sub(r"(?i)^https?://(?:www\.)?|\.com$|/$|\s+on my phone$", "",
+                          m.group(2)).strip()
+            verb = "opening" if m.group(1).lower() == "open" else "closing"
+            return f"Sir, {verb} {what}." if len(what) <= 30 else f"Sir, {verb} it."
+        if m:
+            return "ბატონო, ვხსნი." if m.group(1).lower() == "open" else "ბატონო, ვხურავ."
+        return "ბატონო, გაკეთდა." if lang == "ka" else "Sir, done."
+
+    async def _voice_do(self, command: str, his: str = ""):
+        gen = self._front_gen
+        lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
+        try:
+            rx = None
+            for c in self._do_variants(command) + ([his] if his else []):
+                rx = reflex.match(c, lang)
+                if rx is not None:
+                    break
+        except Exception as e:  # noqa: BLE001 — a matcher bug costs a hand-off, not the order
+            print(f"[voice-do] matcher failed: {e}", flush=True)
+            rx = None
+        if rx is not None and rx.kind == "answer":
+            await self._say_after_voice(rx.speak, gen)    # time, battery, usage
+            return
+        if rx is None:
+            # Not a fixed action after all: Claude does it.
+            print(f"[voice-do] no quick action for {command!r} -> Claude", flush=True)
+            self.talker.note("not a quick action: passed to Claude")
+            await self._give_worker(command, "quick", his=his)
+            return
+        self.emit("status", f"{rx.kind} · {rx.detail}")
+        if rx.speak:
+            # The close guard's "That's a terminal — close it anyway?"
+            await self._say_after_voice(rx.speak, gen)
+        t0 = time.monotonic()
+        try:
+            result = await asyncio.to_thread(rx.run)
+        except Exception as e:  # noqa: BLE001
+            result = f"ERROR: {e}"
+        print(f"[voice-do] {command!r} -> {rx.kind} {rx.detail!r} -> {result} "
+              f"({(time.monotonic() - t0) * 1000:.0f}ms)", flush=True)
+        result = str(result or "")
+        if result.startswith(getattr(reflex, "DEFER", "DEFER")):
+            self.talker.note("couldn't do it directly: passed to Claude")
+            await self._give_worker(command, "quick", his=his)
+        elif result.startswith("ERROR"):
+            await self._say_after_voice(self._reflex_fail_line(result, rx.kind), gen)
+        else:
+            self.talker.note(f"done: {rx.kind} {rx.detail}".strip())
+
+    async def _voice_email(self, args: dict, his: str = ""):
+        import mail_hands
+        gen = self._front_gen
+        lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
+        to, bad = mail_hands.resolve_to(str(args.get("to") or ""))
+        subject = str(args.get("subject") or "").strip()
+        body = str(args.get("body") or "").strip()
+        send = bool(args.get("send"))
+        if bad or not to:
+            line = ("Sir, I need the full email address for "
+                    f"{', '.join(bad) or 'that'}." if lang == "en" else
+                    f"ბატონო, {', '.join(bad) or 'ამის'} სრული ელფოსტის მისამართი მჭირდება.")
+            print(f"[voice-mail] no address for {bad!r}", flush=True)
+            await self._say_after_voice(line, gen)
+            return
+        print(f"[voice-mail] {'send' if send else 'draft'} to {len(to)} "
+              f"recipient(s), subject {subject[:60]!r}", flush=True)
+        self.emit("status", "email · " + ("sending" if send else "drafting"))
+        fn = mail_hands.send if send else mail_hands.open_draft
+        result = await asyncio.to_thread(fn, to, subject, body)
+        print(f"[voice-mail] -> {result}", flush=True)
+        if result.startswith("sent"):
+            self.emit("status", "email · sent")
+            await self._say_after_voice(MAIL_SENT[lang], gen, must=True)
+        elif result.startswith("draft open"):
+            self.talker.note(f"done: {result} — waiting for his yes")
+            who = ", ".join(a.split("@")[0] for a in to)
+            await self._say_after_voice(
+                f"Sir, the draft to {who} is on your screen. Send it?" if lang == "en"
+                else f"ბატონო, {who}-სთვის წერილი ეკრანზეა. გავაგზავნო?", gen)
+        elif "didn't open" in result or "browser" in result:
+            await self._say_after_voice(MAIL_NO_DRAFT[lang], gen, must=True)
+        else:
+            await self._say_after_voice(MAIL_FAIL[lang], gen, must=True)
+
+    async def _voice_send_draft(self):
+        import mail_hands
+        gen = self._front_gen
+        lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
+        self.emit("status", "email · sending")
+        result = await asyncio.to_thread(mail_hands.send_open_draft)
+        print(f"[voice-mail] send draft -> {result}", flush=True)
+        if result.startswith("sent"):
+            self.emit("status", "email · sent")
+            await self._say_after_voice(MAIL_SENT[lang], gen, must=True)
+        elif "no Gmail draft" in result:
+            await self._say_after_voice(
+                "Sir, I don't see the draft open anymore." if lang == "en"
+                else "ბატონო, დრაფტი აღარ ჩანს.", gen)
+        else:
+            await self._say_after_voice(MAIL_FAIL[lang], gen, must=True)
 
     async def _direct_job(self, task: str, his: str):
         """His work button / dropped files: straight to Claude, and the voice
@@ -3463,6 +3647,11 @@ class GoatApp:
         if self._pending_handoff:
             send = self._pending_handoff + "\n\n" + send
             self._pending_handoff = ""
+        if self._cover_turn:
+            # Two brains, voice down: the worker persona reports ABOUT him to
+            # the voice — 2026-10-24 it answered "I added a sentence saying
+            # he's living in Germany…" 41 s late. This turn it IS the voice.
+            send = COVER_NOTE + send
         if self.turn_lang == "ka":
             # The work client's persona is pinned at connect and a live
             # language switch only steers the TALK lane — so the left lane
