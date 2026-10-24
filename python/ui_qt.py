@@ -141,10 +141,13 @@ THEMES = {
     "midnight": {
         "bg_top": "#0b1324", "bg_bot": "#060a14",
         "paper": "#e9eefa", "dim": "#8e9ab4", "faint": "#56627d",
-        "accent": "#3b8bff", "accent2": "#6fb3ff", "string_base": "#3a4a6b",
+        # v8 (2026-10-24): accent softened to #5aa2ff (the voice), Claude's
+        # own colour added as "work".
+        "accent": "#5aa2ff", "accent2": "#8cc0ff", "string_base": "#3a4a6b",
         "you_old": "#b9c6e0", "reply_old": "#aab4c8", "sel": "#1d3b6e",
         "rail": "#070c18", "card": "#0f1a2e", "line": "#1c2a44",
-        "glow": "#6a4d63", "ok": "#2ecc71",
+        "glow": "#6a4d63", "ok": "#4fd18b", "danger": "#ff6b5e",
+        "work": "#f2b36b",
     },
     # The HUD (his order 2026-09-26: "the whole interface, like JARVIS").
     # "hud" switches on the painted layer — arc reactor, grid, corner
@@ -154,31 +157,35 @@ THEMES = {
         "paper": "#e2f7ff", "dim": "#82b5c9", "faint": "#39677e",
         "accent": "#3fd6ff", "string_base": "#2f86a6",
         "you_old": "#66c3e2", "reply_old": "#9fc6d5", "sel": "#0e4a66",
-        "hud": True,
+        "work": "#ffb35e", "hud": True,
     },
     "ember": {          # the original: warm dark, amber string
         "bg_top": "#1a1713", "bg_bot": "#14110e",
         "paper": "#f4ede0", "dim": "#948d7e", "faint": "#5c5649",
         "accent": "#ffb35e", "string_base": "#948d7e",
         "you_old": "#c09263", "reply_old": "#aca395", "sel": "#5a4429",
+        "work": "#8fb8ff",
     },
     "paper": {          # daylight: warm paper, ink type, vermilion accent
         "bg_top": "#f6f1e7", "bg_bot": "#efe9db",
         "paper": "#1e1b16", "dim": "#7a7365", "faint": "#a29a86",
         "accent": "#c74a24", "string_base": "#7a7365",
         "you_old": "#a05a3c", "reply_old": "#5f5a50", "sel": "#f0c9b8",
+        "work": "#2f6fb0", "ok": "#1f9d55", "danger": "#c0392b",
     },
     "phosphor": {       # night instrument: green-black, phosphor trace
         "bg_top": "#101812", "bg_bot": "#0c120d",
         "paper": "#e2f0e4", "dim": "#82997f", "faint": "#4a5f50",
         "accent": "#66f096", "string_base": "#82997f",
         "you_old": "#6aae80", "reply_old": "#9db3a1", "sel": "#265a38",
+        "work": "#f0d066",
     },
     "graphite": {       # mono: near-black, white-hot string
         "bg_top": "#18181b", "bg_bot": "#121214",
         "paper": "#f0f0f2", "dim": "#94949b", "faint": "#5a5a63",
         "accent": "#ffffff", "string_base": "#94949b",
         "you_old": "#b6b6bc", "reply_old": "#a8a8af", "sel": "#44444f",
+        "work": "#9aa0ff",
     },
 }
 THEME_ORDER = ["midnight", "jarvis", "ember", "paper", "phosphor", "graphite"]
@@ -201,7 +208,16 @@ def _complete_theme(t: dict) -> dict:
     t.setdefault("line", _hex_mix(t["bg_top"], t["paper"], 0.12))
     t.setdefault("accent2", _hex_mix(t["accent"], t["paper"], 0.35))
     t.setdefault("glow", _hex_mix(t["bg_top"], t["accent"], 0.35))
-    t.setdefault("ok", "#2ecc71")
+    t.setdefault("ok", "#4fd18b")
+    # v8 tokens (2026-10-24). surface/surface2/hairline are paper laid over
+    # the room at 5.5% / 9% / 6%: one neutral lift instead of navy boxes.
+    # "work" is Claude's colour and goes ONLY on Claude's marks; "danger"
+    # replaces the hard-coded reds.
+    t.setdefault("danger", "#ff6b5e")
+    t.setdefault("work", "#f2b36b")
+    t.setdefault("surface", _hex_mix(t["bg_top"], t["paper"], 0.055))
+    t.setdefault("surface2", _hex_mix(t["bg_top"], t["paper"], 0.09))
+    t.setdefault("hairline", _hex_mix(t["bg_top"], t["paper"], 0.06))
     return t
 
 
@@ -209,9 +225,11 @@ for _n in THEMES:
     THEMES[_n] = _complete_theme(THEMES[_n])
 
 
-# Reply type sizes (px) in the chat column. v7 reads like a conversation,
-# not a stage: the old 24/32/40 were set for a single line under the string.
-TEXT_SIZES = {"small": 17, "normal": 20, "large": 23}
+# Reply type sizes (px) for the line GOAT is saying now. v8 (2026-10-24):
+# the current reply is the hero again (27), older replies drop to 0.78x in
+# Light, so the newest line reads first.
+TEXT_SIZES = {"small": 24, "normal": 27, "large": 31}
+REPLY_OLD_K = 0.78
 # Manual brain roster (his order 2026-07-17): three independent roles he sets
 # by hand from the drawer — no auto-routing, no escalation. Values are the
 # display names the engine (goat_app) understands directly.
@@ -337,16 +355,17 @@ MONO_FONT = "'Cascadia Mono', 'Consolas'"
 # lesson: scaling only fonts crowded big type into small rooms).
 RAIL_W = 256                      # left rail: mark, pages, presence
 SIDE_W = 348                      # right rail: search, brain, tools, system
-CENTER_MARGIN = (36, 26, 36, 18)  # centre column
-RAIL_MARGIN = (22, 26, 22, 22)
-SIDE_MARGIN = (18, 12, 18, 18)
+# v8: margins sit on the 4/8/16/24/32 spacing scale.
+CENTER_MARGIN = (32, 24, 32, 16)  # centre column
+RAIL_MARGIN = (24, 24, 24, 24)
+SIDE_MARGIN = (16, 12, 16, 16)
 TITLEBAR_H = 52                   # the drag band along the top edge
 STRING_BAND = 140                 # StringLine's full-size band (compact: 34)
 # The chat transcript is still the one true reading column: reading margins
 # and a measure, never a spreadsheet row (v6).
 READ_MARGIN = (6, 0, 18, 0)
-READ_MEASURE_CH = 86
-WORK_MARGIN = (16, 14, 14, 12)    # inside the Activity card
+READ_MEASURE_CH = 72
+WORK_MARGIN = (16, 16, 16, 16)    # inside the Activity card
 
 # Segoe Fluent Icons (Win 11) with MDL2 as the Win 10 fallback. Glyphs are
 # private-use codepoints; a name table keeps the call sites readable.
@@ -382,13 +401,20 @@ def build_style(t: dict, reply_px: int = 20, scale: float = 1.0) -> str:
         return max(1, round(px * scale))
     reply = max(1, round(reply_px * scale))
     acc, acc2 = t["accent"], t["accent2"]
-    card = rgba(t["card"], 190)
-    card_hi = rgba(t["card"], 235)
-    line = rgba(t["line"], 230)
+    # v8 surfaces: paper lifted off the room, not navy boxes. Mostly opaque
+    # so the painted scenery behind a card never fights the words on it.
+    card = rgba(t["surface"], 215)
+    card_hi = rgba(t["surface2"], 235)
+    line = rgba(t["paper"], 15)          # hairline: paper at 6%
+    ring = rgba(acc, 102)                # focus / hover ring: accent at 40%
     tint = rgba(acc, 34)
     tint_hi = rgba(acc, 60)
+    danger, work = t["danger"], t["work"]
+    danger_soft = _hex_mix(danger, t["paper"], 0.25)
+    # Labels: 11 px mono caps, +1.6 px tracking (caps set by mklabel).
+    track = f"{1.6 * scale:.1f}"
     return f"""
-QWidget {{ color: {t['paper']}; font-family: {BODY_FONT}; font-size: {s(14)}px; }}
+QWidget {{ color: {t['paper']}; font-family: {BODY_FONT}; font-size: {s(15)}px; }}
 QToolTip {{ color: {t['paper']}; background: {t['card']}; border: 1px solid {line};
   padding: {s(4)}px {s(8)}px; }}
 
@@ -407,41 +433,42 @@ QLabel#brand {{ color: {t['paper']}; font-family: {VOICE_FONT};
 QLabel#brandSub {{ color: {t['dim']}; font-size: {s(12)}px; }}
 QPushButton#nav {{
   background: transparent; color: {t['dim']}; border: 1px solid transparent;
-  border-radius: {s(12)}px; text-align: left; font-size: {s(15)}px;
-  padding: {s(10)}px {s(14)}px;
+  border-radius: {s(10)}px; text-align: left; font-size: {s(15)}px;
+  padding: {s(10)}px {s(16)}px;
 }}
 QPushButton#nav:hover {{ background: {rgba(t['paper'], 12)}; color: {t['paper']}; }}
+QPushButton#nav:pressed {{ background: {rgba(t['paper'], 6)}; }}
 QPushButton#nav[on="true"] {{
-  color: {t['paper']}; border: 1px solid {rgba(acc, 90)};
-  background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-    stop:0 {rgba(acc, 120)}, stop:1 {rgba(acc, 26)});
+  color: {t['paper']}; border: 1px solid {rgba(acc, 60)}; background: {rgba(acc, 38)};
 }}
-QFrame#presence {{ background: {card}; border: 1px solid {line}; border-radius: {s(14)}px; }}
+QFrame#presence {{ background: {card}; border: 1px solid {line}; border-radius: {s(16)}px; }}
 QLabel#statedot {{ color: {t['ok']}; font-size: {s(11)}px; }}
 QLabel#statedot[mood="busy"] {{ color: {acc2}; }}
 QLabel#statedot[mood="off"] {{ color: {t['faint']}; }}
-QLabel#statedot[mood="bad"] {{ color: #ff6b6b; }}
-QLabel#stateword {{ color: {t['paper']}; font-size: {s(14)}px; font-weight: 600; }}
-QLabel#footer {{ color: {t['faint']}; font-size: {s(11)}px; }}
+QLabel#statedot[mood="bad"] {{ color: {danger}; }}
+QLabel#stateword {{ color: {t['paper']}; font-family: {MONO_FONT}; font-size: {s(11)}px;
+  font-weight: 500; letter-spacing: {track}px; }}
+QLabel#footer {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
 
 /* ---- centre ---- */
 QLabel#hello {{ color: {t['paper']}; font-family: {VOICE_FONT};
-  font-size: {s(40)}px; font-weight: 600; }}
-QLabel#helloSub {{ color: {rgba(t['paper'], 200)}; font-size: {s(17)}px; }}
+  font-size: {s(44)}px; font-weight: 300; }}
+QLabel#helloSub {{ color: {t['dim']}; font-size: {s(15)}px; }}
 QFrame#actionCard {{
-  background: {card}; border: 1px solid {line}; border-radius: {s(14)}px;
+  background: {card}; border: 1px solid {line}; border-radius: {s(16)}px;
   text-align: left; padding: 0;
 }}
-QFrame#actionCard:hover {{ background: {card_hi}; border: 1px solid {rgba(acc, 150)}; }}
+QFrame#actionCard:hover {{ background: {card_hi}; border: 1px solid {ring}; }}
 QFrame#actionCard[on="true"] {{ border: 1px solid {acc}; background: {tint}; }}
-QLabel#cardTitle {{ color: {t['paper']}; font-size: {s(15)}px; font-weight: 600; }}
-QLabel#cardSub {{ color: {t['dim']}; font-size: {s(12)}px; }}
+QLabel#cardTitle {{ color: {t['paper']}; font-size: {s(15)}px; font-weight: 500; }}
+QLabel#cardSub {{ color: {t['dim']}; font-size: {s(13)}px; }}
 QLabel#chev {{ color: {t['faint']}; font-family: {ICON_FONT}; font-size: {s(10)}px; }}
-QFrame#card {{ background: {card}; border: 1px solid {line}; border-radius: {s(14)}px; }}
-QLabel#sectionTitle {{ color: {t['paper']}; font-size: {s(17)}px; font-weight: 600; }}
+QFrame#card {{ background: {card}; border: 1px solid {line}; border-radius: {s(16)}px; }}
+QLabel#sectionTitle, QLabel#paneltitle {{ color: {t['dim']}; font-family: {MONO_FONT};
+  font-size: {s(11)}px; font-weight: 500; letter-spacing: {track}px; }}
 QLabel#pageTitle {{ color: {t['paper']}; font-family: {VOICE_FONT};
-  font-size: {s(30)}px; font-weight: 600; }}
-QLabel#pageSub {{ color: {t['dim']}; font-size: {s(14)}px; }}
+  font-size: {s(32)}px; font-weight: 300; }}
+QLabel#pageSub {{ color: {t['dim']}; font-size: {s(15)}px; }}
 QPushButton#link {{ background: transparent; border: none; color: {acc2};
   font-size: {s(13)}px; padding: {s(2)}px {s(4)}px; }}
 QPushButton#link:hover {{ color: {t['paper']}; }}
@@ -451,20 +478,20 @@ QFrame#row {{
 }}
 QFrame#row[first="true"] {{ border-top: none; }}
 QFrame#row:hover {{ background: {rgba(t['paper'], 10)}; }}
-QLabel#rowTitle {{ color: {t['paper']}; font-size: {s(14)}px; font-weight: 500; }}
+QLabel#rowTitle {{ color: {t['paper']}; font-size: {s(15)}px; font-weight: 500; }}
 QLabel#rowSub {{ color: {t['dim']}; font-size: {s(13)}px; }}
-QLabel#rowTime {{ color: {t['faint']}; font-size: {s(12)}px; }}
-QLabel#empty {{ color: {t['faint']}; font-size: {s(14)}px; }}
+QLabel#rowTime {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
+QLabel#empty {{ color: {t['faint']}; font-size: {s(15)}px; }}
 QPushButton#more {{ background: transparent; border: none; color: {t['faint']};
   font-family: {ICON_FONT}; font-size: {s(13)}px; padding: {s(6)}px; }}
 QPushButton#more:hover {{ color: {t['paper']}; }}
 
 /* ---- composer ---- */
 QFrame#composer {{
-  background: {rgba(t['card'], 225)}; border: 1px solid {rgba(acc, 110)};
-  border-radius: {s(23)}px;
+  background: {rgba(t['surface'], 235)}; border: 1px solid {ring};
+  border-radius: {s(16)}px;
 }}
-QFrame#composer[work="true"] {{ border: 1px solid {acc2}; }}
+QFrame#composer[work="true"] {{ border: 1px solid {work}; }}
 QLineEdit#cmd {{
   background: transparent; border: none; font-size: {s(16)}px;
   color: {t['paper']}; padding: {s(8)}px {s(4)}px;
@@ -482,27 +509,29 @@ QPushButton#micbtn {{
   border-radius: {s(16)}px;
 }}
 QPushButton#micbtn:hover {{ color: {t['paper']}; background: {rgba(t['paper'], 14)}; }}
-QPushButton#micbtn[muted="true"] {{ color: #ff6b6b; }}
+QPushButton#micbtn[muted="true"] {{ color: {danger}; }}
 QPushButton#micbtn[hot="true"] {{ color: {acc2}; background: {tint}; }}
 QPushButton#sendbtn {{
   background: {acc}; border: none; color: white; font-family: {ICON_FONT};
-  font-size: {s(16)}px; border-radius: {s(19)}px;
+  font-size: {s(16)}px; border-radius: {s(10)}px;
   min-width: {s(38)}px; max-width: {s(38)}px; min-height: {s(38)}px; max-height: {s(38)}px;
 }}
 QPushButton#sendbtn:hover {{ background: {acc2}; }}
+QPushButton#sendbtn:pressed {{ background: {_hex_mix(acc, '#000000', 0.18)}; }}
 QPushButton#chip {{
-  background: {rgba(t['card'], 200)}; border: 1px solid {line}; color: {t['paper']};
-  border-radius: {s(14)}px; padding: {s(7)}px {s(14)}px; font-size: {s(13)}px;
+  background: {card}; border: 1px solid {line}; color: {t['paper']};
+  border-radius: {s(10)}px; padding: {s(7)}px {s(14)}px; font-size: {s(13)}px;
 }}
 QPushButton#chip[slim="true"] {{ padding: {s(7)}px {s(9)}px; min-width: 0px; }}
-QPushButton#chip:hover {{ border: 1px solid {rgba(acc, 150)}; }}
+QPushButton#chip:hover {{ background: {card_hi}; border: 1px solid {ring}; }}
+QPushButton#chip:pressed {{ background: {rgba(t['paper'], 6)}; }}
 QPushButton#chip[on="true"] {{ border: 1px solid {acc}; background: {tint_hi}; }}
 
 /* ---- right rail ---- */
-QFrame#search {{ background: {card}; border: 1px solid {line}; border-radius: {s(17)}px; }}
+QFrame#search {{ background: {card}; border: 1px solid {line}; border-radius: {s(12)}px; }}
 QLineEdit#searchField {{ background: transparent; border: none; color: {t['paper']};
   font-size: {s(14)}px; padding: {s(8)}px {s(2)}px; selection-background-color: {t['sel']}; }}
-QLabel#kbd {{ color: {t['dim']}; font-size: {s(11)}px; border: 1px solid {line};
+QLabel#kbd {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(11)}px; border: 1px solid {line};
   border-radius: {s(5)}px; padding: {s(1)}px {s(6)}px; }}
 QPushButton#winbtn {{
   background: transparent; color: {t['dim']}; border: none; border-radius: {s(6)}px;
@@ -519,22 +548,22 @@ QPushButton#gear {{ background: transparent; border: none; color: {t['dim']};
 QPushButton#gear:hover {{ color: {t['paper']}; background: {rgba(t['paper'], 14)}; }}
 QProgressBar#planbar {{ background: {rgba(t['paper'], 16)}; border: none; border-radius: {s(4)}px; max-height: {s(8)}px; min-height: {s(8)}px; }}
 QProgressBar#planbar::chunk {{ background: {acc}; border-radius: {s(4)}px; }}
-QProgressBar#planbar[hot="true"]::chunk {{ background: #ff8a8a; }}
+QProgressBar#planbar[hot="true"]::chunk {{ background: {danger_soft}; }}
 QFrame#sideCard {{
-  background: {card}; border: 1px solid {line}; border-radius: {s(14)}px;
+  background: {card}; border: 1px solid {line}; border-radius: {s(16)}px;
   text-align: left; padding: 0;
 }}
-QFrame#sideCard:hover {{ border: 1px solid {rgba(acc, 130)}; }}
+QFrame#sideCard:hover {{ background: {card_hi}; border: 1px solid {ring}; }}
 QLabel#modelName {{ color: {t['paper']}; font-size: {s(19)}px; font-weight: 600; }}
 QLabel#pill {{ color: {t['ok']}; background: {rgba(t['ok'], 38)}; border-radius: {s(9)}px;
   font-size: {s(11)}px; font-weight: 600; padding: {s(2)}px {s(9)}px; }}
 QLabel#pill[off="true"] {{ color: {t['dim']}; background: {rgba(t['paper'], 18)}; }}
-QLabel#pill[warn="true"] {{ color: #ff8a8a; background: rgba(255,107,107,40); }}
+QLabel#pill[warn="true"] {{ color: {danger_soft}; background: {rgba(danger, 40)}; }}
 QLabel#pillAcc {{ color: {acc2}; background: {rgba(acc, 40)}; border-radius: {s(9)}px;
   font-size: {s(11)}px; font-weight: 600; padding: {s(2)}px {s(9)}px; }}
 QLabel#quote {{ color: {t['paper']}; font-family: {VOICE_FONT}; font-size: {s(15)}px;
   font-style: italic; }}
-QLabel#clock {{ color: {t['dim']}; font-size: {s(12)}px; }}
+QLabel#clock {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
 
 /* ---- chat ---- */
 QLabel#youNow, QLabel#youOld {{
@@ -547,24 +576,26 @@ QLabel#youOld {{ color: {t['you_old']}; background: {rgba(acc, 26)};
 QLabel#replyNow {{ color: {t['paper']}; font-family: {VOICE_FONT};
   font-size: {reply}px; font-weight: 400; }}
 QLabel#replyOld {{ color: {t['reply_old']}; font-family: {VOICE_FONT};
-  font-size: {max(1, round(reply * 0.86))}px; font-weight: 400; }}
-QLabel#toolLine {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(12)}px; }}
-QLabel#notice {{ color: #ffb4a8; background: rgba(255,107,107,26);
-  border: 1px solid rgba(255,107,107,70); border-radius: {s(12)}px; font-size: {s(14)}px; }}
+  font-size: {max(1, round(reply * REPLY_OLD_K))}px; font-weight: 300; }}
+QLabel#toolLine {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
+QLabel#notice {{ color: {danger_soft}; background: {rgba(danger, 26)};
+  border: 1px solid {rgba(danger, 70)}; border-radius: {s(12)}px; font-size: {s(15)}px; }}
 QLabel#epigraph {{ color: {t['faint']}; font-family: {VOICE_FONT};
   font-size: {s(22)}px; font-weight: 300; }}
-QLabel#orbCaption {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(12)}px;
-  letter-spacing: {s(2)}px; }}
-QLabel#speaker {{ color: {acc2}; font-size: {s(12)}px; font-weight: 600; }}
-QLabel#doc {{ color: {t['paper']}; font-size: {s(14)}px; }}
+QLabel#orbCaption {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(11)}px;
+  letter-spacing: {track}px; }}
+QLabel#speaker {{ color: {acc2}; font-family: {MONO_FONT}; font-size: {s(11)}px;
+  font-weight: 500; letter-spacing: {track}px; }}
+QLabel#doc {{ color: {t['paper']}; font-size: {s(15)}px; }}
 
 /* ---- settings ---- */
 QLabel#optlabel {{ color: {t['dim']}; font-size: {s(13)}px; }}
 QPushButton#optbtn {{
   background: {rgba(t['paper'], 8)}; color: {t['dim']}; border: 1px solid {line};
-  border-radius: {s(12)}px; font-size: {s(13)}px; padding: {s(5)}px {s(12)}px;
+  border-radius: {s(10)}px; font-size: {s(13)}px; padding: {s(5)}px {s(12)}px;
 }}
-QPushButton#optbtn:hover {{ color: {t['paper']}; border: 1px solid {rgba(acc, 130)}; }}
+QPushButton#optbtn:hover {{ color: {t['paper']}; border: 1px solid {ring}; }}
+QPushButton#optbtn:pressed, QPushButton#actbtn:pressed {{ background: {rgba(t['paper'], 4)}; }}
 QPushButton#optbtn[on="true"] {{ color: {t['paper']}; background: {tint_hi};
   border: 1px solid {acc}; }}
 QPushButton#actbtn {{
@@ -574,21 +605,20 @@ QPushButton#actbtn {{
 QPushButton#actbtn:hover {{ border: 1px solid {acc}; background: {tint}; }}
 
 /* ---- activity (the working brain's live log) ---- */
-QLabel#paneltitle {{ color: {t['paper']}; font-size: {s(16)}px; font-weight: 600; }}
-QLabel#workmodel {{ color: {acc2}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
+QLabel#workmodel {{ color: {work}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
 QLabel#workidle {{ color: {t['faint']}; font-size: {s(13)}px; }}
-QLabel#worktask {{ color: {t['paper']}; font-size: {s(13)}px; font-weight: 600; margin-top: {s(6)}px; }}
-QLabel#workstep {{ color: {acc2}; font-family: {MONO_FONT}; font-size: {s(12)}px; }}
+QLabel#worktask {{ color: {t['paper']}; font-size: {s(15)}px; font-weight: 500; margin-top: {s(8)}px; }}
+QLabel#workstep {{ color: {work}; font-family: {MONO_FONT}; font-size: {s(12)}px; }}
 QLabel#workdone {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(12)}px; }}
 QLabel#worktext {{ color: {t['dim']}; font-size: {s(12)}px; font-style: italic; }}
-QLabel#workvoice {{ color: {t['paper']}; font-size: {s(12)}px; margin-top: {s(2)}px; }}
+QLabel#workvoice {{ color: {t['paper']}; font-size: {s(13)}px; margin-top: {s(4)}px; }}
 QLabel#workthink {{
   color: {t['dim']}; font-family: {VOICE_FONT}; font-size: {s(12)}px;
   font-style: italic; padding-left: {s(8)}px;
   border-left: 1px solid {hairline(t, 90)}; margin: {s(2)}px 0; }}
 QLabel#workctx {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px;
   padding-top: {s(4)}px; }}
-QLabel#workfail {{ color: #ff8a8a; font-family: {MONO_FONT}; font-size: {s(12)}px; font-weight: 500; }}
+QLabel#workfail {{ color: {danger_soft}; font-family: {MONO_FONT}; font-size: {s(12)}px; font-weight: 500; }}
 
 QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
@@ -600,8 +630,8 @@ QScrollBar::handle:vertical {{
 QScrollBar::handle:vertical:hover {{ background: {rgba(t['paper'], 70)}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-QMenu {{ background: {t['card']}; border: 1px solid {line}; padding: {s(4)}px; }}
-QMenu::item {{ padding: {s(6)}px {s(18)}px; border-radius: {s(6)}px; }}
+QMenu {{ background: {t['surface']}; border: 1px solid {line}; padding: {s(4)}px; }}
+QMenu::item {{ padding: {s(8)}px {s(16)}px; border-radius: {s(8)}px; }}
 QMenu::item:selected {{ background: {tint_hi}; }}
 """
 
@@ -1680,9 +1710,23 @@ def repolish(w: QWidget, *, deep: bool = False):
             c.style().polish(c)
 
 
+# v8 labels: small mono caps. QSS has no text-transform, but a stylesheet
+# font keeps the widget font's capitalization, so it is set here once.
+CAPS_LABELS = ("sectionTitle", "paneltitle", "stateword", "speaker")
+
+
+def capsify(lbl: QLabel) -> QLabel:
+    f = lbl.font()
+    f.setCapitalization(QFont.AllUppercase)
+    lbl.setFont(f)
+    return lbl
+
+
 def mklabel(text: str, obj: str, wrap: bool = False) -> QLabel:
     lbl = QLabel(text)
     lbl.setObjectName(obj)
+    if obj in CAPS_LABELS:
+        capsify(lbl)
     lbl.setWordWrap(wrap)
     lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
     return lbl
@@ -2152,7 +2196,7 @@ class WorkPanel(QWidget):
         head = QHBoxLayout()
         head.setSpacing(8)
         head.addWidget(icon_label("sync", "icoAcc"))
-        self.header = QLabel("Activity")
+        self.header = capsify(QLabel("Activity"))
         self.header.setObjectName("paneltitle")
         head.addWidget(self.header)
         head.addStretch(1)
@@ -3450,7 +3494,7 @@ class GoatWindow(QWidget):
         self.statedot = QLabel("●")
         self.statedot.setObjectName("statedot")
         top.addWidget(self.statedot)
-        self.stateword = QLabel("booting")
+        self.stateword = capsify(QLabel("booting"))
         self.stateword.setObjectName("stateword")
         self.stateword.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         top.addWidget(self.stateword, 1)
@@ -3589,7 +3633,7 @@ class GoatWindow(QWidget):
         self.orb = VoiceOrb()
         self._themed.append(self.orb)
         lay.addWidget(self.orb)
-        self.orb_caption = QLabel("")
+        self.orb_caption = capsify(QLabel(""))
         self.orb_caption.setObjectName("orbCaption")
         self.orb_caption.setAlignment(Qt.AlignHCenter)
         lay.addWidget(self.orb_caption)
