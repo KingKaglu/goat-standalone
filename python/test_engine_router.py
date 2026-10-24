@@ -8,6 +8,7 @@ dispatch (no escalation), graceful Claude-out, plus the unchanged pure bits
 Run:  python test_engine_router.py   (prints PASS/FAIL per case)
 """
 import asyncio
+import types
 import os
 import tempfile
 import time
@@ -253,6 +254,7 @@ async def main():
         c = MockClient()
         app = make_app(c)
         app.hard_model = "fable 5.1"
+        app.fable = types.SimpleNamespace(ok=True)   # account has Fable credits
         await app._talk("hard brain, run the heavy migration")
         check("'hard brain' -> hard_model", c.models == [g.MODEL_FABLE],
               f"models={c.models}")
@@ -835,11 +837,11 @@ async def main():
     import ui_qt
     check("UI default roles present (no talking brain)",
           "talk_brain" not in ui_qt.DEFAULT_CFG
-          and ui_qt.DEFAULT_CFG["work_model"] == "opus 5.5"
+          and ui_qt.DEFAULT_CFG["work_model"] == "fable 5.1"   # 2026-10-24: highest Claude
           and ui_qt.LANGS.get("ორივე") == "auto"
           and ui_qt.EFFORT_OPTS[-1] == "max"
           and ui_qt.DEFAULT_CFG["effort"] == "high"
-          and ui_qt.DEFAULT_CFG["hard_model"] == "opus 5.5")
+          and ui_qt.DEFAULT_CFG["hard_model"] == "fable 5.1")
     check("UI brain option lists",
           not hasattr(ui_qt, "TALK_OPTS")
           and ui_qt.WORK_OPTS == ["opus 5.5", "fable 5.1"])
@@ -1101,8 +1103,10 @@ async def main():
     m, b = await brain_for(r, "Make me a plan for the launch week.")
     check("brain: planning -> his working brain", m == g.MODEL_FULL, (m, b))
     r.hard_model = "fable 5.1"
+    r.fable = types.SimpleNamespace(ok=True)   # account has Fable credits
     m, b = await brain_for(r, "hard brain, what's up", hard=True)
     check("brain: an explicit hard order -> hard brain", m == g.MODEL_FABLE, (m, b))
+    r.fable = types.SimpleNamespace(ok=False)
     r.hard_model = g.DEFAULT_WORK
     r.client = MockClient()
     r.busy = False

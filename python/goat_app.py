@@ -28,7 +28,9 @@ from claude_agent_sdk import (
     StreamEvent,
     SystemMessage,
     TextBlock,
+    ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
 )
 
 import close_guard
@@ -48,6 +50,7 @@ import inner_life
 import stt_gladia
 import stt_realtime
 import stt_whisper
+import talk_brain
 import tts_edge
 import voice_id
 from audio_io import EAR_QUIET_PEAK, DuplexAudio
@@ -113,12 +116,21 @@ MODEL_NAMES = {MODEL_FULL: "opus 5.5", MODEL_PREV: "opus 5", MODEL_FAST: "sonnet
 WORK_BRAINS = {"opus 5.5": MODEL_FULL, "fable 5.1": MODEL_FABLE}
 # Talking-brain choices. "gemini flash" = the local_llm transport (free,
 # always up); "sonnet 5" routes talk through a dedicated Claude talk client.
-DEFAULT_WORK = "opus 5.5"
-DEFAULT_HARD = "opus 5.5"
+# 2026-10-24 (his order: "the work done by Claude's highest AI"): Fable 5.1
+# is the pick; while the account has no usage credits for it the working
+# brain runs on Opus 5.5 instead (talk_brain.FableGate) and the UI says why.
+DEFAULT_WORK = "fable 5.1"
+DEFAULT_HARD = "fable 5.1"
 # Auto brain (brain_route.py): talk on MODEL_TALK; orders (2026-10-16: "when I
 # give a task, Opus does it"), code and serious questions on his working brain. GOAT_BRAIN_ROUTE=off = every turn
 # on the working brain again.
 BRAIN_ROUTING = os.environ.get("GOAT_BRAIN_ROUTE", "on").strip().lower() \
+    not in ("off", "0", "false", "no")
+# TWO BRAINS (his order 2026-10-24, talk_brain.py): Gemini is the voice and
+# talks with him; Claude is the working brain and does every job, silently,
+# on the Activity panel; the voice watches the job and tells him how it went.
+# GOAT_TWO_BRAINS=off (or no Gemini key) = the one-brain design again.
+TWO_BRAINS = os.environ.get("GOAT_TWO_BRAINS", "on").strip().lower() \
     not in ("off", "0", "false", "no")
 # "which model are you?" gets told which one is answering THIS turn.
 MODEL_Q_RE = re.compile(
@@ -376,6 +388,46 @@ VOICE (everything you write is spoken aloud): the FIRST output each turn is one 
 ONE BRAIN, WITH EYES: there is no other brain or lane. Every message opens with a "[live desktop …]" note (front window, open windows, busiest processes, RAM, battery, time) — that IS his screen right now; answer from it without tools, and screenshot only when you need pixels. Answer from context first; search/read files only for a specific file or a fact you lack. Verify before reporting: act, check it took, then say done; match process names loosely before saying "not found". "[chat since your last turn]" lists instant device actions GOAT already did — never reply to it.
 MODEL TRUTH: GOAT runs two Claude models on one conversation, picked per turn: Sonnet 5.5 for talk, his working brain (Opus 5.5 unless switched) for orders, code and serious questions. If asked which is answering, a "[this turn: ...]" note names it. Never announce the switching.
 """.strip()
+
+# ---- the working brain's prompt in TWO_BRAINS mode (2026-10-24) ----
+# Same GOAT, same hands, same rules for doing work — minus everything about
+# speaking (the voice is Gemini's now) and the one-brain identity lines, plus
+# its place in the crew.
+WORKER_BASE_PROMPT = VOICE_BASE_PROMPT.replace(
+    "Your replies are spoken aloud, so keep\nthem short and plain.",
+    "Your final reply is a short report that GOAT's voice\nreads and passes on to him.")
+_VOICE_ONLY = ("You are GOAT", "SOUND NATURAL", "VOICE (", "ONE BRAIN", "MODEL TRUTH",
+               "BOOT BRIEFING", "SIDE TALK", "IDENTITY IS ABSOLUTE",
+               "CHARACTER:", "PROTOCOL:", "- Terse ack", "- INTERRUPTIONS",
+               "- When done, offer")
+WORKER_ROLE = """
+TWO BRAINS — YOUR PLACE (his design, 2026-10-24): GOAT has two brains working as one crew. You are Claude, GOAT's WORKING brain: the hands — tools, code, files, the screen, the browser, the web, his phone, GOAT's own code and memory. GOAT's VOICE is Gemini: it talks with Giorgi, hands you jobs, watches your work live (every step, thought and line you write shows on his Activity panel and in the voice's notes) and tells him how it's going. It trusts you to do the work right; you trust it to say it right.
+- A job arrives as "[job from GOAT's voice …]" with Giorgi's own words quoted, then the voice's instruction. Do it fully, verify it, then end with your REPORT to the voice: 1-4 plain sentences — what you did, the result, whether you checked it, and, if you need his decision, one clear question. The voice reads it and tells him in its own words; nothing you write is spoken directly, so no "Sir", no greetings, no spoken filler, paths and code only when they matter.
+- "[note from Giorgi via the voice …]" mid-job = his addition, correction or answer: fold it in. A new unrelated job in a note: finish the current one, then do it.
+- On a long job you may send the voice ONE short mid-job line with the voice tool tell_voice (a milestone, how long it'll take, or a question he can answer while you continue). Rarely — the voice already sees your steps.
+- You never chat. If a job is really a question, the answer IS your report.
+- Name: you are Claude, GOAT's working brain; the voice is GOAT's voice. If a job asks which models run GOAT, the [models] line in the job says it.
+"""
+WORKER_PERSONA = (
+    "You are Claude, the working brain of GOAT — Giorgi's own JARVIS-style AI "
+    "on his laptop (he's KingKaglu, your partner and friend). Loyal, exact, "
+    "razor sharp.\n" + "\n".join(
+        ln for ln in PERSONA.splitlines()
+        if not ln.lstrip().startswith(_VOICE_ONLY)).strip()
+    + "\n\n" + WORKER_ROLE.strip())
+# What the voice says when it hands a job over without words of its own.
+ACK_HANDOFF = {
+    "en": ("Sir, handing that to Claude.", "Sir, Claude's on it.",
+           "Sir, passing it to Claude now."),
+    "ka": ("ბატონო, Claude-ს გადავეცი.", "ბატონო, Claude უკვე მუშაობს.",
+           "ბატონო, ახლავე Claude-ს ვაბარებ."),
+}
+ACK_NOTE = {"en": "Sir, I've told Claude.", "ka": "ბატონო, Claude-ს გადავეცი."}
+ACK_STOP = {"en": "Sir, I've stopped Claude.", "ka": "ბატონო, Claude გავაჩერე."}
+VOICE_DOWN = {
+    "en": "Sir, my voice link just dropped. Give me a moment.",
+    "ka": "ბატონო, ხმის კავშირი გაწყდა. ერთი წამი.",
+}
 
 ROUTE_FILE = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), ".phone", "route.json")
@@ -1302,6 +1354,21 @@ class TtsPipeline:
 
 
 class GoatApp:
+    # Two-brain state defaults (set for real in __init__; the class-level
+    # values keep harnesses that build a bare GoatApp on the one-brain path).
+    two_brains = False
+    talk_busy = False
+    _front_task = None
+    _front_gen = 0
+    _barge_n = 0
+    _job_silent = False
+    _job_args = None
+    _retry_job = None
+    _cover_turn = False
+    _talk_body_seen = False
+    _t_last_heard = 0.0
+    _utt_live = False
+
     def __init__(self, emit=_default_emit):
         self.emit = emit
         # Let the local brain's hands change GOAT's own UI live: these tools
@@ -1480,6 +1547,36 @@ class GoatApp:
         self.reply_to = _load_route()
         self.boot_t = time.time()
         self.on_route = None
+        # ---- two brains (talk_brain.py, his order 2026-10-24) ----
+        # The voice: Gemini, answering in the middle and out loud. The
+        # working brain: self.client (Claude), silent, on the Activity panel.
+        # The watch sees every step of Claude's job through the emit tee
+        # below and decides when there's news to tell him.
+        self.talker = talk_brain.GeminiTalk()
+        self.two_brains = TWO_BRAINS and self.talker.available()
+        self.fable = talk_brain.FableGate()
+        self._watch = talk_brain.WATCH
+        self.talk_busy = False          # a voice turn is composing (UI: thinking)
+        self._front_task = None         # that turn's asyncio task
+        self._front_gen = 0             # bumps per voice turn: stale ones go mute
+        self._barge_n = 0               # bumps on every voice barge-in
+        self._job_silent = False        # the running Claude turn is a voice job
+        self._job_args = None           # (task, his, depth) for a retry
+        self._retry_job = None          # a job the context wall cut: run again
+        self._cover_turn = False        # Gemini down: Claude speaks this turn
+        self._talk_body_seen = False    # the voice heard the full body note
+        self._t_last_heard = 0.0        # he last said something (any device)
+        self._utt_live = False          # laptop mic: he's mid-utterance
+        raw_emit = self.emit
+
+        def tee(kind, *args, **kw):
+            raw_emit(kind, *args, **kw)
+            if kind.startswith("work_"):
+                try:
+                    self._watch.on_event(kind, args[0] if args else "")
+                except Exception as e:  # noqa: BLE001 — the watch never breaks a turn
+                    print(f"[watch] {type(e).__name__}: {e}")
+        self.emit = tee
 
     def _route(self, origin, mic=False):
         if origin is None:
@@ -1519,6 +1616,8 @@ class GoatApp:
         # words start a fresh talk turn (or a spoken "stop" brakes the work
         # turn, handled in _talk).
         self.emit("status", "listening")
+        self._barge_n += 1      # the voice turn that was talking goes quiet
+        self._barge_t = time.monotonic()
         self.tts.cancel()
         self._say_buf = ""
 
@@ -1528,8 +1627,10 @@ class GoatApp:
         except Exception as e:  # noqa: BLE001
             self.emit("status", f"interrupt failed: {e}")
 
-    async def _cut_turn(self, then: str | None):
+    async def _cut_turn(self, then: str | None, voice: bool = True):
         """End the running turn NOW and, if he said something, answer that.
+        voice=False (two brains): only Claude's job stops — the voice, which
+        may be saying "Sir, I've stopped Claude" right now, is left alone.
 
         interrupt() ends the turn with an error_during_execution result about
         20ms later (measured 2026-09-25, SDK 0.2.152). _consume swallows that
@@ -1541,11 +1642,12 @@ class GoatApp:
         held, self._after_turn = getattr(self, "_after_turn", ""), ""
         if held and then:
             then = f"{held}\n{then}"   # lines held during the answer ride along
-        self._stale_voice = False
         self._after_cut = then
         self.suppressed = True
-        self.tts.cancel()
-        self._say_buf = ""
+        if voice:
+            self._stale_voice = False
+            self.tts.cancel()
+            self._say_buf = ""
         await self._safe_interrupt()
         asyncio.create_task(self._cut_watchdog(self._cut_id))
 
@@ -1564,6 +1666,12 @@ class GoatApp:
         A pending rotation handoff rides along, so the fresh session has its
         memory before he speaks. If he talks during it, _cut_turn ends it."""
         if self.busy or self.claude_out or not WARM_BRAIN:
+            return
+        if self.two_brains:
+            # The voice answers him; Claude's first job can pay its own cold
+            # start (a few seconds inside a job of minutes) instead of a
+            # warm-up turn on the top model at every boot. A pending handoff
+            # rides on that first job.
             return
         text = ("[warm-up] You just (re)connected. This is not from Giorgi — "
                 "reply with only: OK")
@@ -1587,9 +1695,15 @@ class GoatApp:
         self._warming = False   # a cut warm-up must not swallow HIS turn
         self.suppressed = False
         self.busy = False
-        self._say_buf = ""
         self._reply_acc = ""
-        self._quiet_state, self._quiet_probe = "speak", ""
+        if self._job_silent:
+            # Claude's job was stopped; the voice's own speech state is not
+            # Claude's to clear.
+            self._job_silent = False
+            self._watch.finish("stopped", "")
+        else:
+            self._say_buf = ""
+            self._quiet_state, self._quiet_probe = "speak", ""
         self._work_done_at = time.monotonic()
         self.emit("work_done", "")
         nxt, self._after_cut = self._after_cut, None
@@ -1724,6 +1838,7 @@ class GoatApp:
 
     def _on_utt_start(self, preroll):
         self._utt_began = time.monotonic()
+        self._utt_live = True       # the voice's news waits until he's done
         self._utt_echo = self._phone_voicing()
         if self.mic_muted or self.phone_live or self._utt_echo or not self.loop:
             return
@@ -1745,11 +1860,14 @@ class GoatApp:
             rt.soft_commit()   # overlap the ear with GOAT's own VAD hangover
 
     def _on_utt_abort(self):
+        self._utt_live = False
         rt, self._rt = self._rt, None
         if rt is not None:
             rt.end()
 
     def _on_utterance(self, audio_np: np.ndarray):
+        self._utt_live = False
+        self._t_last_heard = time.monotonic()
         self._lat_start()      # the clock he actually feels starts HERE
         rt, self._rt = self._rt, None
         if rt is not None:
@@ -1873,6 +1991,7 @@ class GoatApp:
             await asyncio.sleep(0.1)
         recent = list(self._exchanges)[-NEW_CHAT_RECAP:]
         self._exchanges.clear()
+        self.talker.history.clear()
         self._local_unseen.clear()
         self._pending_handoff = ""
         if recent:
@@ -1961,6 +2080,9 @@ class GoatApp:
             return
         self._route(origin)
         self._typed_lang(text)
+        if self.two_brains:
+            asyncio.run_coroutine_threadsafe(self._direct_job(text, text), self.loop)
+            return
         asyncio.run_coroutine_threadsafe(self._work(text, hard=hard), self.loop)
 
     def submit_files(self, paths: list, note: str = "", origin: str = "laptop"):
@@ -1975,6 +2097,10 @@ class GoatApp:
         # His line + thumbnails in the chat, so he can see what he sent.
         self.emit("you", note or ", ".join(os.path.basename(p) for p in paths))
         self.emit("files", "\n".join(paths))
+        if self.two_brains:
+            asyncio.run_coroutine_threadsafe(
+                self._direct_job(text, note or "look at these files"), self.loop)
+            return
         asyncio.run_coroutine_threadsafe(self._work(text), self.loop)
 
     # ---- async side ----
@@ -2013,6 +2139,7 @@ class GoatApp:
         lines = list(ACK_ORDER[lang]) + list(
             ACK_REFLEX[lang]) + list(BACKCHANNEL[lang]) + [
             DONE_LEAD[lang], FAIL_LEAD[lang], REFLEX_FAIL[lang], LEAD_WORD[lang],
+            *ACK_HANDOFF[lang], ACK_NOTE[lang], ACK_STOP[lang],
             "Stopped." if lang == "en" else "შევჩერდი."]
         threading.Thread(target=self.tts.prewarm, args=(lines,),
                          daemon=True).start()
@@ -2213,6 +2340,7 @@ class GoatApp:
         again whenever the fast path won. One door in."""
         if vcheck is not None and not await self._voice_gate(vcheck, text):
             return
+        self._t_last_heard = time.monotonic()
         if text is None:
             # Hard STT failure — he spoke and his words went nowhere. Say it
             # (once per outage), never just log it: a deaf GOAT looks alive.
@@ -2329,8 +2457,11 @@ class GoatApp:
         # the brain gets both halves as one turn (the cut-off is the same one
         # _work does for any new message while busy).
         prev = getattr(self, "_merge_prev", None)
+        # "Still on the previous one" = the brain answering him: the voice
+        # with two brains (Claude's long job is not a reason to merge).
+        answering = self.talk_busy if self.two_brains else self.busy
         if (prev is not None and held is None and gap is not None
-                and gap <= MERGE_WINDOW_S and self.busy
+                and gap <= MERGE_WINDOW_S and answering
                 and not (STOP_RE.search(text) and len(text.split()) <= 5)):
             try:
                 is_reflex = reflex.match(text, self.turn_lang) is not None
@@ -2340,7 +2471,7 @@ class GoatApp:
                 print(f"[merge] {gap:.2f}s after the last one: "
                       f"{prev[0]!r} + {text!r}")
                 text = prev[0].rstrip(" -–—.…") + " " + text
-        if DANGLING_RE.search(text) and not self.busy:
+        if DANGLING_RE.search(text) and not answering:
             # "This is-" (live 2026-10-01): the ear committed him mid-sentence
             # and the brain answered a fragment. A transcript that trails off
             # waits HOLD_DANGLING_S for the rest before it becomes a turn.
@@ -2396,13 +2527,42 @@ class GoatApp:
                     and BARE_STOP_CORE.search(text)):
                 print(f"[barge] he said stop: {text!r}", flush=True)
                 self._hushed_at = time.monotonic()
-                if self.busy:
+                if self.two_brains:
+                    self._front_cancel()   # he stopped my VOICE; Claude's job runs on
+                elif self.busy:
                     await self._cut_turn(None)
                     self.emit("work_fail", "Stopped.")
                 return
             self._cut_note = (time.monotonic(), cut_in[1])
+        if (self.two_brains and BARE_STOP_RE.match(text.strip())
+                and BARE_STOP_CORE.search(text)
+                and (self.talk_busy or self.tts.speaking()
+                     or time.monotonic() - getattr(self, "_barge_t", 0.0) < 4.0)):
+            # Two brains: a bare "stop"/"wait" while the voice is talking (or
+            # just got cut off by his voice) is for the voice — it goes quiet,
+            # with no reply. Claude's job is NOT touched: stopping a job is
+            # said in words ("stop the job", "cancel that") and the voice
+            # handles it with stop_worker.
+            print(f"[barge] voice hushed: {text!r}", flush=True)
+            self._hushed_at = time.monotonic()
+            self._front_cancel()
+            return
         # Spoken brake on a running work turn.
         if self.busy and STOP_RE.search(text) and len(text.split()) <= 5:
+            if self.two_brains:
+                # Voice silent, Claude working, he says "stop": that's the job.
+                if self._job_silent:
+                    await self._stop_worker()
+                else:
+                    await self._cut_turn(None)
+                    self.emit("work_fail", "Stopped.")
+                self._front_cancel()
+                self.tts.mark_reply()
+                self.emit("voice_note", self.talker.label())
+                self.emit("delta", "")
+                self.tts.say(ACK_STOP.get(self.turn_lang) or ACK_STOP["en"])
+                self.talker.remember(text, ACK_STOP.get(self.turn_lang) or ACK_STOP["en"])
+                return
             # Through _cut_turn so the interrupted turn's error result is
             # swallowed — it used to follow "Stopped." with "That one failed."
             await self._cut_turn(None)
@@ -2454,6 +2614,19 @@ class GoatApp:
             self.emit("status", f"reflex check failed: {e}")
         if rx is not None:
             await self._reflex(text, rx)
+            return
+        if self.two_brains:
+            # TWO BRAINS (2026-10-24): the voice (Gemini) takes the turn. It
+            # answers, or hands the job to Claude, or tells him how Claude's
+            # job is going. As its own task, so his next words can cut it off.
+            if (not self.talk_busy and self.tts.speaking()
+                    and not (STOP_RE.search(text) and len(text.split()) <= 5)):
+                self._stale_voice = True    # see the one-brain note below
+            elif echo:
+                self.tts.cancel()
+            self._merge_prev = (text, time.monotonic())
+            self._front_start(text)
+            self._last_exchange = time.monotonic()
             return
         # ONE BRAIN (2026-09-23, his order): the talking lane is gone. It was
         # a second, blind mind — asked about his screen, it answered "I can't
@@ -2507,7 +2680,9 @@ class GoatApp:
         game_pilot.PILOT.stop("he said stop")
         self.emit("you", his)
         self._last_exchange = time.monotonic()
-        if self.busy:
+        if self.two_brains:
+            self._front_cancel()     # the voice stops; Claude's job runs on
+        elif self.busy:
             await self._cut_turn(None)
             self.emit("work_fail", "Stopped.")
 
@@ -2522,6 +2697,8 @@ class GoatApp:
         reflex is never allowed to say "done" about something that didn't
         happen."""
         t0 = time.monotonic()
+        if self.two_brains:
+            self._front_cancel()   # a voice turn still composing is superseded
         self.tts.cancel()
         self.tts.new_turn()
         self._first_said = False   # new turn: first breath may clause-break
@@ -2548,7 +2725,11 @@ class GoatApp:
             # turn to the brain, which can look — the ack already went out,
             # so to him it is one continuous "on it".
             self._say_buf = ""
-            await self._work(text, hard=False, echo_you=False)
+            if self.two_brains:
+                self.talker.remember(text, spoken)
+                await self._give_worker(text, "quick", his=text)
+            else:
+                await self._work(text, hard=False, echo_you=False)
             self._last_exchange = time.monotonic()
             return
         if isinstance(result, str) and result.startswith("ERROR"):
@@ -2574,9 +2755,517 @@ class GoatApp:
         self._last_exchange = time.monotonic()
         reply = f"{spoken} ({rx.detail})" if rx.detail and not rx.speak else spoken
         self._exchanges.append((text[:300], reply[:300]))
-        self._local_unseen.append((text[:200], reply[:200]))
+        if self.two_brains:
+            self.talker.remember(text, reply)   # the voice owns the conversation
+        else:
+            self._local_unseen.append((text[:200], reply[:200]))
         self._log_exchange(text, reply)
         self.emit("turn_done", "")
+
+    # ==== TWO BRAINS: the voice (Gemini) and its partner (Claude) ==========
+    # His order 2026-10-24 — see talk_brain.py for the why and the numbers.
+    # The voice turn below reuses the one-brain speech path (_speak_delta:
+    # "Sir," lead, clause-first TTS, [[quiet]] side talk, stale-voice hand
+    # over); Claude's jobs run through _work_job and never touch that path.
+
+    def _worker_target(self) -> str:
+        """Claude's highest model this account can run right now."""
+        if self.work_model == "fable 5.1" and self.fable.ok:
+            return MODEL_FABLE
+        return MODEL_FULL
+
+    def _worker_label(self) -> str:
+        return _friendly_model_name(self._worker_target()).title()
+
+    def _emit_brains(self):
+        """The interface's picture of both brains: 'voice|work|note'."""
+        note = ""
+        if self.work_model == "fable 5.1" and not self.fable.ok:
+            note = f"Fable 5.1 {self.fable.reason} — Opus 5.5 works instead"
+        if self.claude_out:
+            note = "Claude is out of usage" + (
+                f" — back at {self.claude_reset}" if self.claude_reset else "")
+        if not self.two_brains:
+            self.emit("brains", f"|{self._worker_label()}|{note}")
+            return
+        voice = self.talker.label()
+        vnote = self.talker.quota_note()
+        if not self.talker.usable():
+            vnote = (f"free quota used up — back at {self.talker.out_until()}; "
+                     "Claude covers when free")
+        elif self.talker.fail_streak >= 2:
+            vnote = "Gemini not answering right now"
+        self.emit("brains", f"{voice}|{self._worker_label()}|{note}|{vnote}")
+
+    def _front_cancel(self):
+        """Silence the voice turn in flight (his words cut it off)."""
+        self._front_gen += 1
+        t = self._front_task
+        if t is not None and not t.done():
+            t.cancel()
+        self.talk_busy = False
+
+    def _front_start(self, text: str, kind: str = "user", event: dict | None = None):
+        old = self._front_task
+        if old is not None and not old.done():
+            old.cancel()
+        self._front_task = asyncio.create_task(self._front_turn(text, kind, event))
+        return self._front_task
+
+    async def _front_parts(self, text: str, kind: str, event: dict | None,
+                           probe: bool) -> list:
+        """The message the voice gets: what it can see right now (clock,
+        screen, body, Claude's job), then his words or the event."""
+        blocks = [talk_brain.clock_note()]
+        try:
+            blocks.append(await asyncio.to_thread(live_view.note))
+        except Exception as e:  # noqa: BLE001
+            blocks.append(f"[live desktop unavailable: {e}]")
+        try:
+            full = (not self._talk_body_seen
+                    or (kind == "user" and bool(body_sense.ASKED_RE.search(text))))
+            body = self._body.note(full=full)
+            self._talk_body_seen = True
+            if body:
+                blocks.append(body)
+        except Exception as e:  # noqa: BLE001
+            print(f"[body] {type(e).__name__}: {e}")
+        if kind == "user":
+            try:
+                inner = self._inner.turn_note(text)
+                if inner:
+                    blocks.append(inner)
+            except Exception as e:  # noqa: BLE001
+                print(f"[inner] {type(e).__name__}: {e}")
+        if self._local_unseen:
+            blocks.append("[said or done by GOAT since your last turn — context "
+                          "only, don't reply to it]\n" + "\n".join(
+                              f"him: {u}\nGOAT: {a}" for u, a in self._local_unseen[-6:]))
+            self._local_unseen.clear()
+        news = self_update.take_notice()
+        if news:
+            blocks.append("[self-update since he last spoke — tell him in one "
+                          "short line, then answer him]\n" + news)
+        extra = ""
+        if self.work_model == "fable 5.1" and not self.fable.ok:
+            extra = (f"(Fable 5.1, Claude's top model, {self.fable.reason}; "
+                     "Opus 5.5 does the work meanwhile)")
+        if self.claude_out:
+            extra = ("Claude is OUT OF USAGE" + (f" until about {self.claude_reset}"
+                     if self.claude_reset else "") + " — jobs can't run until then; "
+                     "only instant commands (open, close, volume, media) work.")
+        eff = getattr(self, "_live_effort", None) or self.effort
+        blocks.append(self._watch.status_note(self._worker_label(), eff, extra))
+        if kind == "user":
+            final = self._watch.take_final()
+            if final is not None:
+                blocks.append("[news to fold in — answer him first, then tell him "
+                              "this in one short sentence]\n"
+                              + self._watch.event_prompt(final))
+        if MODEL_Q_RE.search(text or ""):
+            blocks.append(f"[models: you, the voice, are {self.talker.label()}; "
+                          f"Claude, the working brain, is {self._worker_label()}]")
+        if self.turn_lang == "ka":
+            blocks.append(KA_TALK_NOTE.strip())
+        if probe:
+            blocks.append(side_talk.PROBE_NOTE.strip())
+        cut = getattr(self, "_cut_note", None)
+        self._cut_note = None
+        if cut is not None and time.monotonic() - cut[0] < CUT_IN_S:
+            blocks.append("[he talked over you, so you stopped mid-answer"
+                          + (f'; the last thing he heard: "{cut[1][:200]}"'
+                             if cut[1] else "")
+                          + ". Answer what he said now.]")
+        head = "\n".join(blocks)
+        if kind == "user":
+            return [{"text": f"{head}\n\nGiorgi: {text}"}]
+        return [{"text": f"{head}\n\n{self._watch.event_prompt(event)}"}]
+
+    async def _front_turn(self, text: str, kind: str = "user", event: dict | None = None):
+        """One voice turn: Gemini answers out loud, and may hand Claude a job,
+        pass Claude a note, stop Claude, or look at the screen.
+        kind: "user" (he spoke) or "event" (news about Claude's job)."""
+        self._front_gen += 1
+        my = self._front_gen
+        barge0 = self._barge_n
+        self.talk_busy = True
+        spoken: list = []
+        acted: list = []
+        look: list = []
+        lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
+        started_speaking = False
+
+        def live() -> bool:
+            return my == self._front_gen and self._barge_n == barge0
+
+        def on_text(t: str):
+            nonlocal started_speaking
+            if not live():
+                return
+            started_speaking = True
+            spoken.append(t)
+            self._speak_delta(t)
+
+        def on_call(name: str, args: dict):
+            if not live():
+                return
+            acted.append(name)
+            his = text if kind == "user" else ""
+            if name == "hand_to_worker":
+                task = str(args.get("task") or text).strip()
+                depth = "quick" if args.get("depth") == "quick" else "deep"
+                print(f"[voice→claude] {depth}: {task[:100]!r}", flush=True)
+                asyncio.create_task(self._give_worker(task, depth, his=his))
+            elif name == "message_worker":
+                asyncio.create_task(self._message_worker(
+                    str(args.get("message") or text), his=his))
+            elif name == "stop_worker":
+                asyncio.create_task(self._stop_worker())
+            elif name == "look_at_screen":
+                look.append(str(args.get("question") or ""))
+
+        try:
+            if kind == "event":
+                # News arrives on its own line in the chat, not inside his
+                # last answer's label.
+                self.tts.mark_reply()
+                self.tts.new_turn()
+                self.emit("voice_note", self.talker.label())
+                self.emit("delta", "")
+            elif not getattr(self, "_stale_voice", False):
+                self.tts.new_turn()
+                self.emit("delta", "")
+            self._first_said = False
+            self._say_buf = ""
+            self._quiet_state = None if kind == "user" else "speak"
+            self._quiet_probe = ""
+            probe = kind == "user" and bool(getattr(self, "_side_probe", False))
+            self._side_probe = False
+            if (kind == "user" and not probe
+                    and time.monotonic() >= getattr(self, "_side_until", 0.0)
+                    and not side_talk.looks_aside(text, WAKE_RE)):
+                asyncio.create_task(self._front_filler(my))
+            parts = await self._front_parts(text, kind, event, probe)
+            if self.talker.usable():
+                res = await self.talker.reply(parts, on_text, on_call)
+            else:   # every Gemini model is resting: don't wait on a sure "no"
+                res = {"ok": False, "model": "", "ttft": None,
+                       "error": f"Gemini out of quota until {self.talker.out_until()}"}
+            if res["ok"] and look and live():
+                shot = await asyncio.to_thread(talk_brain.screenshot_part)
+                said = "".join(spoken).strip()
+                note = ("[the screenshot of his screen you asked for is attached — "
+                        "answer from it" + (f'; you already said "{said}", so '
+                        "continue without repeating it" if said else "") + "]"
+                        if shot else "[the screenshot failed — answer from the "
+                        "desktop note, or hand it to Claude to look]")
+                parts2 = parts + ([shot] if shot else []) + [{"text": note}]
+                res = await self.talker.reply(
+                    parts2, on_text,
+                    lambda n, a: None if n == "look_at_screen" else on_call(n, a))
+            self._emit_brains()          # winner model / quota state for the card
+            if res["ok"]:
+                self.emit("talkbrain", self.talker.label())
+                if res.get("ttft") is not None:
+                    print(f"[talk] {res['model']} first token {res['ttft']:.2f}s"
+                          + (f" (ended: {res['error']})" if res["error"] else ""),
+                          flush=True)
+            if not res["ok"] and live():
+                print(f"[talk] Gemini failed: {res['error']}", flush=True)
+                self._emit_brains()
+                if not started_speaking:
+                    if kind == "event":
+                        line = self._watch.fallback_line(event, lang)
+                        if line:
+                            self.tts.say(line)
+                            spoken.append(line)
+                    elif talk_brain.STATUS_Q_RE.search(text) and (
+                            self.busy or self._watch.job):
+                        # "what's it doing?" needs no model: the watch knows.
+                        line = self._watch.local_status(lang)
+                        self.tts.say(line)
+                        spoken.append(line)
+                    elif not self.busy and not self.claude_out:
+                        # Claude covers this one turn and speaks it itself (the
+                        # one-brain path), so the voice never just goes silent.
+                        print("[talk] Claude covers this turn", flush=True)
+                        self.talk_busy = False
+                        self._quiet_state = "speak"
+                        self._cover_turn = True
+                        await self._work(text, hard=False, echo_you=False)
+                        return
+                    else:
+                        back = self.talker.out_until()
+                        if back and lang == "en":
+                            line = (f"Sir, Gemini's out of free requests until {back}. "
+                                    "Claude's still on your job — I'll tell you when "
+                                    "it's done.")
+                        elif back:
+                            line = (f"ბატონო, Gemini-ს ლიმიტი {back}-მდე ამოიწურა. "
+                                    "Claude ისევ მუშაობს, დასრულებისას გეტყვი.")
+                        else:
+                            line = VOICE_DOWN[lang]
+                        self.tts.say(line)
+                        spoken.append(line)
+            if not live():
+                return
+            said = "".join(spoken)
+            if (kind == "user" and res["ok"] and not acted
+                    and talk_brain.CLAIM_RE.search(said)):
+                # It SAID Claude has it but called nothing: make it true.
+                print(f"[talk] claim without action — handing over: {text[:60]!r}",
+                      flush=True)
+                acted.append("hand_to_worker")
+                asyncio.create_task(self._give_worker(text, "deep", his=text))
+            # End of the turn: same tail rules as the one-brain path.
+            qstate = self._quiet_state
+            if qstate is None and self._quiet_probe:
+                self._quiet_state = "speak"
+                held, self._quiet_probe = self._quiet_probe, ""
+                self._speak_delta(held)
+                qstate = "speak"
+            if qstate == "quiet":
+                self._quiet_state = "speak"
+                self._say_buf = ""
+                self._side_until = time.monotonic() + side_talk.SIDE_QUIET_S
+                print(f"[side-talk] voice stayed quiet: {text!r}", flush=True)
+                self.emit("reply_drop", "")
+                self.emit("status", "on a call? say \"GOAT\" to talk to me")
+                self.talker.remember(text, side_talk.QUIET_TOKEN)
+                return
+            self._quiet_state = "speak"
+            self._stale_voice = False
+            self._flush_sentences(force=True)
+            reply = "".join(spoken).strip()
+            if not reply:
+                ack = ""
+                if "hand_to_worker" in acted:
+                    pool = ACK_HANDOFF[lang]
+                    self._ho_i = (getattr(self, "_ho_i", -1) + 1) % len(pool)
+                    ack = pool[self._ho_i]
+                elif "message_worker" in acted:
+                    ack = ACK_NOTE[lang]
+                elif "stop_worker" in acted:
+                    ack = ACK_STOP[lang]
+                if ack:
+                    self.tts.say(ack)
+                    reply = ack
+            if kind == "event":
+                self.talker.remember(self._event_line(event), reply)
+                if reply:
+                    self.emit("work_voice", reply)
+                    self._log_exchange(self._event_line(event), reply)
+            else:
+                self.talker.remember(text, reply)
+                self._exchanges.append((text[:300], reply[:300]))
+                if not text.startswith("[boot-briefing]"):
+                    self._log_exchange(text, reply)
+            self._last_exchange = time.monotonic()
+            self.emit("turn_done", "")
+        except asyncio.CancelledError:
+            # His next words cut this turn off. News that never got said goes
+            # back to the front of the queue; what he heard stays in history.
+            if kind == "event" and not started_speaking and event is not None:
+                self._watch.pending.insert(0, event)
+            elif kind == "user" and text:
+                self.talker.remember(text, "".join(spoken).strip() + " …(cut off)")
+            raise
+        except Exception as e:  # noqa: BLE001 — a voice bug never kills GOAT
+            print(f"[talk] turn crashed: {type(e).__name__}: {e}", flush=True)
+            if not started_speaking and live():
+                self.tts.say(VOICE_DOWN[lang])
+        finally:
+            if my == self._front_gen:
+                self.talk_busy = False
+
+    @staticmethod
+    def _event_line(ev: dict | None) -> str:
+        if not ev:
+            return "[event]"
+        return {"done": "[event: Claude finished its job]",
+                "failed": "[event: Claude's job failed]",
+                "stuck": "[event: Claude looked stuck]",
+                "checkin": "[event: progress check on Claude's job]",
+                "note": "[event: a note from Claude]"}.get(ev.get("kind"), "[event]")
+
+    async def _front_filler(self, my: int):
+        """The voice's "Sir, one moment." if Gemini is slow to start (its
+        tail latency is real — see talk_brain.py)."""
+        if BACKCHANNEL_MODE in ("off", "0", "false", "no"):
+            return
+        gen = self.tts.gen
+        await asyncio.sleep(BACKCHANNEL_AFTER_S)
+        if (my != self._front_gen or gen != self.tts.gen or self.tts._sounded
+                or not self.tts.enabled or self._say_buf
+                or self._quiet_state == "quiet" or not self.talk_busy):
+            return
+        pool = BACKCHANNEL.get(self.turn_lang) or BACKCHANNEL["en"]
+        self._bc_i = (getattr(self, "_bc_i", -1) + 1) % len(pool)
+        self.tts.say(pool[self._bc_i], filler=True)
+
+    async def _give_worker(self, task: str, depth: str = "deep", his: str = ""):
+        """The voice hands Claude a job (or Claude is busy: it's a note)."""
+        try:
+            if self.busy and self._job_silent:
+                await self._message_worker(task, his=his)
+                return
+            for _ in range(50):           # a warm-up/compact/cut finishing
+                if not self.busy:
+                    break
+                await asyncio.sleep(0.1)
+            if self.busy:
+                await self._message_worker(task, his=his)
+                return
+            await self._work_job(task, his, depth)
+        except Exception as e:  # noqa: BLE001
+            print(f"[voice→claude] dispatch failed: {type(e).__name__}: {e}", flush=True)
+            self._watch.start(task, his, self._worker_label(), depth)
+            self._watch.finish("failed", f"GOAT couldn't start the job: {e}")
+
+    async def _message_worker(self, message: str, his: str = ""):
+        """A note from the voice into Claude's running job."""
+        message = (message or "").strip()
+        if not message:
+            return
+        if not (self.busy and self._job_silent):
+            await self._give_worker(message, "deep", his=his)
+            return
+        self._watch.added(message)
+        self.emit("work_add", f"voice → Claude: {message[:140]}")
+        note = f"[note from Giorgi via the voice, while you work: {message}"
+        if his and his.strip() != message:
+            note += f' (his words: "{his.strip()[:300]}")'
+        try:
+            await self.client.query(note + "]")
+        except Exception as e:  # noqa: BLE001
+            print(f"[voice→claude] note failed: {e}", flush=True)
+
+    async def _stop_worker(self):
+        if not self.busy:
+            return
+        print("[voice→claude] stop", flush=True)
+        if self._job_silent:
+            self._watch.finish("stopped", "")
+        await self._cut_turn(None, voice=False)
+        self.emit("work_fail", "Stopped — Giorgi asked")
+
+    async def _direct_job(self, task: str, his: str):
+        """His work button / dropped files: straight to Claude, and the voice
+        says so (and tells him the result when the watch reports it)."""
+        lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
+        pool = ACK_HANDOFF[lang]
+        self._ho_i = (getattr(self, "_ho_i", -1) + 1) % len(pool)
+        self._front_cancel()
+        self.tts.cancel()
+        self.tts.new_turn()
+        self.emit("delta", "")
+        self.tts.say(pool[self._ho_i])
+        self.talker.remember(his, pool[self._ho_i])
+        await self._give_worker(task, "deep", his=his)
+
+    async def _work_job(self, task: str, his: str = "", depth: str = "deep"):
+        """Claude does one job for the voice: silently, on the Activity panel,
+        on Claude's highest model, at full thinking for deep work. Its final
+        text is the report the watch hands back to the voice."""
+        task = (task or "").strip()
+        if not task:
+            return
+        if self.claude_out and self._limit_expired():
+            self.claude_out = False
+            self.emit("claude", "ok")
+        target = self._worker_target()
+        name = _friendly_model_name(target)
+        self._watch.start(task, his, name.title(), depth)
+        if self.claude_out:
+            self._watch.finish("limit", "Claude is out of usage" + (
+                f" until about {self.claude_reset}" if self.claude_reset else ""))
+            self.emit("work_fail", "Claude is out of usage")
+            return
+        self.busy = True
+        self._cover_turn = False
+        self._job_silent = True
+        self._job_args = (task, his, depth)
+        self.last_user_text = task
+        self._current_task = task
+        self._work_started = time.monotonic()
+        self._tl_reset()
+        self._turn_has_tools = False
+        self._last_tool = ""
+        self._reply_acc = ""
+        if self.model != target:
+            try:
+                await self.client.set_model(target)
+                self.model = target
+            except Exception as e:  # noqa: BLE001
+                self.emit("status", f"model switch failed: {e}")
+        deep = depth != "quick"
+        tier = brain_route.DEEP if deep else brain_route.TASK
+        effort = self._turn_effort(task, deep, tier)
+        print(f"[claude] job ({depth}) on {name} @ {effort}: {task[:70]!r}", flush=True)
+        self.emit("model", name)
+        self.emit("brain", f"{name}|{tier}|{effort}")
+        self._emit_brains()
+        self.emit("work_start", f"{name}|{task}")
+        try:
+            view = await asyncio.to_thread(live_view.note)
+        except Exception as e:  # noqa: BLE001
+            view = f"[live desktop unavailable: {e}]"
+        recent = list(self.talker.history)[-8:]
+        convo = "\n".join(f"{'Giorgi' if m['role'] == 'user' else 'voice'}: "
+                          f"{m['text'][:300]}" for m in recent)
+        send = view
+        if convo:
+            send += ("\n\n[recent conversation between Giorgi and the voice — "
+                     "context only]\n" + convo)
+        send += (f"\n\n[models: the voice is {self.talker.label()}; you are "
+                 f"{name.title()}]")
+        send += "\n\n[job from GOAT's voice"
+        if his and his.strip() and his.strip() != task:
+            send += f' — Giorgi said: "{his.strip()[:500]}"'
+        send += f"]\n{task}"
+        if self._pending_handoff:
+            send = self._pending_handoff + "\n\n" + send
+            self._pending_handoff = ""
+        await self._route_effort(task, deep, tier)
+        self._tl_prep = time.monotonic() - self._tl_t0
+        await self.client.query(send)
+
+    def _worker_finished(self, state: str, report: str):
+        """Claude's job ended: hand the outcome to the watch (the voice says it)."""
+        self._job_silent = False
+        self._watch.finish(state, report)
+        print(f"[claude] job {state}: {(report or '')[:120]!r}", flush=True)
+
+    async def _watch_loop(self):
+        """The voice keeping an eye on Claude: once a second, is there news
+        worth saying, and is this a moment to say it?"""
+        while True:
+            await asyncio.sleep(1.0)
+            if not self.two_brains:
+                continue
+            try:
+                now = time.monotonic()
+                quiet = (not self.talk_busy and not self.tts.speaking()
+                         and not self.audio.is_tts_playing and not self._utt_live
+                         and now - self._t_last_heard > 2.5
+                         and getattr(self, "_cut_in", None) is None
+                         and getattr(self, "_held", None) is None)
+                held = (now < getattr(self, "_side_until", 0.0)
+                        or getattr(self, "_asleep", False))
+                ev = self._watch.due(quiet, now - self._last_exchange, held)
+                if ev is not None:
+                    print(f"[watch] voicing {ev['kind']}", flush=True)
+                    self._front_start("", "event", ev)
+            except Exception as e:  # noqa: BLE001
+                print(f"[watch] {type(e).__name__}: {e}", flush=True)
+
+    async def _probe_fable(self):
+        """Is Claude's top model usable on this account? (talk_brain.FableGate)"""
+        if self.fable.fresh() or self.work_model != "fable 5.1":
+            self._emit_brains()
+            return
+        await asyncio.to_thread(self.fable.probe, MODEL_FABLE, WORKSPACE)
+        self._emit_brains()
 
     def _work_status_line(self) -> str:
         """One live line about the WORK lane, fed to the talking brain every
@@ -2627,6 +3316,8 @@ class GoatApp:
             self.emit("you", text)  # (unused by default; left panel owns it)
         target_name = self.hard_model if hard else self.work_model
         target = WORK_BRAINS.get(target_name, MODEL_FULL)
+        if target == MODEL_FABLE and not getattr(getattr(self, "fable", None), "ok", False):
+            target = MODEL_FULL   # Fable 5.1 needs usage credits (talk_brain.FableGate)
         if self.busy:
             # He spoke while GOAT is mid-turn. JARVIS doesn't announce
             # "adding that" (his goal 2026-09-25: it kept saying "ესეც
@@ -3046,7 +3737,11 @@ class GoatApp:
                     if (delta.get("type") == "text_delta"
                             and not self.suppressed and not self._compacting):
                         t = delta.get("text", "")
-                        if t:
+                        if t and self.two_brains and not self._cover_turn:
+                            # Two brains: Claude's words are for the panel
+                            # and the voice, never the speaker.
+                            self.emit("work_text", t)
+                        elif t:
                             self._speak_delta(t)   # one brain: it speaks
                     elif (delta.get("type") == "thinking_delta"
                             and not self.suppressed and not self._compacting):
@@ -3078,6 +3773,7 @@ class GoatApp:
                         self._turn_has_tools = True  # this is a WORK turn now
                         self._last_tool = block.name
                         if (not self._compacting and not self._reply_acc
+                                and not (self.two_brains and not self._cover_turn)
                                 and not self._say_buf
                                 and not getattr(self, "_first_said", False)
                                 and not getattr(self, "_said_doing", False)
@@ -3092,6 +3788,13 @@ class GoatApp:
                         if getattr(self, "_tl_t0", None) is not None:
                             self._tl_pending.append(block.name.split("__")[-1])
                         self.emit("work_tool", _describe_tool(block))
+            elif isinstance(msg, UserMessage):
+                # Tool results: a run of failures is one of the voice's
+                # "Claude looks stuck" signals.
+                content = msg.content if isinstance(msg.content, list) else []
+                for block in content:
+                    if isinstance(block, ToolResultBlock):
+                        self._watch.on_tool_result(bool(block.is_error))
             elif isinstance(msg, SystemMessage):
                 if msg.subtype == "init":
                     sid = (msg.data or {}).get("session_id")
@@ -3143,8 +3846,16 @@ class GoatApp:
                     self.suppressed = False
                     self.busy = False
                     self._reply_acc = ""
-                    self._say_buf = ""
+                    if not self.two_brains:
+                        self._say_buf = ""   # with two brains that's the voice's
                     continue
+                if self.two_brains and not self._cover_turn:
+                    # Claude's job (or a follow-up of it) ended: its own
+                    # handler, nothing on the speaking path below.
+                    if await self._job_result(msg):
+                        return True
+                    continue
+                self._cover_turn = False
                 self.suppressed = False
                 self.busy = False
                 self._tl_log()
@@ -3284,6 +3995,94 @@ class GoatApp:
         # client on purpose and run() should rebuild it at the new effort.
         if self._reopen_only or self._rotate_only:
             # _apply_effort / _new_chat closed the client on purpose.
+            return True
+        return False
+
+    async def _job_result(self, msg: ResultMessage) -> bool:
+        """End of one of Claude's turns in TWO_BRAINS mode. The outcome goes
+        to the watch, which has the voice tell him. Returns True when run()
+        must reconnect (context full / rotation)."""
+        silent = self._job_silent
+        self.suppressed = False
+        self.busy = False
+        self._tl_log()
+        err = str(getattr(msg, "result", "") or "")
+        low = err.lower()
+        report = self._reply_acc.strip() or (err if not msg.is_error else "")
+        self._reply_acc = ""
+        self._work_done_at = time.monotonic()
+        self._plan_task = asyncio.create_task(self._pull_plan_usage())
+        if not silent:
+            # A turn nobody dispatched: Claude answering a note that arrived
+            # just after its job ended. Its words still reach the voice.
+            if report and not msg.is_error:
+                self._watch.start("(follow-up to the voice's last note)", "",
+                                  self._worker_label(), "deep")
+                self._worker_finished("done", report)
+            return False
+        if msg.is_error and "prompt is too long" in low:
+            try:
+                os.remove(SESSION_FILE)
+            except OSError:
+                pass
+            self._pending_handoff = self._handoff_text()
+            self._retry_job = self._job_args
+            self._job_silent = False
+            self.emit("work_step", "context full — fresh session, retrying")
+            return True
+        if (msg.is_error and self.model == MODEL_FABLE
+                and ("credit" in low or "fable" in low)):
+            # Fable refused (no usage credits): Opus 5.5 takes the same job.
+            self.fable.refused("needs usage credits")
+            self._job_silent = False
+            self.emit("work_step", "Fable 5.1 needs usage credits — Opus 5.5 takes the job")
+            self._emit_brains()
+            if self._job_args:
+                asyncio.create_task(self._work_job(*self._job_args))
+            return False
+        if self._track_usage(msg):
+            self.claude_out = True
+            self._work_failed = True
+            self._arm_resume()
+            self.emit("work_fail", "Claude ran out of usage"
+                      + (f" — resets {self.claude_reset}" if self.claude_reset else ""))
+            self._emit_brains()
+            self._worker_finished("limit", report)
+            return False
+        if msg.is_error and not report:
+            self._work_failed = True
+            self._last_work_summary = f"it errored: {err[:150]}"
+            self.emit("work_fail", f"Claude error: {err[:120]}")
+            self._worker_finished("failed", err)
+            return False
+        if self.claude_out:
+            self.claude_out = False
+            self.emit("claude", "ok")
+            self._emit_brains()
+        self._resume_text = ""
+        self._work_failed = False
+        self._last_work_summary = report[-250:]
+        task = (self._job_args or ("", "", ""))[0]
+        self._exchanges.append((f"[job for Claude] {task[:250]}", report[:300]))
+        self.emit("work_done", "")
+        self._worker_finished("done", report)
+        u = msg.usage or {}
+        self._last_ctx = self._step_ctx or (
+            (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+            + (u.get("cache_creation_input_tokens") or 0))
+        self._step_ctx = 0
+        self.emit("work_ctx", f"{self._last_ctx}|{ROTATE_CTX}")
+        if self._last_ctx > ROTATE_CTX:
+            # Rotation is free and instant; the next job carries the handoff
+            # (recent conversation and job reports from _exchanges).
+            self._rotate_only = True
+            self._last_ctx = 0
+            try:
+                os.remove(SESSION_FILE)
+            except OSError:
+                pass
+            self._pending_handoff = self._handoff_text()
+            self.emit("status", "context rotated — usage saved")
             return True
         return False
 
@@ -3444,12 +4243,17 @@ class GoatApp:
                 self.emit("claude", "ok")
                 task = self._resume_text
                 print(f"[limit] quota window over — resuming: {task[:80]!r}")
-                self._say_now("Usage is back. Picking up where I left off.")
-                await self._work(
-                    "[auto-resume] Claude's usage limit just reset and cut you "
-                    "off mid-job. Continue exactly where you left off on this "
-                    "order — check what is already done, don't redo it:\n"
-                    + task)
+                resume = ("[auto-resume] Claude's usage limit just reset and cut you "
+                          "off mid-job. Continue exactly where you left off on this "
+                          "order — check what is already done, don't redo it:\n"
+                          + task)
+                if self.two_brains:
+                    self._say_now("Sir, Claude's usage is back. It's picking up "
+                                  "where it left off.")
+                    await self._work_job(resume, "", "deep")
+                else:
+                    self._say_now("Usage is back. Picking up where I left off.")
+                    await self._work(resume)
                 if not self.claude_out:
                     return                    # it ran; done
                 # Still limited: _track_usage re-armed a fresh watcher.
@@ -3629,6 +4433,13 @@ class GoatApp:
             away_h = (time.time() - os.path.getmtime(SESSION_FILE)) / 3600
         except OSError:
             pass  # no session file — fresh brain, greeting alone covers it
+        try:
+            # Two brains: talk with the voice never touches Claude's session
+            # file; the transcript is the truer "last time we spoke".
+            talked = (time.time() - os.path.getmtime(TRANSCRIPT_FILE)) / 3600
+            away_h = talked if away_h is None else min(away_h, talked)
+        except OSError:
+            pass
         self.emit("status", "starting speech recognition...")
         if self.language in ("ka", "auto"):
             # ka pins the Georgian voice now. auto RESUMES the language the
@@ -3651,14 +4462,27 @@ class GoatApp:
         persona = PERSONA + (LANG_NOTE_KA if self.language == "ka"
                              else LANG_NOTE_AUTO if self.language == "auto"
                              else "")
+        base_prompt = VOICE_BASE_PROMPT
+        boot_model = (MODEL_TALK if BRAIN_ROUTING
+                      else WORK_BRAINS.get(self.work_model, MODEL_FULL))
+        servers = {"screen": screen_tools.SERVER}
+        if self.two_brains:
+            # Claude is the working brain only: its prompt drops the voice
+            # rules, it opens on its highest usable model, and it gets a line
+            # to the voice (tell_voice). Reports are English; the voice speaks
+            # his language.
+            persona = WORKER_PERSONA
+            base_prompt = WORKER_BASE_PROMPT
+            boot_model = self._worker_target()
+            if talk_brain.VOICE_SERVER is not None:
+                servers["voice"] = talk_brain.VOICE_SERVER
         options = ClaudeAgentOptions(
             cwd=WORKSPACE,
             permission_mode="bypassPermissions",
             # Most turns are talk, so the session opens on the talk brain and
             # the muted warm-up primes ITS prompt cache; the first deep turn
             # pays its own cold prefill, hidden inside a slow answer anyway.
-            model=(MODEL_TALK if BRAIN_ROUTING
-                   else WORK_BRAINS.get(self.work_model, MODEL_FULL)),
+            model=boot_model,
             # Every current model thinks adaptively; effort is the dial, and
             # he asked for the top of it. display="summarized" is what makes
             # the reasoning visible on the left instead of a silent gap.
@@ -3667,11 +4491,11 @@ class GoatApp:
             # If the picked brain can't serve (Fable's separate credit
             # bucket, or an overload), the turn lands on Opus 5 instead of
             # dying. Without this a credit-less Fable pick kills work.
-            fallback_model=MODEL_PREV,
+            fallback_model=(MODEL_FULL if boot_model == MODEL_FABLE else MODEL_PREV),
             # Custom short prompt instead of the claude_code preset (his order
             # 2026-10-17: the preset is ~10k+ tokens of coding-CLI guidance a
             # voice assistant never uses). Persona rides after it unchanged.
-            system_prompt=VOICE_BASE_PROMPT + "\n" + persona,
+            system_prompt=base_prompt + "\n" + persona,
             include_partial_messages=True,
             # "project" = ONLY workspace/.claude — GOAT's own skill library.
             # Giorgi's global plugins/hooks stay out (the latency win that
@@ -3681,7 +4505,7 @@ class GoatApp:
             # `browser` land in the same tool list as Bash and Read, called the
             # same way, with no extra process or port (2026-09-14). Everything
             # that only exists as pixels was unreachable before this.
-            mcp_servers={"screen": screen_tools.SERVER},
+            mcp_servers=servers,
             # Only the in-process screen server: the claude.ai account
             # connectors (Figma, Gmail, Docs...) add thousands of tokens of
             # deferred-tool listings to every prompt and are never voice work.
@@ -3748,8 +4572,17 @@ class GoatApp:
         # actually PICKED — this line used to hardcode Gemini, so booting with
         # "sonnet 5" selected put a model name in the footer that was simply
         # not answering him. MODEL TRUTH applies to the chrome too.
-        self.emit("talkmodel", _friendly_model_name(self.model))
+        self.emit("talkmodel", self.talker.label() if self.two_brains
+                  else _friendly_model_name(self.model))
         self.emit("model", _friendly_model_name(self.model))
+        self._emit_brains()
+        asyncio.create_task(self._watch_loop())
+        asyncio.create_task(self._probe_fable())
+        if self.two_brains:
+            # ASCII only: GOAT's log is cp1252 and an arrow kills the engine.
+            print(f"[brains] voice: {' > '.join(self.talker._models()) or 'none (all resting)'}; "
+                  f"work: {self._worker_label()} — Fable 5.1 {self.fable.reason}",
+                  flush=True)
         # This code just booted end to end — it IS the last-good version.
         # Snapshot it so a future bad self-edit always has a way back.
         threading.Thread(target=self_check.snapshot, daemon=True).start()
@@ -3817,7 +4650,14 @@ class GoatApp:
                     self.suppressed = False
                     self._hold_deltas = False
                     self._delta_buf = ""
-                    self.emit("talkmodel", _friendly_model_name(self.model))
+                    if self._job_silent:
+                        # The job died with the engine: the voice says so.
+                        self._worker_finished(
+                            "lost", f"GOAT's engine hiccuped ({type(e).__name__}) "
+                            "and the job was cut off; it reconnected.")
+                        self.emit("work_fail", "engine hiccup — job lost")
+                    self.emit("talkmodel", self.talker.label() if self.two_brains
+                              else _friendly_model_name(self.model))
                     self.emit("status", "reconnected — working brain back")
                     continue
                 if not wants_fresh:
@@ -3852,6 +4692,18 @@ class GoatApp:
                     await self._warm_brain()   # carries the handoff
                     continue
                 self.emit("status", "fresh session — working brain ready")
+                if self._retry_job:
+                    # Two brains: Claude's job hit the context wall — run it
+                    # again in the fresh session (once).
+                    job, self._retry_job = self._retry_job, None
+                    self.busy = False
+                    if job[0] != retried_text:
+                        retried_text = job[0]
+                        await self._work_job(*job)
+                    else:
+                        self._watch.finish("failed", "the job is too big for one "
+                                           "session — it filled Claude's context twice")
+                    continue
                 if self.last_user_text and self.last_user_text != retried_text:
                     retried_text = self.last_user_text
                     # Retry the work order that filled the context.

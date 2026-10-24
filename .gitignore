@@ -51,3 +51,7 @@ python/live-shot.png.tmp
 voiceid/
 .episodes.json
 .inner_life.json
+
+# two brains runtime state (2026-10-24)
+python/.talk-quota.json
+python/.fable-gate.json

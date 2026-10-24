@@ -86,8 +86,9 @@ except (OSError, json.JSONDecodeError) as e:
     check("stt fixes", False, type(e).__name__)
 
 # 7. Self-knowledge: memory and skills must not describe removed parts of GOAT.
-STALE_TERMS = ("front desk", "front-desk", "fast brain", "talking brain",
-               "talk lane", "two brains", "gemini")
+# (2026-10-24: Gemini is GOAT's voice again and the two brains are real, so
+# "gemini" / "two brains" / "talking brain" are current words, not stale.)
+STALE_TERMS = ("front desk", "front-desk", "fast brain", "talk lane")
 WS = "C:/Users/user/goat-standalone/workspace"
 notes = [os.path.join(WS, "memory.md")]
 skills = os.path.join(WS, ".claude", "skills")

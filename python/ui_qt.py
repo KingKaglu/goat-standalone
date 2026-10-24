@@ -59,6 +59,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -254,7 +255,7 @@ DESIGN_VERSION = 7
 DEFAULT_CFG = {"theme": "midnight", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
                "lang": "en", "character": "goat",
-               "work_model": "opus 5.5", "hard_model": "opus 5.5",
+               "work_model": "fable 5.1", "hard_model": "fable 5.1",
                "effort": "high", "last_lang": "en",
                "scale": 1.0, "colors": {},
                "geom": None,    # [x, y, w, h] — remembered window box
@@ -580,6 +581,7 @@ QLabel#worktask {{ color: {t['paper']}; font-size: {s(13)}px; font-weight: 600; 
 QLabel#workstep {{ color: {acc2}; font-family: {MONO_FONT}; font-size: {s(12)}px; }}
 QLabel#workdone {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(12)}px; }}
 QLabel#worktext {{ color: {t['dim']}; font-size: {s(12)}px; font-style: italic; }}
+QLabel#workvoice {{ color: {t['paper']}; font-size: {s(12)}px; margin-top: {s(2)}px; }}
 QLabel#workthink {{
   color: {t['dim']}; font-family: {VOICE_FONT}; font-size: {s(12)}px;
   font-style: italic; padding-left: {s(8)}px;
@@ -2105,6 +2107,17 @@ class CtxMeter(QWidget):
             p.drawLine(0, y, int(self.width() * self._frac), y)
 
 
+def voice_display(model: str) -> str:
+    """A Gemini model id as a person reads it: "gemini-3-flash-preview" ->
+    "Gemini 3 Flash", "gemini-3.1-flash-lite" -> "Gemini 3.1 Flash-Lite".
+    The raw id is long enough to push the side card's pill off the edge."""
+    m = re.match(r"gemini-([\d.]+)-(flash|pro)(-lite)?", model.strip().lower())
+    if not m:
+        return model.strip()
+    return (f"Gemini {m.group(1)} {m.group(2).title()}"
+            + ("-Lite" if m.group(3) else ""))
+
+
 class WorkPanel(QWidget):
     """Left lane: what the WORKING brain is doing right now — the task, each
     live step (marked ✓ the moment the next begins or the turn ends), and the
@@ -2245,6 +2258,29 @@ class WorkPanel(QWidget):
         if self._cur_step is None and self.win and not self.win_busy():
             self.sub.setText(self._sub("idle"))
 
+    def set_brains(self, voice: str, work: str):
+        """Two brains (2026-10-24): this card is Claude's workbench, and the
+        voice's hand-offs show in it."""
+        self._voice_name = voice
+        if voice:
+            self.header.setText("Claude at work")
+            if work:
+                self._model_name = work.lower()
+            if self._idle is not None:
+                self._idle.setText(
+                    f"Nothing running. When you give GOAT a job, {voice} hands "
+                    "it to Claude — its steps, thinking and notes show "
+                    "up here live.")
+        else:
+            self.header.setText("Activity")
+
+    def voice(self, line: str):
+        """What the voice told him about the job."""
+        name = getattr(self, "_voice_name", "") or "voice"
+        self._add(f"{name} → you: {line}", "workvoice")
+        self._text_label = None
+        self._think_label = None
+
     def win_busy(self) -> bool:
         return bool(self.win and self.win.goat and self.win.goat.busy)
 
@@ -2293,12 +2329,16 @@ class WorkPanel(QWidget):
         self._t0 = time.time()
         self._tick.start()
         self.sub.setText(self._sub("working · 0:00"))
-        self._add("— " + " ".join(task.split())[:200], "worktask")
+        self._last_step = ""
+        voice = getattr(self, "_voice_name", "")
+        lead = f"{voice} → Claude: " if voice else "— "
+        self._add(lead + " ".join(task.split())[:200], "worktask")
         self._text_label = None
         self._think_label = None
 
     def step(self, desc: str):
         self._mark_cur_done()
+        self._last_step = desc
         self._cur_step = self._add("▸ " + desc, "workstep")
         self._text_label = None
         self._think_label = None
@@ -3865,17 +3905,42 @@ class GoatWindow(QWidget):
         self.side_scroll = self._scroll_page(cards_host)
         outer_lay.addWidget(self.side_scroll, 1)
 
-        # Active brain
+        # Brains (2026-10-24, his order: "show this in the interface"): the
+        # voice he talks to (Gemini) on top, the working brain doing the jobs
+        # (Claude) under it — both named, both with their live state.
         mc = Clickable("sideCard")
         mc.setToolTip("brain settings")
         mc.clicked.connect(lambda: self.show_page("settings"))
         ml = self._model_lay = QVBoxLayout(mc)
         ml.setSpacing(8)
         h = QHBoxLayout()
-        h.addWidget(mklabel("Active brain", "sectionTitle"))
+        self.brains_title = mklabel("Brains", "sectionTitle")
+        h.addWidget(self.brains_title)
         h.addStretch(1)
         h.addWidget(icon_label("chev", "chev"))
         ml.addLayout(h)
+        self.voice_row = QWidget()
+        h = QHBoxLayout(self.voice_row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(12)
+        self.voice_tile = icon_label("mic", "icoTile")
+        h.addWidget(self.voice_tile)
+        v = QVBoxLayout()
+        v.setSpacing(2)
+        nr = QHBoxLayout()
+        nr.setSpacing(8)
+        self.voice_name = mklabel("", "modelName")
+        nr.addWidget(self.voice_name)
+        self.voice_pill = mklabel("voice", "pillAcc")
+        nr.addWidget(self.voice_pill)
+        nr.addStretch(1)
+        v.addLayout(nr)
+        self.voice_sub = mklabel("talks with you · keeps an eye on Claude",
+                                 "rowSub", wrap=True)
+        v.addWidget(self.voice_sub)
+        h.addLayout(v, 1)
+        ml.addWidget(self.voice_row)
+        self.voice_row.hide()        # shown once the engine says two brains
         h = QHBoxLayout()
         h.setSpacing(12)
         self.model_tile = icon_label("brain", "icoTile")
@@ -4230,7 +4295,37 @@ class GoatWindow(QWidget):
         eff = self.cfg.get("effort", "high")
         live = getattr(self, "_turn_brain", None)
         self.model_pill.setText(live[2] if live else eff)
-        if live:
+        brains = getattr(self, "_brains", None)
+        if brains and brains[0]:
+            # Two brains: voice row on top, Claude's row under it.
+            voice, work, note = brains
+            self.voice_row.show()
+            self.voice_name.setText(voice)
+            g = self.goat
+            if g is not None and getattr(g, "talk_busy", False):
+                self.voice_pill.setText("thinking")
+            elif g is not None and g.audio.is_tts_playing:
+                self.voice_pill.setText("speaking")
+            else:
+                self.voice_pill.setText("voice")
+            self.voice_sub.setText(getattr(self, "_voice_note", "")
+                                   or "talks with you · keeps an eye on Claude")
+            self.model_name.setText(work or name.title())
+            bits = ["does the work"]
+            wp = self.work_panel
+            if wp._t0:
+                bits.append("working " + wp._elapsed_str())
+                if getattr(wp, "_last_step", ""):
+                    bits.append(wp._last_step[:60])
+            else:
+                bits.append("free")
+            if note:
+                bits.append(note)
+            if self._claude_out:
+                bits = ["Out of usage" + (f" — back at {self._claude_reset}"
+                                          if self._claude_reset else "")]
+            self.model_sub.setText(" · ".join(bits))
+        elif live:
             big = pick.title().replace(" ", "\u00a0")   # never split a name
             bits = [{"talk": "Auto · talking",
                      "task": "Auto · simple task",
@@ -4239,12 +4334,13 @@ class GoatWindow(QWidget):
                 bits.append(f"{big} takes the hard work")
         else:
             bits = [f"Thinks at {eff}"]
-        if self.cfg.get("hard_model") and not live:
-            bits.append(f"hard tasks: {self.cfg['hard_model'].title()}")
-        if self._claude_out:
-            bits = ["Out of usage" + (f" — back at {self._claude_reset}"
-                                      if self._claude_reset else "")]
-        self.model_sub.setText(" · ".join(bits))
+        if not (brains and brains[0]):
+            if self.cfg.get("hard_model") and not live:
+                bits.append(f"hard tasks: {self.cfg['hard_model'].title()}")
+            if self._claude_out:
+                bits = ["Out of usage" + (f" — back at {self._claude_reset}"
+                                          if self._claude_reset else "")]
+            self.model_sub.setText(" · ".join(bits))
         self.chip_model.setText("  " + (pick.title() if pick.islower() else pick) + "  ▾")
         self.chip_effort.setText(f"  {eff}  ▾" if getattr(self, "_chips_compact", False)
                                  else f"  Thinking: {eff}  ▾")
@@ -4566,6 +4662,7 @@ class GoatWindow(QWidget):
         self.today.layout().setContentsMargins(*m((18, 14, 18, 14)))
         self.work_panel.layout().setContentsMargins(*m(WORK_MARGIN))
         self.model_tile.setFixedSize(round(44 * k), round(44 * k))
+        self.voice_tile.setFixedSize(round(44 * k), round(44 * k))
         for r, rl, tile, _pill in self.sys_rows.values():
             rl.setContentsMargins(*m((4, 7, 4, 7)))
             rl.setSpacing(round(12 * k))
@@ -5108,6 +5205,11 @@ class GoatWindow(QWidget):
         # Minimized, nothing on screen can move — skip the animations
         # entirely (Qt still counts a minimized window as visible).
         shown = self.isVisible() and not self.isMinimized()
+        if getattr(self, "_brains", None) and state != getattr(self, "_voice_state", ""):
+            # Brains card: what the voice is doing right now.
+            self._voice_state = state
+            self.voice_pill.setText({"speaking": "speaking", "thinking": "thinking",
+                                     "listening": "listening"}.get(state, "voice"))
         if shown:
             self.string.tick(mic_level, state)
         if self._page == "chat" and shown:
@@ -5334,9 +5436,36 @@ class GoatWindow(QWidget):
             parts = (data.split("|") + ["", "", ""])[:3]
             self._turn_brain = parts
             self.work_panel.set_turn_effort(parts[2])
-            if self._reply_label is not None:
+            if self._reply_label is not None and not getattr(self, "_brains", None):
                 self._reply_label.setToolTip(f"answered by {parts[0]}")
             self._refresh_side()
+        elif kind == "brains":
+            # Two brains: "voice|work|note" (voice empty = one-brain mode).
+            voice, work, note, vnote = (data.split("|") + ["", "", "", ""])[:4]
+            voice = voice_display(voice)
+            self._brains = (voice, work.strip(), note.strip())
+            self._voice_note = vnote.strip()
+            self.work_panel.set_brains(voice, work.strip())
+            self._refresh_side()
+        elif kind == "talkbrain":
+            # The voice model that answered this turn (a hedge may win).
+            b = getattr(self, "_brains", None)
+            if b and b[0] != voice_display(data):
+                self._brains = (voice_display(data), b[1], b[2])
+                self.work_panel.set_brains(self._brains[0], b[1])
+                self._refresh_side()
+            if self._reply_label is not None:
+                self._reply_label.setToolTip(f"spoken by {data}")
+        elif kind == "voice_note":
+            # The voice speaking up on its own (Claude's job finished, stuck,
+            # a progress word): a fresh line in the chat, not his last answer.
+            self._dim_previous()
+            self._reply_label = self._add_line("", "replyNow")
+            self._reply_label.setToolTip(f"{data} · news about Claude's job")
+        elif kind == "work_voice":
+            # What the voice told him about the job, in the Activity log too:
+            # the two brains' hand-offs read top to bottom.
+            self.work_panel.voice(data)
         elif kind == "claude":
             # Claude usage meter: "ok" or "out|HH:MM".
             if data == "ok":
@@ -5446,6 +5575,8 @@ class GoatWindow(QWidget):
             self.work_panel.step(data)
             self.live.step(data)
             self._sync_live()
+            if getattr(self, "_brains", None):
+                self._refresh_side()     # the Brains card shows Claude's step
         elif kind == "work_shot":
             # The screenshot the brain just looked at (screen_tools).
             self.live.set_shot(data)
@@ -5507,6 +5638,15 @@ def main():
     # the Python stack of every thread at the moment of the fault, which turns
     # the next occurrence from "it crashed" into a file and a line number.
     # Kept permanently: it costs nothing until something goes very wrong.
+    # The launcher's `>>` redirect makes stdout strict cp1252: one arrow or
+    # Georgian letter in a print() raised and killed the engine at boot
+    # (2026-10-24). A log line may lose a glyph; GOAT may not die of it.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:  # noqa: BLE001 — pythonw has no stream at all
+            pass
+
     try:
         import faulthandler
         crash_log = open(os.path.join(GOAT_ROOT, "python", "goat-crash.log"),
