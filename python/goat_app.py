@@ -1630,15 +1630,17 @@ class GoatApp:
 
     # ---- audio-thread callbacks ----
     _BARGE_LOG = ("possible interrupt", "confirmed interrupt",
-                  "someone else talking", "echo, not you")
+                  "someone else talking", "echo, not you",
+                  "vad said speech")   # heard a voice, too quiet to count
 
     def _audio_status(self, msg: str):
         """Audio thread: log the barge-in decisions, drop the meters."""
         if msg.startswith(self._BARGE_LOG):
             now = time.monotonic()
-            if msg != getattr(self, "_barge_last", ("", 0.0))[0] or \
+            kind = msg.split(" (")[0][:24]      # the numbers vary: key on the kind
+            if kind != getattr(self, "_barge_last", ("", 0.0))[0] or \
                     now - self._barge_last[1] > 2.0:
-                self._barge_last = (msg, now)
+                self._barge_last = (kind, now)
                 print(f"[barge] {msg}", flush=True)
 
     def _on_interrupt(self, _preroll):
@@ -2239,6 +2241,20 @@ class GoatApp:
             text, _ = await asyncio.to_thread(
                 stt_whisper.transcribe_lang, audio_np, 16000, "en")
             self._set_turn_lang("en")
+        elif (self.language == "auto" and getattr(stt_whisper, "GPU", False)
+              and stt_gladia.available()):
+            # Bilingual with the GPU ear: Whisper tells English from
+            # Georgian in ~1 s locally; English is its own text, Georgian
+            # goes to the cloud ear pinned to Georgian (mixed-language
+            # Gladia wrote his Georgian as "Good morning", 2026-10-24).
+            text, heard = await asyncio.to_thread(
+                stt_whisper.transcribe_lang, audio_np, 16000, None)
+            if heard != "en" and text is not None:
+                ka_text, _ = await asyncio.to_thread(
+                    stt_gladia.transcribe_lang, audio_np, 16000, "ka")
+                if ka_text is not None:
+                    text, heard = ka_text, "ka"
+            self._set_turn_lang(heard if heard in ("en", "ka") else self.turn_lang)
         elif self.language != "en" and stt_gladia.available():
             # Georgian or bilingual mode: cloud ear (local whisper can't do
             # ka at all — it romanizes it into English-looking nonsense,

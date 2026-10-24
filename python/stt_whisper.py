@@ -265,7 +265,7 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000):
     return clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until)
 
 
-_LANG_NAMES = {"english": "en", "georgian": "ka", "en": "en", "ka": "ka"}
+EN_PROB_MIN = 0.10      # Whisper's English score at/above this = English
 
 
 def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
@@ -278,10 +278,21 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
     if got is None or isinstance(got, str):
         return got, force or ""
     text = clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until)
-    lang = str(got.get("detected_language") or got.get("language") or force or "")
-    lang = _LANG_NAMES.get(lang.strip().lower(), lang.strip().lower())
+    if force:
+        return text, force
+    # Bilingual: turbo can't name Georgian (p=0.000 on every Georgian clip,
+    # top guess "icelandic"/"russian"), but its English score separates his
+    # two languages — English 0.12-1.00 (one-word "Opus" 0.12), Georgian
+    # 0.017-0.051 (his own recordings, 2026-10-24). Not English = Georgian,
+    # and the caller hands Georgian to the cloud ear.
+    p_en = float((got.get("language_probabilities") or {}).get("en", 0.0) or 0.0)
+    lang = "en" if p_en >= EN_PROB_MIN else "ka"
     if re.search(r"[Ⴀ-ჿ]", text):
-        lang = "ka"                        # Georgian letters settle it
+        return text, "ka"                  # Georgian letters settle it
+    if lang == "en" and str(got.get("detected_language") or "").lower() != "english":
+        # English, but decoded in the language it wrongly guessed
+        # ("Opus" -> "Obrigado."): once more, pinned to English.
+        return transcribe_lang(audio, sample_rate, "en")
     return text, lang
 
 

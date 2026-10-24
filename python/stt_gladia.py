@@ -44,6 +44,10 @@ DEBUG_DIR = os.path.join(GOAT_ROOT, "python", "stt-debug")
 # Language scribe reported for the last utterance ('ka'/'en'/None). Only a
 # tie-breaker — script_lang() decides whenever the text has letters.
 _LAST_HEARD: list = [None]
+# A refused key (401/402: out of credits, 2026-10-24) cost ~2 s on every
+# Georgian turn before Gladia even started. Rest it instead of retrying.
+_SCRIBE_DOWN_UNTIL = [0.0]
+SCRIBE_REFUSED_REST_S = 6 * 3600
 
 
 def _debug_log(audio, sample_rate, text, note):
@@ -118,6 +122,8 @@ def _scribe(key: str, wav: bytes, language: str | None):
     scribe heard it) or (None, None) on failure. language=None means
     auto-detect, which measures identical to forcing a language and is what
     lets one ear carry Georgian and English in the same conversation."""
+    if time.monotonic() < _SCRIBE_DOWN_UNTIL[0]:
+        return None, None
     try:
         data = {"model_id": "scribe_v2",
                 # sound labels like "(სიცილი)" would pollute chat
@@ -134,10 +140,26 @@ def _scribe(key: str, wav: bytes, language: str | None):
         return (j.get("text") or ""), (j.get("language_code") or "")
     except httpx.HTTPError as e:
         print("[scribe] request failed:", e)
+        code = getattr(getattr(e, "response", None), "status_code", 0)
+        if code in (401, 402):
+            _SCRIBE_DOWN_UNTIL[0] = time.monotonic() + SCRIBE_REFUSED_REST_S
+            print("[scribe] key refused — resting it 6 h (Gladia carries Georgian)")
         return None, None
 
 
-def _gladia(key: str, wav: bytes, language: str) -> str | None:
+def _gladia_langs(language: str | None) -> dict:
+    """Georgian pinned = Georgian ONLY. Measured 2026-10-24 on his clips:
+    with ["ka", "en"] + code switching Gladia wrote his Georgian in Latin
+    letters or as English ("Camargo by Giorgi", "Good morning, good
+    morning"); ka-only wrote "გამარჯობა გიორგი…". English speech forced to
+    ka loops ("მელი მელი …") — the repetition gate in transcribe() drops
+    that, and bilingual mode sends English to the GPU Whisper first."""
+    if language == "ka":
+        return {"languages": ["ka"], "code_switching": False}
+    return {"languages": ["ka", "en"], "code_switching": True}   # bilingual
+
+
+def _gladia(key: str, wav: bytes, language: str | None) -> str | None:
     """upload -> job -> poll; returns raw transcript or None on failure."""
     try:
         up = httpx.post(f"{GLADIA_BASE}/upload", headers={"x-gladia-key": key},
@@ -147,10 +169,7 @@ def _gladia(key: str, wav: bytes, language: str) -> str | None:
         job = httpx.post(f"{GLADIA_BASE}/pre-recorded",
                          headers={"x-gladia-key": key},
                          json={"audio_url": up.json()["audio_url"],
-                               # en alongside: forcing ka-only makes Gladia
-                               # hallucinate repetition loops on English speech
-                               "language_config": {"languages": [language, "en"],
-                                                   "code_switching": True}},
+                               "language_config": _gladia_langs(language)},
                          timeout=20.0)
         job.raise_for_status()
         result_url = job.json()["result_url"]
@@ -216,7 +235,7 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000,
     if scribe_key is not None:
         text, heard = _scribe(scribe_key, wav, language)
     if text is None and gladia_key is not None:
-        engine, text = "gladia", _gladia(gladia_key, wav, language or "ka")
+        engine, text = "gladia", _gladia(gladia_key, wav, language)
     # ISO-639-3 out of scribe ('kat'/'eng') — kept as the tie-breaker for
     # transcripts with no letters at all ("2026", "ok.").
     _LAST_HEARD[0] = {"kat": "ka", "geo": "ka"}.get((heard or "")[:3], None)         or ("en" if heard else None)

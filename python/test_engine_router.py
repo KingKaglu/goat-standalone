@@ -744,10 +744,18 @@ async def main():
             check("GPU whisper: Georgian mode still uses the cloud ear",
                   ear.calls == ["ka"] and whis.calls == [] and spoken == ["cloud words"],
                   f"ear={ear.calls} whis={whis.calls} spoken={spoken}")
-            app, spoken, ear, whis = await hear_gpu("auto", "unused", "ka")
-            check("GPU whisper: bilingual mode still uses the cloud ear",
-                  ear.calls == [None] and whis.calls == [],
-                  f"ear={ear.calls} whis={whis.calls}")
+            # Bilingual: Whisper decides the language; Georgian goes to the
+            # cloud ear PINNED to Georgian, English never leaves the laptop.
+            app, spoken, ear, whis = await hear_gpu("auto", "wrong latin", "ka")
+            check("GPU whisper bilingual: Georgian -> cloud ear pinned to ka",
+                  whis.calls == [None] and ear.calls == ["ka"]
+                  and spoken == ["cloud words"] and app.turn_lang == "ka",
+                  f"ear={ear.calls} whis={whis.calls} spoken={spoken} lang={app.turn_lang}")
+            app, spoken, ear, whis = await hear_gpu("auto", "what time is it", "en")
+            check("GPU whisper bilingual: English stays local",
+                  whis.calls == [None] and ear.calls == [] and spoken == ["what time is it"]
+                  and app.turn_lang == "en",
+                  f"ear={ear.calls} spoken={spoken} lang={app.turn_lang}")
         finally:
             g.stt_gladia, g.stt_whisper, g.tts_edge = real_ear, real_whisper, real_tts
 
