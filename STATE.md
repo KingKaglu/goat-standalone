@@ -3,6 +3,22 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## v8 redesign, phase (c) home desk + ambient line (2026-10-24 ~22:35)
+- Home rebuilt (mockup A): centred greeting + "Saturday, 24 October · HH:MM ·
+  Essen" (cfg "city"), window.home_presence (r 50 at 1x, 110-166 px tall),
+  state caption, brains_line (voice ● Gemini / Claude ● model · free|working|
+  out), ambient line (front window via screen_hands.windows, phone linked,
+  RAM, battery, Claude 5-hour % from the "plan" event; 5 s timer, Home only).
+- Desk: Open (desk_open() parses memory.md ## Open: shouted lead -> title,
+  Next:/Blocked:/UNVERIFIED -> sub), Recent days (desk_days() from self.md),
+  Ask me (screen, inbox, hand Claude a task, briefing). DeskRow = QFrame#row.
+  Open rows prefill "Let's continue: …"; day rows prefill a question.
+- Gone from Home: hero GoatMark, 5 action cards, Recent card (it lives on as
+  search results: Ctrl F text swaps the desk for results, empty gives it back).
+- One presence per screen: rail mini shows only off Home/Chat. Backdrop dim
+  on Home 0.0 -> 0.5. Idle CPU 2.4% of one core. Test: test_home_desk.py.
+- Still v7 until phase (d): the right rail (brains/usage/activity/system).
+
 ## v8 redesign, phase (b) the presence (2026-10-24 ~22:20)
 - ui_qt.Presence replaces StringLine (deleted, with its dead HUD reactor) and
   the Chat page's VoiceOrb (VoiceOrb stays ONLY for the collapsed dot until

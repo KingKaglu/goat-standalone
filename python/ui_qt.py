@@ -453,6 +453,8 @@ QLabel#footer {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11
 QLabel#hello {{ color: {t['paper']}; font-family: {VOICE_FONT};
   font-size: {s(44)}px; font-weight: 300; }}
 QLabel#helloSub {{ color: {t['dim']}; font-size: {s(15)}px; }}
+QLabel#brainsLine {{ font-family: {MONO_FONT}; font-size: {s(11)}px; }}
+QLabel#ambient {{ color: {t['faint']}; font-size: {s(13)}px; }}
 QFrame#actionCard {{
   background: {card}; border: 1px solid {line}; border-radius: {s(16)}px;
   text-align: left; padding: 0;
@@ -1939,6 +1941,26 @@ class ActionCard(Clickable):
         self.setMinimumHeight(round(136 * k))
 
 
+class DeskRow(Clickable):
+    """One line of the Home desk (v8): a title, a quieter line under it, a
+    hairline between rows. No icon, no card: the desk is quiet on purpose."""
+
+    def __init__(self, title: str, sub: str):
+        super().__init__("row")
+        lay = self._lay = QVBoxLayout(self)
+        self.title = ElideLabel(title, "rowTitle")
+        self.sub = ElideLabel(sub, "rowSub")
+        lay.addWidget(self.title)
+        lay.addWidget(self.sub)
+        self.setToolTip(f"{title}\n{sub}" if sub else title)
+        self.set_scale(1.0)
+
+    def set_scale(self, k: float):
+        self._lay.setContentsMargins(round(8 * k), round(9 * k), round(8 * k),
+                                     round(9 * k))
+        self._lay.setSpacing(round(2 * k))
+
+
 class CardGrid(QWidget):
     """Quick-action cards that share a row while they fit and wrap into
     even rows when they don't — at 150% zoom five fixed cards pushed the
@@ -2963,6 +2985,131 @@ class MessagePop(QWidget):
 TRANSCRIPT = os.path.join(GOAT_ROOT, "workspace", "transcript.jsonl")
 MEMORY_MD = os.path.join(GOAT_ROOT, "workspace", "memory.md")
 SKILLS_DIR = os.path.join(GOAT_ROOT, "workspace", ".claude", "skills")
+SELF_MD = os.path.join(GOAT_ROOT, "workspace", "self.md")
+
+# ---- the Home desk (v8 phase c): his Open list and recent days, read from
+# the same memory files the brain uses, so the desk never invents anything.
+_DESK_SMALL = {"on", "in", "of", "to", "the", "and", "for", "a", "an", "at",
+               "by", "with", "from", "or"}
+_DESK_ACRONYMS = {"GOAT", "APK", "RAM", "CPU", "GPU", "USB", "ADB", "API",
+                  "URL", "PDF", "TTS", "STT", "AEC", "UI", "AI", "FB", "IG",
+                  "OK", "PC", "TV", "EUR", "USD", "VPN", "DNS", "SSD"}
+_DESK_CACHE: dict = {}
+_OPEN_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:\s+[\dx:]+)?\s*:\s*")
+_CAPS_LEAD = re.compile(r"^((?:[A-Z][A-Z0-9+&'/-]*|\d[\w.]*|v\d+|\+)"
+                        r"(?:\s+(?:[A-Z][A-Z0-9+&'/-]*|\d[\w.]*|v\d+|\+))*)")
+_LONG_PAREN = re.compile(r"\s*\([^()]{14,}\)")
+_SENTENCE_END = re.compile(r"(?<=[a-z0-9)\]])\.(?:\s|$)|;\s")
+# Windows that are never "what he's on" for the ambient line.
+_AMBIENT_SKIP = {"Program Manager", "Windows Input Experience", "GOAT",
+                 "GOAT live", ""}
+
+
+def _desk_words(s: str) -> str:
+    """Shouted memory headings read as a sentence: 'FABLE 5 ON CREDITS' ->
+    'Fable 5 on credits'. Acronyms (APK, RAM, AI, GOAT) stay."""
+    out = []
+    for w in s.split():
+        core = w.strip("()[],.:;+-/")
+        if (core.isupper() and core not in _DESK_ACRONYMS
+                and (len(core) > 2 or core.lower() in _DESK_SMALL)):
+            w = w.lower()
+        out.append(w)
+    s = " ".join(out)
+    return s[:1].upper() + s[1:]
+
+
+def _desk_clip(s: str, n: int) -> str:
+    s = " ".join(s.split()).strip(" ,;:-\u2014")
+    if len(s) <= n:
+        return s
+    cut = s[:n].rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:-\u2014(+&") + "\u2026"
+
+
+def _desk_read(path: str) -> str:
+    """File text, cached by mtime (the desk refreshes after every turn)."""
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return ""
+    hit = _DESK_CACHE.get(path)
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    _DESK_CACHE[path] = (mt, text)
+    return text
+
+
+def _md_section(text: str, head: str) -> list:
+    """The '- ' bullets under '## head', up to the next heading."""
+    rows, on = [], False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            on = line[3:].strip().lower().startswith(head.lower())
+            continue
+        if on and line.startswith("- "):
+            rows.append(line[2:].strip())
+    return rows
+
+
+def _first_sentence(s: str) -> str:
+    s = re.sub(r"^\s*\([^()]*\)\s*:?", "", s)     # "(his order): \u2026"
+    s = _LONG_PAREN.sub("", s).strip(" :;,.(\u2014-")
+    return _SENTENCE_END.split(s, maxsplit=1)[0].strip()
+
+
+def desk_open(text: str | None = None, n: int = 4) -> tuple:
+    """(count, [(title, sub)]) from memory.md's ## Open list, newest first.
+    Title = the item's shouted lead (or its first clause); sub = what is
+    next ('Next:', then 'Blocked:', then 'UNVERIFIED'), else the rest of
+    that first sentence."""
+    if text is None:
+        text = _desk_read(MEMORY_MD)
+    items = _md_section(text, "Open")
+    rows = []
+    for raw in items[:n]:
+        body = _OPEN_DATE.sub("", raw, count=1)
+        m = _CAPS_LEAD.match(body)
+        lead = m.group(1).strip() if m else ""
+        if len(lead) >= 5 and sum(c.isupper() for c in lead) >= 3:
+            title, rest = lead, body[m.end():]
+        else:
+            first = re.split(r"[:;(,.\u2014]| - ", body, maxsplit=1)[0]
+            title, rest = first, body[len(first):]
+        sub = ""
+        for key, tag in (("Next", ""), ("NEXT", ""), ("Blocked", "blocked: "),
+                         ("UNVERIFIED", "untested ")):
+            k = re.search(r"\b" + key + r"\b\s*:?\s*", body)
+            if k:
+                sub = tag + _first_sentence(body[k.end():])
+                break
+        if not sub:
+            sub = _first_sentence(rest)
+        rows.append((_desk_clip(_desk_words(title), 36), _desk_clip(sub, 70)))
+    return len(items), rows
+
+
+def desk_days(text: str | None = None, n: int = 4) -> list:
+    """[(\"Thu 22 Oct\", first sentence)] from self.md's Recent days."""
+    if text is None:
+        text = _desk_read(SELF_MD)
+    rows = []
+    for raw in _md_section(text, "Recent days")[:n]:
+        m = re.match(r"(\d{4}-\d{2}-\d{2})[^:]*:\s*(.*)", raw)
+        if not m:
+            continue
+        try:
+            day = time.strptime(m.group(1), "%Y-%m-%d")
+            title = time.strftime("%a %d %b", day).replace(" 0", " ")
+        except ValueError:
+            title = m.group(1)
+        rows.append((title, _desk_clip(_first_sentence(m.group(2)), 70)))
+    return rows
 
 # Which icon a past exchange wears in the Recent list — a glance-level hint,
 # nothing rides on it. First match wins; English and Georgian stems.
@@ -3461,6 +3608,7 @@ class GoatWindow(QWidget):
         self._status_hold = 0.0  # until this time, hud_tick may not stomp
         self._usage = ""
         self._plan = ""
+        self._plan_fh = None     # Claude's 5-hour use, % (ambient line)
         self._claude_out = False
         self._turnlang = ""
         self._claude_reset = ""
@@ -3545,9 +3693,14 @@ class GoatWindow(QWidget):
         self._live_check.timeout.connect(self._sync_live)
         # The greeting follows the clock (evening → late → morning).
         self._hello_timer = QTimer(self)
-        self._hello_timer.setInterval(60_000)
+        self._hello_timer.setInterval(30_000)   # the clock is on the page
         self._hello_timer.timeout.connect(self._refresh_greeting)
         self._hello_timer.start()
+        # The ambient line under the presence (only works while Home shows).
+        self._ambient_timer = QTimer(self)
+        self._ambient_timer.setInterval(5_000)
+        self._ambient_timer.timeout.connect(self._refresh_ambient)
+        self._ambient_timer.start()
         # Recent list re-reads the transcript shortly after a turn lands.
         self._recent_timer = QTimer(self)
         self._recent_timer.setSingleShot(True)
@@ -3651,55 +3804,73 @@ class GoatWindow(QWidget):
         return sc
 
     def _build_home(self) -> QWidget:
+        """v8 Home (design.md, mockup A): GOAT in the middle of the room.
+        Greeting, the presence, the brains line and the ambient line, then
+        his desk: Open (memory.md), Recent days (self.md), Ask me. While he
+        searches (Ctrl F) the results take the desk's place."""
         content = QWidget()
         lay = self._home_lay = QVBoxLayout(content)
         lay.setContentsMargins(0, 0, 8, 8)
         lay.setSpacing(0)
         self._hero_gap = QWidget()
-        self._hero_gap.setFixedHeight(80)
+        self._hero_gap.setFixedHeight(40)
         lay.addWidget(self._hero_gap)
-        hero = QHBoxLayout()
-        hero.setSpacing(22)
-        self.hero_mark = GoatMark(86)
-        self._themed.append(self.hero_mark)
-        self._scaled.append(self.hero_mark)
-        hero.addWidget(self.hero_mark, 0, Qt.AlignTop)
-        words = QVBoxLayout()
-        words.setSpacing(8)
         self.hello = QLabel("")
         self.hello.setObjectName("hello")
-        self.hello.setTextFormat(Qt.RichText)
+        self.hello.setAlignment(Qt.AlignHCenter)
         self.hello.setWordWrap(True)
-        words.addWidget(self.hello)
+        lay.addWidget(self.hello)
         self.hello_sub = mklabel("", "helloSub", wrap=True)
-        words.addWidget(self.hello_sub)
-        hero.addLayout(words, 1)
-        lay.addLayout(hero)
+        self.hello_sub.setAlignment(Qt.AlignHCenter)
+        lay.addWidget(self.hello_sub)
+
+        # The presence at full size (ring r 50 at 1x).
+        self.home_presence = Presence()
+        self._themed.append(self.home_presence)
+        lay.addWidget(self.home_presence)
+        self.home_state = capsify(QLabel(""))
+        self.home_state.setObjectName("orbCaption")
+        self.home_state.setAlignment(Qt.AlignHCenter)
+        lay.addWidget(self.home_state)
+        lay.addSpacing(8)
+        self.brains_line = QLabel("")
+        self.brains_line.setObjectName("brainsLine")
+        self.brains_line.setTextFormat(Qt.RichText)
+        self.brains_line.setAlignment(Qt.AlignHCenter)
+        lay.addWidget(self.brains_line)
+        lay.addSpacing(14)
+        self.ambient = ElideLabel("", "ambient")
+        self.ambient.setAlignment(Qt.AlignHCenter)
+        lay.addWidget(self.ambient)
+        self._desk_gap = lay.count()
         lay.addSpacing(40)
 
-        cards = self.card_grid = CardGrid()
-        self._scaled.append(cards)
-        self.cards: dict[str, ActionCard] = {}
-        for key, icon, title, sub, cb in (
-                ("talk", "chat", "Talk", "Ask anything, by voice or text",
-                 self._act_talk),
-                ("work", "work", "Get it done", "Hand me a task — I work it end to end",
-                 self._act_work),
-                ("screen", "eye", "My screen", "What's on it, what's wrong",
-                 self._act_screen),
-                ("pc", "desktop", "Control PC", "Open, close, volume, media",
-                 lambda: self._prefill("Open ")),
-                ("web", "globe", "Web search", "Live information from the web",
-                 lambda: self._prefill("Search the web for "))):
-            c = ActionCard(icon, title, sub)
-            c.clicked.connect(cb)
-            cards.add(c)
-            self.cards[key] = c
-            self._scaled.append(c)
-        lay.addWidget(cards)
-        lay.addSpacing(26)
+        # ---- his desk: three quiet columns ----
+        desk = self.desk = QWidget()
+        dl = self._desk_lay = QHBoxLayout(desk)
+        dl.setContentsMargins(0, 0, 0, 0)
+        dl.setSpacing(40)
+        self.desk_cols: dict = {}
+        self.desk_heads: dict = {}
+        self._desk_sig: dict = {}
+        for key, head in (("open", "Open"), ("days", "Recent days"),
+                          ("ask", "Ask me")):
+            col = QVBoxLayout()
+            col.setSpacing(0)
+            h = mklabel(head, "sectionTitle")
+            h.setContentsMargins(8, 0, 0, 6)
+            col.addWidget(h)
+            box = QVBoxLayout()
+            box.setSpacing(0)
+            col.addLayout(box)
+            col.addStretch(1)
+            dl.addLayout(col, 1)
+            self.desk_cols[key] = box
+            self.desk_heads[key] = h
+        lay.addWidget(desk)
 
-        rc = QFrame()
+        # ---- search results (the old Recent card), only while searching ----
+        rc = self.recent_card = QFrame()
         rc.setObjectName("card")
         rl = self._recent_card_lay = QVBoxLayout(rc)
         rl.setContentsMargins(8, 12, 8, 8)
@@ -3707,22 +3878,147 @@ class GoatWindow(QWidget):
         head = QHBoxLayout()
         head.setContentsMargins(10, 0, 8, 4)
         head.setSpacing(10)
-        head.addWidget(icon_label("clock", "ico"))
-        self.recent_title = mklabel("Recent", "sectionTitle")
+        head.addWidget(icon_label("search", "ico"))
+        self.recent_title = mklabel("Results", "sectionTitle")
         head.addWidget(self.recent_title)
         head.addStretch(1)
-        view = QPushButton("View all  →")
-        view.setObjectName("link")
-        view.setCursor(Qt.PointingHandCursor)
-        view.clicked.connect(lambda: self.show_page("chat"))
-        head.addWidget(view)
+        clear = QPushButton("Clear  \u2715")
+        clear.setObjectName("link")
+        clear.setCursor(Qt.PointingHandCursor)
+        clear.clicked.connect(lambda: self.search.clear())
+        head.addWidget(clear)
         rl.addLayout(head)
         self.recent_box = QVBoxLayout()
         self.recent_box.setSpacing(0)
         rl.addLayout(self.recent_box)
+        rc.hide()
         lay.addWidget(rc)
         lay.addStretch(1)
         return self._scroll_page(content)
+
+    def _fill_desk(self, key: str, rows: list, empty: str = ""):
+        """Rebuild one desk column from [(title, sub, on_click)]; skipped
+        when nothing changed (it runs after every turn)."""
+        sig = tuple((t, s) for t, s, _cb in rows) or (empty,)
+        if self._desk_sig.get(key) == sig:
+            return
+        self._desk_sig[key] = sig
+        box = self.desk_cols[key]
+        while box.count():
+            w = box.takeAt(0).widget()
+            if w is not None:
+                if w in self._scaled:
+                    self._scaled.remove(w)
+                w.setParent(None)
+                w.deleteLater()
+        if not rows:
+            e = mklabel(empty, "empty")
+            e.setContentsMargins(8, 8, 8, 8)
+            box.addWidget(e)
+            return
+        k = float(self.cfg.get("scale", 1.0))
+        for i, (title, sub, cb) in enumerate(rows):
+            r = DeskRow(title, sub)
+            r.setProperty("first", "true" if i == 0 else "false")
+            r.set_scale(k)
+            r.clicked.connect(cb)
+            box.addWidget(r)
+            self._scaled.append(r)
+
+    def _refresh_desk(self):
+        if not hasattr(self, "desk_cols"):
+            return
+        n, items = desk_open()
+        self.desk_heads["open"].setText(f"Open  \u00b7  {n}" if n else "Open")
+        self._fill_desk("open", [
+            (t, s, lambda t=t: self._prefill(f"Let's continue: {t}. "))
+            for t, s in items], "Nothing open.")
+        self._fill_desk("days", [
+            (t, s, lambda t=t: self._prefill(f"What did we do on {t}?"))
+            for t, s in desk_days()], "No days written yet.")
+        self._fill_desk("ask", [
+            ("Look at my screen", "what's on it, what's wrong", self._act_screen),
+            ("What's in my inbox", "both Gmail accounts",
+             lambda: self._ask("What's in my inbox?")),
+            ("Hand Claude a task", "work mode on, then say or type it",
+             self._act_work),
+            ("Morning briefing", "open items, vitals, mail",
+             lambda: self._ask("Give me my briefing.")),
+        ])
+
+    def _refresh_brains_line(self):
+        """'● voice Gemini …      ● Claude Opus 5.5 · free' under the
+        presence: who talks, who works, and whether Claude is free."""
+        if not hasattr(self, "brains_line"):
+            return
+        import html as _html
+        t = self._theme()
+        brains = getattr(self, "_brains", None)
+        pick = self.cfg.get("work_model", "opus 5.5").strip()
+        work = ((brains[1] if brains and brains[1] else "")
+                or self._work_model or pick).strip()
+        work = work.title() if work.islower() else work
+        busy = bool(self.goat and self.goat.busy) or bool(self.work_panel._t0)
+        if self._claude_out:
+            state = "out" + (f" \u00b7 back {self._claude_reset}"
+                             if self._claude_reset else "")
+        else:
+            state = "working" if busy else "free"
+
+        def part(col: str, who: str, name: str, tail: str = "") -> str:
+            tail = f" \u00b7 {tail}" if tail else ""
+            return (f"<span style='color:{col}'>\u25cf&nbsp; {who}</span>"
+                    f"&nbsp;&nbsp;<span style='color:{t['dim']}'>"
+                    f"{_html.escape(name)}{_html.escape(tail)}</span>")
+
+        bits = []
+        if brains and brains[0]:
+            bits.append(part(t["accent"], "voice", brains[0]))
+        bits.append(part(t["work"], "Claude", work, state))
+        text = ("&nbsp;" * 10).join(bits)
+        if text != self.brains_line.text():
+            self.brains_line.setText(text)
+        self._brains_sig = (busy, self._claude_out)
+
+    def _refresh_ambient(self):
+        """The ambient line: what he's on, phone, RAM, battery, Claude's
+        5-hour use. Every 5 s, only while Home is on screen (~3 ms)."""
+        if (not hasattr(self, "ambient") or self._page != "home"
+                or not self.isVisible() or self.isMinimized()):
+            return
+        parts = []
+        try:
+            import screen_hands
+            me = os.getpid()
+            for w in screen_hands.windows():
+                title = (w.get("title") or "").strip()
+                if (w.get("pid") == me or w.get("minimized")
+                        or title in _AMBIENT_SKIP):
+                    continue
+                parts.append("on " + _desk_clip(title, 48))
+                break
+        except Exception:  # noqa: BLE001 — the line is a glance, never a crash
+            pass
+        ph = getattr(self.goat, "phone", None) if self.goat else None
+        if ph is not None and getattr(ph, "clients", None):
+            parts.append("phone linked")
+        try:
+            import psutil
+            parts.append(f"RAM {psutil.virtual_memory().percent:.0f}%")
+            bat = psutil.sensors_battery()
+            if bat is not None:
+                parts.append(f"battery {bat.percent:.0f}%"
+                             + (", charging" if bat.power_plugged else ""))
+        except Exception:  # noqa: BLE001
+            pass
+        if self._claude_out:
+            parts.append("Claude out" + (f", back {self._claude_reset}"
+                                         if self._claude_reset else ""))
+        elif self._plan_fh is not None:
+            parts.append(f"Claude {self._plan_fh}% of 5-hour")
+        text = "     \u00b7     ".join(parts)
+        if text != self.ambient.text():
+            self.ambient.setText(text)
 
     def _build_chat(self) -> QWidget:
         page = QWidget()
@@ -4239,12 +4535,20 @@ class GoatWindow(QWidget):
             self._prev_page = self._page
         self._page = key
         self.stack.setCurrentWidget(self.pages[key])
-        self.canvas.set_dim(0.0 if key == "home" else 0.62 if key == "chat" else 0.72)
+        # v8: the mountains are a far quiet horizon on Home, so the presence
+        # reads first (design.md); deeper on the reading pages.
+        self.canvas.set_dim(0.5 if key == "home" else 0.62 if key == "chat" else 0.72)
         for k, b in self.nav.items():
             on = k == key
             b.setProperty("on", "true" if on else "false")
             repolish(b)
         self._paint_nav_icons()
+        # One presence per screen: Home and Chat carry their own, the rail
+        # card's small one shows on the other pages.
+        self.presence_mini.setVisible(key not in ("home", "chat"))
+        if key == "home":
+            self._refresh_desk()
+            QTimer.singleShot(0, self._refresh_ambient)
         if key == "files":
             self._refresh_files()
         elif key == "memory":
@@ -4279,16 +4583,17 @@ class GoatWindow(QWidget):
             hi = ("დილა მშვიდობისა" if 5 <= h < 12 else
                   "გამარჯობა" if 12 <= h < 18 else "საღამო მშვიდობისა")
             name = "ბატონო"   # "Sir" — his order 2026-10-18
-            sub = ("მზად ვარ, როცა შენ იქნები. მკითხე რამე, მომეცი საქმე ან "
-                   "უბრალოდ დამელაპარაკე — ვხედავ ეკრანს და ვმართავ კომპიუტერს.")
         else:
             hi = ("Up late" if h < 5 else "Good morning" if h < 12 else
                   "Good afternoon" if h < 18 else "Good evening")
             name = "Sir"      # his order 2026-10-18
-            sub = ("Ready when you are. Ask me anything, hand me a task, or just "
-                   "talk — I can see your screen and run this PC and your phone.")
-        acc = self._theme()["accent2"]
-        self.hello.setText(f"{hi}, <span style='color:{acc}'>{name}.</span>")
+            sub = ""
+        # v8: one quiet line under the greeting, day · time · where he is.
+        sub = time.strftime("%A, %d %B  \u00b7  %H:%M").replace(" 0", " ")
+        city = self.cfg.get("city", "Essen")
+        if city:
+            sub += f"  \u00b7  {city}"
+        self.hello.setText(f"{hi}, {name}.")
         self.hello_sub.setText(sub)
 
     def _transcript(self) -> list:
@@ -4317,13 +4622,18 @@ class GoatWindow(QWidget):
     def _refresh_recent(self):
         q = self.search.text().strip().lower() if hasattr(self, "search") else ""
         rows = list(reversed(self._transcript()))
-        if q:
-            rows = [r for r in rows if q in (r.get("user") or "").lower()
-                    or q in (r.get("reply") or "").lower()][:20]
-            self.recent_title.setText(f"Results for “{self.search.text().strip()}”")
-        else:
-            rows = rows[:6]
-            self.recent_title.setText("Recent")
+        # v8: Home shows his desk; search results take its place while he
+        # types in the search box, and give it back when the box is empty.
+        self.recent_card.setVisible(bool(q))
+        self.desk.setVisible(not q)
+        if not q:
+            self._refresh_desk()
+            return
+        if self._page != "home":
+            self.show_page("home")
+        rows = [r for r in rows if q in (r.get("user") or "").lower()
+                or q in (r.get("reply") or "").lower()][:20]
+        self.recent_title.setText(f"Results for “{self.search.text().strip()}”")
         while self.recent_box.count():
             it = self.recent_box.takeAt(0)
             w = it.widget()
@@ -4442,6 +4752,7 @@ class GoatWindow(QWidget):
 
     def _refresh_side(self):
         """Active brain + System pills from the live config/engine."""
+        self._refresh_brains_line()
         # Auto brain (2026-10-01): the card names the brain answering NOW
         # (Sonnet 5.5 for talk and simple tasks, his pick for code and
         # serious questions); the chip stays his pick — it is a selector.
@@ -4572,7 +4883,6 @@ class GoatWindow(QWidget):
         self._work_mode = bool(on)
         self.chip_work.setProperty("on", "true" if on else "false")
         repolish(self.chip_work)
-        self.cards["work"].set_on(on)
         self.composer.setProperty("work", "true" if on else "false")
         repolish(self.composer)
         self.input.setPlaceholderText(
@@ -4830,9 +5140,14 @@ class GoatWindow(QWidget):
         # Docked presence: ring radius = 0.3 x height = 28 px at 1x (design
         # mockup B), so the conversation keeps the room.
         self.presence.setFixedHeight(round(94 * k))
+        # Home presence: r = 0.3 x height = 50 px at 1x on a 900 px window,
+        # smaller on short windows so the desk still shows.
+        self.home_presence.setFixedHeight(
+            round(min(166 * k, max(110 * k, self.height() * 0.185))))
+        self._desk_lay.setSpacing(round(40 * k))
         self._cards_lay.setSpacing(round(12 * k))
         self.side_stack.setMinimumHeight(round(230 * k))
-        self._hero_gap.setFixedHeight(round(max(28, min(96, self.height() * 0.09)) * k))
+        self._hero_gap.setFixedHeight(round(max(16, min(64, self.height() * 0.05)) * k))
         self._titlebar_h = round(TITLEBAR_H * k)
         self._fit_side()
         self._fit_chips(self.width() - rail_w - side_w
@@ -5379,6 +5694,9 @@ class GoatWindow(QWidget):
             work = bool(self.goat and self.goat.busy)
             self.presence_mini.tick(mic_level, pstate, work)
             self.presence.tick(mic_level, pstate, work)
+            self.home_presence.tick(mic_level, pstate, work)
+            if getattr(self, "_brains_sig", None) != (work, self._claude_out):
+                self._refresh_brains_line()
         # Status lines ("calibrating…", "reconnected") hold the word for a
         # few seconds — without the hold, the 33ms audio-state ticker stomps
         # every status within one frame and none of them are ever seen.
@@ -5389,10 +5707,11 @@ class GoatWindow(QWidget):
         if self.bubble.isVisible():
             self.bubble.set_level(mic_level)
             self.bubble.set_state(state)
-        if self._page == "chat":
+        if self._page in ("chat", "home"):
             cap = self.stateword.text()
-            if cap != self.presence_caption.text():
-                self.presence_caption.setText(cap)
+            lab = self.presence_caption if self._page == "chat" else self.home_state
+            if cap != lab.text():
+                lab.setText(cap)
         muted = bool(self.goat and self.goat.mic_muted)
         word = self.stateword.text()
         mood = ("bad" if (self._claude_out or "out of usage" in word
@@ -5666,6 +5985,7 @@ class GoatWindow(QWidget):
             try:
                 fh, wk, rs = data.split("|")
                 self._plan = f"plan {fh}% (resets {rs}) · week {wk}%"
+                self._plan_fh = int(float(fh))
                 for k, v, nm, tail in (("fh", fh, "5-hour", f" · resets {rs}"),
                                        ("wk", wk, "Weekly", "")):
                     lab, bar = self._plan_bars[k]
@@ -5869,7 +6189,7 @@ def main():
     if startup:
         win.collapse()   # before the loop paints: no full-screen flash
     else:
-        win.presence_mini.ignite()  # boot ritual: the ring draws itself
+        win.home_presence.ignite()  # boot ritual: the ring draws itself
 
     holder: dict = {}
 
