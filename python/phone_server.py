@@ -1555,6 +1555,8 @@ class PhoneServer:
             if text:
                 st["t_in"] = time.time()
                 self.app.submit_text(text, origin="phone")
+        elif kind == "adbg":
+            print("[phone-audio]", str(m.get("m"))[:160], flush=True)
         elif kind == "live":
             st["live"] = bool(m.get("on"))
             if st["live"]:

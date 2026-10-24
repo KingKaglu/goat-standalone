@@ -489,7 +489,7 @@ jumpB.onclick = () => chatP.scrollTo({top: chatP.scrollHeight, behavior: "smooth
 // Soft two-note tick every ~1.6 s while I'm working, so silence never feels dead.
 let thinkT = 0;
 function thinkTick() {
-  if (typeof sources !== "undefined" && sources.length) return;
+  return; // disabled 2026-10-20 (his order)
   try {
     const c = ensureCtx(), t = c.currentTime;
     [[520, 0], [660, 0.16]].forEach(([f, d]) => {
@@ -1062,7 +1062,7 @@ function connect() {
   ws.onopen = () => { dot.classList.add("on"); if (live) send({type: "live", on: true}); };
   ws.onclose = () => { dot.classList.remove("on"); setTimeout(connect, 1500); };
   ws.onmessage = e => {
-    if (typeof e.data !== "string") { if (!staleAudio()) play(e.data, sayText); return; }
+    if (typeof e.data !== "string") { if (!staleAudio()) play(e.data, sayText); else adbg("dropped as stale/cut"); return; }
     const m = JSON.parse(e.data);
     if (m.type === "you") {
       cutAt = 0; add("you", m.text); goatBubble = null;
@@ -1152,8 +1152,10 @@ let sched = [], held = [], paused = 0, pauseWait = 0, pauseT = 0, sayText = "";
 // false alarm now only makes the next one stricter; a runaway loop is still
 // capped at 3 per reply.
 let aecStrict = 0;
+function adbg(m) { try { send({type: "adbg", m}); } catch (e) {} }
 function play(buf, text) {
-  if (!ctx) return;                        // no tap yet: text only
+  adbg("play bytes=" + (buf.byteLength || 0) + " ctx=" + (ctx ? ctx.state : "none") + " paused=" + paused + " vol=" + (master ? master.gain.value : "-"));
+  if (!ctx) { ensureCtx(); adbg("ctx was missing, created: " + ctx.state); }
   const pcm = new Int16Array(buf);
   if (!pcm.length) return;
   const ab = ctx.createBuffer(1, pcm.length, SR), ch = ab.getChannelData(0);

@@ -30,7 +30,7 @@ import dsp
 CHARACTERS = {
     "goat": {
         "voices": {"en": "en-US-AvaMultilingualNeural",
-                   "ka": "ka-GE-EkaNeural"},  # Microsoft's Georgian neural voice
+                   "ka": "ka-GE-GiorgiNeural"},  # Microsoft's male Georgian neural voice (his pick 2026-10-20)
         # English accents, picked by set_accent(); "us" is the multilingual
         # Ava above, the rest are regional neurals of the same character.
         "accents": {"us": "en-US-AvaMultilingualNeural",

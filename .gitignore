@@ -55,3 +55,4 @@ voiceid/
 # two brains runtime state (2026-10-24)
 python/.talk-quota.json
 python/.fable-gate.json
+.plan_usage.json

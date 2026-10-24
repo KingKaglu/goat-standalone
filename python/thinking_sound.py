@@ -21,7 +21,7 @@ def _pulse() -> np.ndarray:
 
 
 class ThinkingSound:
-    def __init__(self, is_thinking, is_speaking, enabled=True):
+    def __init__(self, is_thinking, is_speaking, enabled=False):  # off 2026-10-20 (his order): mic heard it as "boop"
         self.is_thinking = is_thinking
         self.is_speaking = is_speaking
         self.enabled = enabled
