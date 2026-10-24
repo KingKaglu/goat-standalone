@@ -53,6 +53,7 @@ Threading: Qt owns the main thread; GoatApp's asyncio loop runs on a
 daemon thread. Events cross via a Signal; typed input crosses back via
 run_coroutine_threadsafe inside submit_text.
 """
+import asyncio
 import ctypes
 import ctypes.wintypes
 import json
@@ -82,6 +83,7 @@ from PySide6.QtCore import (
     QRectF,
     Qt,
     QTimer,
+    QVariantAnimation,
     Signal,
 )
 from PySide6.QtGui import (
@@ -354,17 +356,17 @@ MONO_FONT = "'Cascadia Mono', 'Consolas'"
 # _apply_metrics(), so at 200% the furniture grows with the type (the v6
 # lesson: scaling only fonts crowded big type into small rooms).
 RAIL_W = 256                      # left rail: mark, pages, presence
-SIDE_W = 348                      # right rail: search, brain, tools, system
+SIDE_W = 384                      # Claude's work column (out only while it works)
 # v8: margins sit on the 4/8/16/24/32 spacing scale.
-CENTER_MARGIN = (32, 24, 32, 16)  # centre column
+CENTER_MARGIN = (32, 4, 32, 16)   # centre column (under the top bar)
+TOPBAR_MARGIN = (32, 12, 16, 4)   # search · settings · window buttons
 RAIL_MARGIN = (24, 24, 24, 24)
-SIDE_MARGIN = (16, 12, 16, 16)
 TITLEBAR_H = 52                   # the drag band along the top edge
 # The chat transcript is still the one true reading column: reading margins
 # and a measure, never a spreadsheet row (v6).
 READ_MARGIN = (6, 0, 18, 0)
 READ_MEASURE_CH = 72
-WORK_MARGIN = (16, 16, 16, 16)    # inside the Activity card
+WORK_MARGIN = (28, 12, 16, 22)    # inside the work column
 
 # Segoe Fluent Icons (Win 11) with MDL2 as the Win 10 fallback. Glyphs are
 # private-use codepoints; a name table keeps the call sites readable.
@@ -620,6 +622,53 @@ QLabel#workthink {{
 QLabel#workctx {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px;
   padding-top: {s(4)}px; }}
 QLabel#workfail {{ color: {danger_soft}; font-family: {MONO_FONT}; font-size: {s(12)}px; font-weight: 500; }}
+
+/* ---- v8 work column (Claude's marks only wear the work colour) ---- */
+QLabel#workDot {{ color: {t['faint']}; font-size: {s(10)}px; }}
+QLabel#workDot[mood="work"] {{ color: {work}; }}
+QLabel#workDot[mood="ok"] {{ color: {t['ok']}; }}
+QLabel#workDot[mood="bad"] {{ color: {danger}; }}
+QLabel#workHead {{ color: {t['paper']}; font-family: {MONO_FONT}; font-size: {s(11)}px;
+  font-weight: 500; letter-spacing: {track}px; }}
+QLabel#workState {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
+QLabel#workState[mood="work"] {{ color: {work}; }}
+QLabel#workState[mood="ok"] {{ color: {t['ok']}; }}
+QLabel#workState[mood="bad"] {{ color: {danger_soft}; }}
+QLabel#workClock {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
+QLabel#workTitle {{ color: {t['paper']}; font-family: {VOICE_FONT}; font-size: {s(20)}px;
+  font-weight: 500; }}
+QFrame#handoff {{ background: {rgba(acc, 22)}; border: 1px solid {rgba(acc, 40)};
+  border-radius: {s(12)}px; }}
+QLabel#handHead {{ color: {acc2}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
+QLabel#handQuote {{ color: {t['paper']}; font-family: {VOICE_FONT}; font-size: {s(14)}px;
+  font-style: italic; }}
+QLabel#stepTitle {{ color: {t['paper']}; font-size: {s(15)}px; font-weight: 500; }}
+QLabel#stepTitle[kind="done"] {{ color: {t['paper']}; font-weight: 400; }}
+QLabel#stepTitle[kind="voice"] {{ color: {acc2}; font-weight: 400; }}
+QLabel#stepTitle[kind="say"] {{ color: {t['dim']}; font-size: {s(13)}px; font-weight: 400; }}
+QLabel#stepTitle[kind="fail"] {{ color: {danger_soft}; }}
+QLabel#stepDetail {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
+QLabel#stepThought {{ color: {t['dim']}; font-family: {VOICE_FONT}; font-size: {s(13)}px;
+  font-style: italic; padding-top: {s(3)}px; }}
+QFrame#needCard {{ background: {rgba(work, 20)}; border: 1px solid {rgba(work, 110)};
+  border-radius: {s(16)}px; }}
+QLabel#needHead {{ color: {work}; font-family: {MONO_FONT}; font-size: {s(11)}px;
+  font-weight: 500; letter-spacing: {track}px; }}
+QLabel#needQ {{ color: {t['paper']}; font-size: {s(15)}px; }}
+QPushButton#needYes {{ background: {work}; color: {t['bg_bot']}; border: none;
+  border-radius: {s(10)}px; font-size: {s(13)}px; font-weight: 600;
+  padding: {s(7)}px {s(22)}px; }}
+QPushButton#needYes:hover {{ background: {_hex_mix(work, t['paper'], 0.2)}; }}
+QPushButton#needNo {{ background: transparent; color: {t['paper']};
+  border: 1px solid {rgba(t['paper'], 40)}; border-radius: {s(10)}px;
+  font-size: {s(13)}px; padding: {s(7)}px {s(18)}px; }}
+QPushButton#needNo:hover {{ border: 1px solid {rgba(t['paper'], 90)}; }}
+QPushButton#stopBtn {{ background: transparent; color: {t['paper']};
+  border: 1px solid {rgba(t['paper'], 40)}; border-radius: {s(10)}px;
+  font-size: {s(13)}px; padding: {s(7)}px {s(16)}px; }}
+QPushButton#stopBtn:hover {{ border: 1px solid {danger}; color: {danger_soft}; }}
+QPushButton#stopBtn:disabled {{ color: {t['faint']}; }}
+QLabel#brainsLine:hover {{ background: {rgba(t['paper'], 6)}; border-radius: {s(8)}px; }}
 
 QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
@@ -1079,6 +1128,8 @@ class Presence(QWidget):
         self._flinch_t0 = 0.0
         self._ignite_t0 = 0.0
         self._ignite_dur = 1.4
+        self._spark_t0 = 0.0          # hand-off spark (see spark())
+        self._spark_back = False
         self._frame = 0
         # Blend weight of every state + Claude's light, eased each tick.
         self._v = {s: 0.0 for s in self.STATES}
@@ -1103,6 +1154,15 @@ class Presence(QWidget):
         """Boot ritual: the ring draws itself, then the string runs out."""
         self._ignite_dur = duration
         self._ignite_t0 = time.monotonic()
+        self.update()
+
+    SPARK_LEN = 0.65
+
+    def spark(self, back: bool = False):
+        """Hand-off (design.md): a spark runs from the ring along the string
+        toward Claude's column; back=True, it returns when the job is done."""
+        self._spark_t0 = time.monotonic()
+        self._spark_back = back
         self.update()
 
     # ---- the clock ----
@@ -1144,7 +1204,8 @@ class Presence(QWidget):
         busy = (moving or self.level > 0.0
                 or v["listening"] + v["thinking"] + v["speaking"] + v["work"] > 0.0
                 or (self._flinch_t0 and now - self._flinch_t0 < 0.5)
-                or (self._ignite_t0 and now - self._ignite_t0 < self._ignite_dur + 0.1))
+                or (self._ignite_t0 and now - self._ignite_t0 < self._ignite_dur + 0.1)
+                or (self._spark_t0 and now - self._spark_t0 < self.SPARK_LEN + 0.1))
         want = bool(busy)
         if busy:
             self._t += dt
@@ -1286,6 +1347,36 @@ class Presence(QWidget):
                     y = float(beads[min(len(beads) - 1, int(dist / step))])
                 p.setBrush(ca(wrk * 0.9 * math.sin(math.pi * u), self._workc))
                 p.drawEllipse(QPointF(cx + x0 + dist, y), br, br)
+
+        # the hand-off spark: out along the right string to Claude, or home
+        if self._spark_t0 and reach > 2:
+            f = (now - self._spark_t0) / self.SPARK_LEN
+            if f >= 1.0:
+                self._spark_t0 = 0.0
+            else:
+                e = 1 - (1 - f) ** 3 if not self._spark_back else f * f * (3 - 2 * f)
+                u = 1.0 - e if self._spark_back else e
+                fade = min(1.0, 4 * (1 - f)) * min(1.0, 6 * f + 0.2)
+                trail = -1 if self._spark_back else 1   # trail points home
+                p.setPen(Qt.NoPen)
+                sr = 1.7 if self.compact else 2.6
+                for i in range(14, -1, -1):
+                    du = max(0.0, min(1.0, u - trail * i * 0.018))
+                    dist = du * reach
+                    y = cy
+                    if beads is not None:
+                        y = float(beads[min(len(beads) - 1, int(dist / step))])
+                    a = fade * (1 - i / 15) ** 1.6
+                    p.setBrush(ca(a, self._workc if i else self._paper))
+                    p.drawEllipse(QPointF(cx + x0 + dist, y),
+                                  sr * (1 - i / 22), sr * (1 - i / 22))
+                hx = cx + x0 + u * reach
+                gr = (7 if self.compact else 13) * max(1.0, sa)
+                hg = QRadialGradient(QPointF(hx, cy), gr)
+                hg.setColorAt(0.0, ca(0.55 * fade, self._workc))
+                hg.setColorAt(1.0, ca(0.0, self._workc))
+                p.setBrush(hg)
+                p.drawEllipse(QPointF(hx, cy), gr, gr)
 
         # glass core
         core = QRadialGradient(QPointF(cx - r * 0.3, cy - r * 0.35), r * 1.2)
@@ -1825,7 +1916,7 @@ def repolish(w: QWidget, *, deep: bool = False):
 
 # v8 labels: small mono caps. QSS has no text-transform, but a stylesheet
 # font keeps the widget font's capitalization, so it is set here once.
-CAPS_LABELS = ("sectionTitle", "paneltitle", "stateword", "speaker")
+CAPS_LABELS = ("sectionTitle", "paneltitle", "stateword", "speaker", "needHead")
 
 
 def capsify(lbl: QLabel) -> QLabel:
@@ -2149,6 +2240,8 @@ class SettingsPage(QWidget):
         lay.addWidget(mklabel("Changes save instantly — you can also just say "
                               "them (“make the text bigger”, “speak Georgian”).",
                               "pageSub", wrap=True))
+        self._lay = lay
+        self._top_at = lay.count()     # Brains/usage/System go in here
         for title, key, rows in self.SECTIONS:
             card = QFrame()
             card.setObjectName("card")
@@ -2218,6 +2311,12 @@ class SettingsPage(QWidget):
             cl.addLayout(r)
         lay.addWidget(card)
         lay.addStretch(1)
+
+    def insert_top(self, w: QWidget):
+        """The window's status cards (brains, usage, system), in order,
+        above the switches."""
+        self._lay.insertWidget(self._top_at, w)
+        self._top_at += 1
 
     def set_theme(self, t: dict):
         pass  # all styling rides the window stylesheet
@@ -2295,53 +2394,303 @@ def voice_display(model: str) -> str:
             + ("-Lite" if m.group(3) else ""))
 
 
-class WorkPanel(QWidget):
-    """Left lane: what the WORKING brain is doing right now — the task, each
-    live step (marked ✓ the moment the next begins or the turn ends), and the
-    brain's own narration. Silent by design: this is the build log Giorgi
-    watches on the left while he talks to Gemini in the middle."""
+def _step_words(desc: str) -> tuple:
+    """A raw tool step as the column reads it: a plain title and a small mono
+    detail. "Bash — Find v8 notes" -> ("Find v8 notes", "Bash"),
+    "Read — ui_qt.py" -> ("Read ui_qt.py", "Read")."""
+    desc = " ".join((desc or "").split())
+    head, sep, tail = desc.partition(" — ")
+    tool = head.strip()
+    if tool.startswith("mcp__"):
+        tool = tool.rsplit("__", 1)[-1]
+    if tool == "tell_voice":
+        return "Told the voice", "Claude → voice"
+    if not sep:
+        return (tool.replace("_", " ")[:1].upper() + tool.replace("_", " ")[1:]), ""
+    tail = tail.strip()
+    if " " in tool:                       # not a tool: a sentence with a dash
+        return desc, ""
+    verbs = {"Read": "Read", "Edit": "Edited", "MultiEdit": "Edited",
+             "Write": "Wrote", "NotebookEdit": "Edited", "Grep": "Searched for",
+             "Glob": "Looked for", "WebSearch": "Searched the web for",
+             "WebFetch": "Read", "Skill": "Used the skill"}
+    if tool in verbs:
+        return f"{verbs[tool]} {tail}", tool
+    return tail[:1].upper() + tail[1:], tool
+
+
+def _job_title(task: str) -> str:
+    """The job as a title: its first sentence, at most ~90 characters."""
+    t = " ".join((task or "").split())
+    m = re.search(r"(?<=[.!?:])\s|\s[—–-]\s", t)
+    if m and m.start() >= 12:
+        t = t[:m.start()]
+    t = t.rstrip(" .:")
+    return t if len(t) <= 90 else t[:88].rstrip() + "…"
+
+
+class StepRow(QWidget):
+    """One beat of Claude's job on the work column's thread: a marker (done
+    check, live ring, the voice's dot, a fail cross), a plain title, a mono
+    detail and, on the live step only, the thought behind it."""
+
+    def __init__(self, col, title: str, detail: str = "", kind: str = "now"):
+        super().__init__()
+        self.col = col
+        self.kind = kind
+        self.first = False
+        self.last = True
+        lay = self._lay = QVBoxLayout(self)
+        lay.setSpacing(1)
+        self.title = PageLabel(title)
+        self.title.setObjectName("stepTitle")
+        self.title.setWordWrap(True)
+        self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.title)
+        self.detail = QLabel(detail)
+        self.detail.setObjectName("stepDetail")
+        self.detail.setWordWrap(True)
+        self.detail.setVisible(bool(detail))
+        lay.addWidget(self.detail)
+        self.thought = QLabel("")
+        self.thought.setObjectName("stepThought")
+        self.thought.setWordWrap(True)
+        self.thought.hide()
+        lay.addWidget(self.thought)
+        self.set_scale(col._k)
+        self.set_kind(kind)
+
+    def set_scale(self, k: float):
+        self._lay.setContentsMargins(round(30 * k), 0, 0, round(16 * k))
+
+    def set_kind(self, kind: str):
+        self.kind = kind
+        self.title.setProperty("kind", kind)
+        repolish(self.title)
+        if kind != "now":
+            self.thought.hide()
+        self.update()
+
+    def set_thought(self, text: str):
+        text = " ".join(text.split())
+        if len(text) > 220:
+            text = "…" + text[-218:].split(" ", 1)[-1]
+        self.thought.setText(text)
+        self.thought.setVisible(bool(text) and self.kind == "now")
+
+    def paintEvent(self, _ev):
+        t, k = self.col._t, self.col._k
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        x = 9.5 * k
+        fm = self.title.fontMetrics()
+        my = self.title.geometry().top() + fm.height() / 2
+        thread = _qc(t["paper"], 34)
+        p.setPen(QPen(thread, 1))
+        y0 = my if self.first else 0
+        y1 = my if self.last else self.height()
+        if y1 > y0:
+            p.drawLine(QPointF(x, y0), QPointF(x, y1))
+        r = 7.0 * k
+        if self.kind == "done":
+            ok = QColor(t["ok"])
+            p.setPen(Qt.NoPen)
+            p.setBrush(_qc(t["ok"], 46))
+            p.drawEllipse(QPointF(x, my), r, r)
+            pen = QPen(ok, 1.5 * k)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawPolyline(QPolygonF([QPointF(x - 3.2 * k, my + 0.2 * k),
+                                      QPointF(x - 0.9 * k, my + 2.4 * k),
+                                      QPointF(x + 3.3 * k, my - 2.3 * k)]))
+        elif self.kind == "now":
+            w = QColor(t["work"])
+            p.setBrush(_qc(t["bg_bot"], 255))
+            p.setPen(QPen(w, 1.8 * k))
+            p.drawEllipse(QPointF(x, my), r - 0.9 * k, r - 0.9 * k)
+        elif self.kind == "voice":
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(t["accent"]))
+            p.drawEllipse(QPointF(x, my), 3.6 * k, 3.6 * k)
+        elif self.kind == "fail":
+            d = QColor(t["danger"])
+            p.setBrush(_qc(t["danger"], 40))
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(QPointF(x, my), r, r)
+            pen = QPen(d, 1.5 * k)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            a = 2.6 * k
+            p.drawLine(QPointF(x - a, my - a), QPointF(x + a, my + a))
+            p.drawLine(QPointF(x - a, my + a), QPointF(x + a, my - a))
+        else:                                   # "say": Claude's own words
+            p.setPen(Qt.NoPen)
+            p.setBrush(_qc(t["work"], 150))
+            p.drawEllipse(QPointF(x, my), 2.6 * k, 2.6 * k)
+
+
+class ClickLabel(QLabel):
+    """A label he can press (the brains line opens Claude's column)."""
+    clicked = Signal()
+
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(ev)
+
+
+class SlideHost(QWidget):
+    """Clips a fixed-width panel while its own width animates: the panel
+    stays laid out at full width (anchored left), so a slide costs no
+    re-wrapping. Tells the window when the pointer comes and goes."""
+    entered = Signal()
+    left = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.inner = None
+        self.full_w = SIDE_W
+
+    def set_inner(self, w: QWidget):
+        self.inner = w
+        w.setParent(self)
+        self._place()
+
+    def set_full(self, w: int):
+        self.full_w = max(1, int(w))
+        self._place()
+
+    def _place(self):
+        if self.inner is not None:
+            self.inner.setGeometry(0, 0, self.full_w, self.height())
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._place()
+
+    def enterEvent(self, ev):
+        super().enterEvent(ev)
+        self.entered.emit()
+
+    def leaveEvent(self, ev):
+        super().leaveEvent(ev)
+        self.left.emit()
+
+
+class WorkColumn(QWidget):
+    """v8 (design.md, mockups B and D): Claude's work column. It slides in on
+    the right while Claude works and leaves a little after it's done, so the
+    rest of the time GOAT has the room to itself. Top to bottom: who and how
+    long, the job as a title, brain · thinking · context, the hand-off (what
+    he said when the voice passed the job over), the job's thread of steps
+    with the live thought under the current one, a "needs you" card when
+    Claude's report ends in a question, and Stop / Full log.
+
+    It keeps the old Activity card's API (start/step/think/text/add/done/
+    fail/files/context/voice/set_*) so the engine's events didn't change."""
+
+    LOG_MAX = 160          # raw ledger lines kept (Full log)
+    STEPS_MAX = 120        # thread rows kept
 
     def __init__(self, win):
         super().__init__()
         self.win = win
-        self._bg = QColor("#0b0a09")
-        self._bg.setAlpha(70)
-        self._line = QColor("#3d3a34")
-        self._line.setAlpha(110)
-        self._cur_step = None    # the in-progress step label ("▸ …")
-        self._text_label = None  # rolling narration label for this turn
-        self._think_label = None  # rolling reasoning label for this block
-        # Thinking depth, shown in the sub line from the first paint — the
-        # engine confirms it on bind, but the saved setting is true already.
+        self._t = dict(THEMES["midnight"])
+        self._t.setdefault("work", "#f2b36b")
+        self._k = 1.0
         self._effort = str(getattr(win, "cfg", {}).get("effort", "") or "")
-        # Ledger clock: elapsed mm:ss in the header while a turn runs —
-        # answers "how long has it been at this?" at a glance.
         self._t0 = 0.0
+        self._took = ""
         self._model_name = ""
+        self._voice_name = ""
+        self._ctx = ""
+        self._state = "idle"
+        self._cur = None          # the live StepRow
+        self._say = None          # rolling narration row for this beat
+        self._say_text = ""       # this turn's last narration (the report)
+        self._think_text = ""
+        self._last_step = ""
+        self._log_think = None
+        self._log_text = None
+        self._flash = 0.0
+        self._flash_anim = QVariantAnimation(self)
+        self._flash_anim.setStartValue(1.0)
+        self._flash_anim.setEndValue(0.0)
+        self._flash_anim.setDuration(700)
+        self._flash_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._flash_anim.valueChanged.connect(self._on_flash)
         self._tick = QTimer(self)
         self._tick.setInterval(1000)
         self._tick.timeout.connect(self._on_tick)
 
-        outer = QVBoxLayout(self)
+        outer = self._outer = QVBoxLayout(self)
         outer.setContentsMargins(*WORK_MARGIN)
-        outer.setSpacing(6)
-        # v7: this is the right rail's Activity card. Same ledger, same API.
+        outer.setSpacing(0)
+        # GoatWindow puts the window's own buttons in this row (mockup B).
+        self.ctl_row = QHBoxLayout()
+        self.ctl_row.setSpacing(2)
+        self.ctl_row.addStretch(1)
+        outer.addLayout(self.ctl_row)
+        outer.addSpacing(14)
+
         head = QHBoxLayout()
         head.setSpacing(8)
-        head.addWidget(icon_label("sync", "icoAcc"))
-        self.header = capsify(QLabel("Activity"))
-        self.header.setObjectName("paneltitle")
+        self.dot = QLabel("●")
+        self.dot.setObjectName("workDot")
+        head.addWidget(self.dot)
+        self.header = capsify(QLabel("Claude"))
+        self.header.setObjectName("workHead")
         head.addWidget(self.header)
+        head.addSpacing(6)
+        self.state_lbl = QLabel("idle")
+        self.state_lbl.setObjectName("workState")
+        head.addWidget(self.state_lbl)
         head.addStretch(1)
-        self.tools_link = QPushButton("Tools  ›")
-        self.tools_link.setObjectName("link")
-        self.tools_link.setCursor(Qt.PointingHandCursor)
-        head.addWidget(self.tools_link)
+        self.clock = QLabel("")
+        self.clock.setObjectName("workClock")
+        head.addWidget(self.clock)
         outer.addLayout(head)
+        outer.addSpacing(10)
+
+        self.title = QLabel("No job yet")
+        self.title.setObjectName("workTitle")
+        self.title.setWordWrap(True)
+        outer.addWidget(self.title)
+        outer.addSpacing(6)
         self.sub = QLabel("idle")
         self.sub.setObjectName("workmodel")
+        self.sub.setWordWrap(True)
         outer.addWidget(self.sub)
+        outer.addSpacing(10)
+        self.meter = CtxMeter()
+        outer.addWidget(self.meter)
+        outer.addSpacing(16)
 
+        hand = self.handoff = QFrame()
+        hand.setObjectName("handoff")
+        hl = self._hand_lay = QVBoxLayout(hand)
+        hl.setContentsMargins(14, 10, 14, 12)
+        hl.setSpacing(6)
+        self.hand_head = QLabel("")
+        self.hand_head.setObjectName("handHead")
+        hl.addWidget(self.hand_head)
+        self.hand_quote = QLabel("")
+        self.hand_quote.setObjectName("handQuote")
+        self.hand_quote.setWordWrap(True)
+        self.hand_quote.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        hl.addWidget(self.hand_quote)
+        hand.hide()
+        outer.addWidget(hand)
+        outer.addSpacing(18)
+
+        self.pages = QStackedWidget()
+        # page 0: the thread of steps
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -2349,80 +2698,212 @@ class WorkPanel(QWidget):
         host = QWidget()
         host.setAutoFillBackground(False)
         self.col = QVBoxLayout(host)
-        # Right gutter so the log clears its own scroll rail — at 175% the
-        # rail sat straight on top of the last word of every wrapped line.
-        self.col.setContentsMargins(0, 8, 14, 0)
-        self.col.setSpacing(5)
+        self.col.setContentsMargins(0, 0, 10, 0)
+        self.col.setSpacing(0)
         self.col.addStretch(1)
         self.scroll.setWidget(host)
-        outer.addWidget(self.scroll, stretch=1)
         self._pin = BottomFollow(self.scroll)
-
-        # Hard newlines used to break this at ~20 characters, which was right
-        # when the lane was a narrow strip and wrong ever since it became half
-        # the window: five ragged stubs down the left of a mostly empty column.
-        # Let it wrap to the lane it is actually in.
         self._idle = QLabel(
-            "Nothing running. Steps, thinking and files show up here "
-            "while Goat works.")
+            "Nothing running. When you give GOAT a job, its steps show up "
+            "here live.")
         self._idle.setObjectName("workidle")
         self._idle.setWordWrap(True)
-        self._idle.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.col.insertWidget(0, self._idle)
+        self.pages.addWidget(self.scroll)
+        # page 1: the full raw ledger (every step, thought and word)
+        self.log_scroll = QScrollArea()
+        self.log_scroll.setWidgetResizable(True)
+        self.log_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.log_scroll.viewport().setAutoFillBackground(False)
+        lhost = QWidget()
+        lhost.setAutoFillBackground(False)
+        self.log = QVBoxLayout(lhost)
+        self.log.setContentsMargins(0, 0, 12, 0)
+        self.log.setSpacing(5)
+        self.log.addStretch(1)
+        self.log_scroll.setWidget(lhost)
+        self._log_pin = BottomFollow(self.log_scroll)
+        self.pages.addWidget(self.log_scroll)
+        outer.addWidget(self.pages, 1)
 
-        # Session-fill instrument, pinned to the bottom of the lane. Hidden
-        # until the first turn reports a size — an empty meter says nothing.
-        self.meter = CtxMeter()
-        self.ctx_label = QLabel("")
-        self.ctx_label.setObjectName("workctx")
-        outer.addWidget(self.meter)
-        outer.addWidget(self.ctx_label)
-        self.meter.hide()
-        self.ctx_label.hide()
+        need = self.need = QFrame()
+        need.setObjectName("needCard")
+        nl = self._need_lay = QVBoxLayout(need)
+        nl.setContentsMargins(16, 12, 16, 14)
+        nl.setSpacing(8)
+        nl.addWidget(mklabel("Needs you", "needHead"))
+        self.need_q = QLabel("")
+        self.need_q.setObjectName("needQ")
+        self.need_q.setWordWrap(True)
+        nl.addWidget(self.need_q)
+        nb = QHBoxLayout()
+        nb.setSpacing(8)
+        self.need_yes = QPushButton("Yes")
+        self.need_yes.setObjectName("needYes")
+        self.need_no = QPushButton("Not yet")
+        self.need_no.setObjectName("needNo")
+        for b, said in ((self.need_yes, "Yes."), (self.need_no, "Not yet.")):
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, s=said: self._answer(s))
+            nb.addWidget(b)
+        nb.addStretch(1)
+        nl.addLayout(nb)
+        need.hide()
+        outer.addSpacing(10)
+        outer.addWidget(need)
 
-    def context(self, used: int, trim: int):
-        """Session fill after a turn: 'context 23k · trims at 60k'."""
-        self.meter.show()
-        self.ctx_label.show()
-        self.meter.set_frac(used / trim if trim else 0.0)
-        self.ctx_label.setText(
-            f"context {_fmt_tok(used)} · trims at {_fmt_tok(trim)}")
+        foot = QHBoxLayout()
+        foot.setSpacing(12)
+        foot.setContentsMargins(0, 12, 0, 0)
+        self.stop_btn = QPushButton("■  Stop")
+        self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
+        self.stop_btn.setToolTip("stop Claude's job")
+        self.stop_btn.clicked.connect(self._stop)
+        self.stop_btn.hide()
+        foot.addWidget(self.stop_btn)
+        self.log_link = QPushButton("Full log  →")
+        self.log_link.setObjectName("link")
+        self.log_link.setCursor(Qt.PointingHandCursor)
+        self.log_link.clicked.connect(self.toggle_log)
+        foot.addWidget(self.log_link)
+        foot.addStretch(1)
+        self.close_link = QPushButton("Hide")
+        self.close_link.setObjectName("link")
+        self.close_link.setCursor(Qt.PointingHandCursor)
+        self.close_link.setToolTip("hide the work column — ctrl+j")
+        foot.addWidget(self.close_link)
+        outer.addLayout(foot)
+        self._paint_state()
 
+    # ---- look ----
     def set_theme(self, t: dict):
-        self._bg = QColor(t["card"])
-        self._bg.setAlpha(190)
-        self._line = QColor(t["line"])
-        self._line.setAlpha(230)
-        self._radius = 14
+        self._t = dict(t)
         self.meter.set_theme(t)
+        self.meter._fill = QColor(t.get("work", t["accent"]))
+        self.update()
+        for r in self._rows():
+            r.update()
+
+    def set_scale(self, k: float):
+        self._k = k
+
+        def m(box):
+            return tuple(max(0, round(v * k)) for v in box)
+        self._outer.setContentsMargins(*m(WORK_MARGIN))
+        self._hand_lay.setContentsMargins(*m((14, 10, 14, 12)))
+        self._need_lay.setContentsMargins(*m((16, 12, 16, 14)))
+        for r in self._rows():
+            r.set_scale(k)
+
+    def _rows(self) -> list:
+        out = []
+        for i in range(self.col.count()):
+            w = self.col.itemAt(i).widget()
+            if isinstance(w, StepRow):
+                out.append(w)
+        return out
+
+    def flash(self):
+        """The hand-off spark landing: the column's edge lights once."""
+        self._flash_anim.stop()
+        self._flash_anim.start()
+
+    def _on_flash(self, v):
+        self._flash = float(v)
         self.update()
 
-    def _sub(self, tail: str) -> str:
-        """Header sub-line: brain · thinking depth · state. The depth is on
-        screen at all times because at max effort a silent minute is normal
-        and he should never have to guess whether that is the setting."""
-        bits = [self._model_name or "idle"]
+    def paintEvent(self, _ev):
+        t = self._t
+        p = QPainter(self)
+        p.fillRect(self.rect(), _qc(t["rail"], 238))
+        p.setPen(QPen(_qc(t["paper"], 16), 1))
+        p.drawLine(0, 0, 0, self.height())
+        if self._flash > 0.0:
+            g = QLinearGradient(0, 0, 0, self.height())
+            c = QColor(t.get("work", t["accent"]))
+            g.setColorAt(0.0, _qc(c.name(), 0))
+            g.setColorAt(0.3, _qc(c.name(), int(230 * self._flash)))
+            g.setColorAt(1.0, _qc(c.name(), 0))
+            p.setPen(QPen(g, 2))
+            p.drawLine(1, 0, 1, self.height())
+            glow = QLinearGradient(0, 0, 60 * self._k, 0)
+            glow.setColorAt(0.0, _qc(c.name(), int(40 * self._flash)))
+            glow.setColorAt(1.0, _qc(c.name(), 0))
+            p.fillRect(QRectF(0, 0, 60 * self._k, self.height()), glow)
+
+    def _paint_state(self):
+        st = self._state
+        self.state_lbl.setText({"needs": "needs you"}.get(st, st))
+        mood = {"working": "work", "needs": "work", "done": "ok",
+                "failed": "bad", "stopped": "bad"}.get(st, "off")
+        for w in (self.dot, self.state_lbl):
+            w.setProperty("mood", mood)
+            repolish(w)
+        self.stop_btn.setVisible(st == "working")
+
+    def _set_state(self, st: str):
+        self._state = st
+        self._paint_state()
+
+    # ---- header lines ----
+    def _sub(self, tail: str = "") -> str:
+        """brain · thinking depth · context — the depth is on screen at all
+        times because at max effort a silent minute is normal and he should
+        never have to guess whether that is the setting."""
+        name = self._model_name or "idle"
+        if name.islower():
+            name = name.title()
+        bits = [name]
         if self._effort:
-            bits.append(self._effort)
-        bits.append(tail)
+            bits.append(f"thinking {self._effort}")
+        if self._ctx:
+            bits.append(self._ctx)
+        if tail:
+            bits.append(tail)
         return " · ".join(b for b in bits if b)
 
+    def _refresh_sub(self):
+        self.sub.setText(self._sub())
+
     def set_turn_effort(self, level: str):
-        """The auto brain's depth for THIS turn (talk runs low, simple tasks
-        medium, deep work at his dial) — the sub line shows what is really
-        running, not just the dial."""
+        """The auto brain's depth for THIS turn — the sub line shows what is
+        really running, not just the dial."""
         if level:
             self._effort = level
+            self._refresh_sub()
 
     def set_effort(self, level: str):
         self._effort = level
-        self.sub.setText(self._sub("working · " + self._elapsed_str()
-                                   if self._t0 else "idle"))
+        self._refresh_sub()
+
+    def set_model(self, name: str):
+        self._model_name = name
+        self._refresh_sub()
+
+    def set_brains(self, voice: str, work: str):
+        self._voice_name = voice
+        if voice and work:
+            self._model_name = work
+        if self._idle is not None:
+            who = voice or "GOAT"
+            self._idle.setText(
+                f"Nothing running. When you give GOAT a job, {who} hands it "
+                "to Claude, and its steps, thinking and notes show up here "
+                "live.")
+        self._refresh_sub()
+
+    def context(self, used: int, trim: int):
+        """Session fill after a step: the hairline under the sub line."""
+        frac = used / trim if trim else 0.0
+        self.meter.set_frac(frac)
+        self._ctx = f"context {round(frac * 100)}%"
+        self.meter.setToolTip(f"context {_fmt_tok(used)} · trims at {_fmt_tok(trim)}")
+        self._refresh_sub()
 
     def _on_tick(self):
         if self._t0:
-            up = int(time.time() - self._t0)
-            self.sub.setText(self._sub(f"working · {up // 60}:{up % 60:02d}"))
+            self.clock.setText(self._elapsed_str())
 
     def _elapsed_str(self) -> str:
         if not self._t0:
@@ -2430,152 +2911,228 @@ class WorkPanel(QWidget):
         up = int(time.time() - self._t0)
         return f"{up // 60}:{up % 60:02d}"
 
-    def set_model(self, name: str):
-        self._model_name = name
-        if self._cur_step is None and self.win and not self.win_busy():
-            self.sub.setText(self._sub("idle"))
-
-    def set_brains(self, voice: str, work: str):
-        """Two brains (2026-10-24): this card is Claude's workbench, and the
-        voice's hand-offs show in it."""
-        self._voice_name = voice
-        if voice:
-            self.header.setText("Claude at work")
-            if work:
-                self._model_name = work.lower()
-            if self._idle is not None:
-                self._idle.setText(
-                    f"Nothing running. When you give GOAT a job, {voice} hands "
-                    "it to Claude — its steps, thinking and notes show "
-                    "up here live.")
-        else:
-            self.header.setText("Activity")
-
-    def voice(self, line: str):
-        """What the voice told him about the job."""
-        name = getattr(self, "_voice_name", "") or "voice"
-        self._add(f"{name} → you: {line}", "workvoice")
-        self._text_label = None
-        self._think_label = None
-
     def win_busy(self) -> bool:
         return bool(self.win and self.win.goat and self.win.goat.busy)
 
-    def _add(self, text: str, name: str) -> QLabel:
-        lbl = PageLabel(text)
-        lbl.setObjectName(name)
-        lbl.setWordWrap(True)
-        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.col.insertWidget(self.col.count() - 1, lbl)
-        self._trim()
-        return lbl
-
-    # The ledger grew one label per step forever; a long night of work made
-    # every relayout (and so every scroll) heavier. Keep the recent tail.
-    LOG_MAX = 160
-
-    def _trim(self):
-        while self.col.count() - 1 > self.LOG_MAX:
-            item = self.col.takeAt(0)
-            w = item.widget() if item is not None else None
-            if w is None:
-                break
-            for attr in ("_cur_step", "_text_label", "_think_label", "_idle"):
-                if getattr(self, attr, None) is w:
-                    setattr(self, attr, None)
-            w.setParent(None)
-            w.deleteLater()
-
-    def _mark_cur_done(self):
-        if self._cur_step is not None:
-            txt = self._cur_step.text()
-            if txt.startswith("▸ "):
-                self._cur_step.setText("✓ " + txt[2:])
-            self._cur_step.setObjectName("workdone")
-            self._cur_step.style().unpolish(self._cur_step)
-            self._cur_step.style().polish(self._cur_step)
-            self._cur_step = None
-
-    def start(self, model: str, task: str):
+    # ---- the thread ----
+    def _drop_idle(self):
         if self._idle is not None:
             self._idle.hide()
             self._idle.deleteLater()
             self._idle = None
-        self._mark_cur_done()
+
+    def _row(self, title: str, detail: str = "", kind: str = "now") -> StepRow:
+        self._drop_idle()
+        rows = self._rows()
+        r = StepRow(self, title, detail, kind)
+        r.first = not rows
+        if rows:
+            rows[-1].last = False
+            rows[-1].update()
+        self.col.insertWidget(self.col.count() - 1, r)
+        while len(rows) + 1 > self.STEPS_MAX:
+            old = rows.pop(0)
+            for attr in ("_cur", "_say"):
+                if getattr(self, attr) is old:
+                    setattr(self, attr, None)
+            old.setParent(None)
+            old.deleteLater()
+            if rows:
+                rows[0].first = True
+                rows[0].update()
+        return r
+
+    def _close_cur(self, kind: str = "done"):
+        if self._cur is not None:
+            self._cur.set_kind(kind)
+            self._cur = None
+        self._say = None
+
+    def _ledger(self, text: str, name: str) -> QLabel:
+        lbl = PageLabel(text)
+        lbl.setObjectName(name)
+        lbl.setWordWrap(True)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.log.insertWidget(self.log.count() - 1, lbl)
+        while self.log.count() - 1 > self.LOG_MAX:
+            item = self.log.takeAt(0)
+            w = item.widget() if item is not None else None
+            if w is None:
+                break
+            for attr in ("_log_think", "_log_text"):
+                if getattr(self, attr) is w:
+                    setattr(self, attr, None)
+            w.setParent(None)
+            w.deleteLater()
+        return lbl
+
+    def toggle_log(self):
+        full = self.pages.currentIndex() == 0
+        self.pages.setCurrentIndex(1 if full else 0)
+        self.log_link.setText("←  Steps" if full else "Full log  →")
+        QTimer.singleShot(0, (self._log_pin if full else self._pin).snap)
+
+    # ---- the engine's events ----
+    def start(self, model: str, task: str, his: str = ""):
+        self._close_cur("done")
+        self.need.hide()
         self._model_name = model
+        self._ctx = ""
         self._t0 = time.time()
         self._tick.start()
-        self.sub.setText(self._sub("working · 0:00"))
+        self.clock.setText("0:00")
         self._last_step = ""
-        voice = getattr(self, "_voice_name", "")
-        lead = f"{voice} → Claude: " if voice else "— "
-        self._add(lead + " ".join(task.split())[:200], "worktask")
-        self._text_label = None
-        self._think_label = None
+        self._say_text = ""
+        self._think_text = ""
+        task = " ".join((task or "").split())
+        self.title.setText(_job_title(task))
+        self.title.setToolTip(task[:600])
+        voice = self._voice_name
+        who = f"{voice.split()[0].lower() if voice else 'you'} → Claude"
+        self.hand_head.setText(f"{who}   {time.strftime('%H:%M')}")
+        quote = " ".join((his or "").split()) or task
+        if len(quote) > 220:
+            quote = quote[:218].rstrip() + "…"
+        self.hand_quote.setText(f"“{quote}”")
+        self.handoff.show()
+        self._set_state("working")
+        self._refresh_sub()
+        self._ledger(f"{who}: {task[:300]}", "worktask")
+        self._log_think = self._log_text = None
+        self._pin.follow = True
+        self._pin.snap()
 
     def step(self, desc: str):
-        self._mark_cur_done()
+        self._close_cur("done")
         self._last_step = desc
-        self._cur_step = self._add("▸ " + desc, "workstep")
-        self._text_label = None
-        self._think_label = None
+        title, detail = _step_words(desc)
+        kind = "voice" if title == "Told the voice" else "now"
+        self._cur = self._row(title, detail, kind)
+        if kind == "voice":
+            self._cur = None
+        self._think_text = ""
+        self._ledger("▸ " + desc, "workstep")
+        self._log_think = self._log_text = None
+        self._pin.snap()
 
     def think(self, piece: str):
-        """Streamed thinking summary. One rolling label per reasoning block:
-        the next step, note, or narration closes it, so the ledger reads as
-        thought → action → thought instead of one endless paragraph."""
-        if self._idle is not None:
-            self._idle.deleteLater()
-            self._idle = None
-        if self._think_label is None:
-            self._think_label = self._add("… ", "workthink")
-        self._think_label.setText((self._think_label.text() + piece)[-700:])
+        """Streamed thinking summary: under the live step on the thread, one
+        rolling block per thought in the full log."""
+        self._think_text = (self._think_text + piece)[-700:]
+        if self._cur is not None:
+            self._cur.set_thought(self._think_text)
+        if self._log_think is None:
+            self._log_think = self._ledger("… ", "workthink")
+        self._log_think.setText((self._log_think.text() + piece)[-700:])
+        self._log_text = None
+        self._pin.snap()
 
     def text(self, piece: str):
-        self._think_label = None
-        if self._text_label is None:
-            self._text_label = self._add("", "worktext")
-        self._text_label.setText((self._text_label.text() + piece)[-1200:])
+        """Claude's own words between steps: a quiet row on the thread (the
+        last one of a job is its report to the voice)."""
+        if self._say is None:
+            self._close_cur("done")
+            self._say_text = ""
+            self._say = self._row("", "", "say")
+        self._say_text = (self._say_text + piece)[-1200:]
+        shown = " ".join(self._say_text.split())
+        self._say.title.setText(shown if len(shown) <= 260
+                                else "…" + shown[-258:].split(" ", 1)[-1])
+        if self._log_text is None:
+            self._log_text = self._ledger("", "worktext")
+        self._log_text.setText((self._log_text.text() + piece)[-1200:])
+        self._log_think = None
+        self._pin.snap()
+
+    def voice(self, line: str):
+        """What the voice told him about the job."""
+        self._close_cur("done")
+        name = self._voice_name or "voice"
+        self._row(" ".join(line.split())[:220], f"{name.split()[0].lower()} → you",
+                  "voice")
+        self._ledger(f"{name} → you: {line}", "workvoice")
+        self._log_think = self._log_text = None
+        self._pin.snap()
 
     def add(self, note: str):
-        self._add("+ " + note, "workstep")
-        self._text_label = None
-        self._think_label = None
-
-    def done(self):
-        self._mark_cur_done()
-        took = self._elapsed_str()
-        self._tick.stop()
-        self._t0 = 0.0
-        self.sub.setText(self._sub("idle"))
-        self._add("✓ done" + (f" · {took}" if took else ""), "workdone")
-        self._text_label = None
-        self._think_label = None
-
-    def fail(self, reason: str):
-        self._mark_cur_done()
-        self._tick.stop()
-        self._t0 = 0.0
-        self.sub.setText(self._sub("idle"))
-        self._add("⚠ " + reason, "workfail")
-        self._text_label = None
-        self._think_label = None
+        self._close_cur("done")
+        self._row(note, "", "say")
+        self._ledger("+ " + note, "workstep")
+        self._log_think = self._log_text = None
 
     def files(self, paths: list):
         for p in paths:
             if p.strip():
-                self._add("file — " + os.path.basename(p.strip()), "workstep")
+                self._close_cur("done")
+                self._row(os.path.basename(p.strip()), "file", "done")
+                self._ledger("file — " + os.path.basename(p.strip()), "workstep")
 
-    def paintEvent(self, _ev):
-        # Drawn as a card like its QSS neighbours (a plain QWidget subclass
-        # does not paint a stylesheet background).
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        rad = getattr(self, "_radius", 14)
-        p.setPen(QPen(self._line, 1))
-        p.setBrush(self._bg)
-        p.drawRoundedRect(r, rad, rad)
+    def _question(self) -> str:
+        """The report's closing question, if it ends on one."""
+        txt = " ".join(self._say_text.split()).strip()
+        if not txt.endswith("?"):
+            return ""
+        parts = re.split(r"(?<=[.!?])\s+", txt)
+        return parts[-1] if parts else txt
+
+    def done(self):
+        if not self._t0 and self._state in ("stopped", "failed"):
+            return      # the cut already said how it ended
+        self._close_cur("done")
+        self._took = self._elapsed_str()
+        self._tick.stop()
+        self._t0 = 0.0
+        if self._took:
+            self.clock.setText(self._took)
+        q = self._question()
+        if q:
+            self.need_q.setText(q)
+            self.need.show()
+            self._set_state("needs")
+        else:
+            self._set_state("done")
+        self._ledger("✓ done" + (f" · {self._took}" if self._took else ""),
+                     "workdone")
+        self._log_think = self._log_text = None
+        self._pin.snap()
+
+    def fail(self, reason: str):
+        self._close_cur("done")
+        self._tick.stop()
+        self._t0 = 0.0
+        self._row(reason, "", "fail")
+        stopped = reason.lower().startswith("stopped")
+        self._set_state("stopped" if stopped else "failed")
+        self._ledger("⚠ " + reason, "workfail")
+        self._log_think = self._log_text = None
+        self._pin.snap()
+
+    def answered(self):
+        """He answered (by voice, the box or a button): the card goes."""
+        if self.need.isVisible():
+            self.need.hide()
+            if self._state == "needs":
+                self._set_state("done")
+
+    def needs_you(self) -> bool:
+        return self.need.isVisible()
+
+    def _answer(self, said: str):
+        self.answered()
+        ask = getattr(self.win, "_ask", None)
+        if ask is not None:
+            ask(said)
+
+    def _stop(self):
+        g = getattr(self.win, "goat", None)
+        if g is None or not getattr(g, "busy", False) or not getattr(g, "loop", None):
+            return
+        stop = getattr(g, "_stop_worker", None)
+        if stop is None:
+            return
+        self.stop_btn.setEnabled(False)
+        QTimer.singleShot(3000, lambda: self.stop_btn.setEnabled(True))
+        asyncio.run_coroutine_threadsafe(stop(), g.loop)
 
 
 def pin_topmost(w: QWidget):
@@ -3169,13 +3726,6 @@ CAPABILITIES = [
      ["Check yourself for updates"]),
 ]
 
-QUOTES = [
-    "Small steps every day lead to big results.",
-    "The summit is just the last step of many.",
-    "Say the word. I'm listening.",
-    "Climb steady; the view waits.",
-    "Done is better than perfect — then make it perfect.",
-]
 
 
 def _ago(ts: float) -> str:
@@ -3513,67 +4063,6 @@ def _exclude_from_capture(w: QWidget):
         pass
 
 
-class QuoteCard(QFrame):
-    """Today, at the foot of the right rail: the clock, the date and a line,
-    over a small painted range — the concept's quote card, made useful."""
-
-    def __init__(self):
-        super().__init__()
-        self._t = THEMES["midnight"]
-        self._pm: QPixmap | None = None
-        self._key = None
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 14, 18, 14)
-        lay.setSpacing(4)
-        self.clock = QLabel("")
-        self.clock.setObjectName("clock")
-        lay.addWidget(self.clock)
-        lay.addStretch(1)
-        day = int(time.time() // 86400)
-        self.quote = QLabel(f"“{QUOTES[day % len(QUOTES)]}”")
-        self.quote.setObjectName("quote")
-        self.quote.setWordWrap(True)
-        lay.addWidget(self.quote)
-        sig = QHBoxLayout()
-        self.mark = GoatMark(16, glow=False)
-        sig.addWidget(self.mark)
-        sig.addWidget(mklabel("— Goat", "rowTime"))
-        sig.addStretch(1)
-        lay.addLayout(sig)
-
-    def set_theme(self, t: dict):
-        self._t = dict(t)
-        self._pm = None
-        self.mark.set_theme(t)
-        self.update()
-
-    def paintEvent(self, _ev):
-        key = (self.width(), self.height(), self._t.get("bg_top"), self._t.get("glow"))
-        if self._pm is None or key != self._key:
-            pm = QPixmap(max(1, self.width()), max(1, self.height()))
-            pm.fill(Qt.transparent)
-            q = QPainter(pm)
-            q.setRenderHint(QPainter.Antialiasing, True)
-            clip = QPainterPath()
-            clip.addRoundedRect(QRectF(pm.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
-            q.setClipPath(clip)
-            paint_scene(q, pm.rect(), self._t, seed=23, peak_x=0.72, stars=40,
-                        fade_to=QColor(self._t["card"]))
-            # Veil the left so the words stay readable over the range.
-            veil = QLinearGradient(0, 0, pm.width(), 0)
-            veil.setColorAt(0.0, _qc(self._t["card"], 235))
-            veil.setColorAt(0.6, _qc(self._t["card"], 120))
-            veil.setColorAt(1.0, _qc(self._t["card"], 20))
-            q.fillRect(pm.rect(), veil)
-            q.setClipping(False)
-            q.setPen(QPen(_qc(self._t["line"], 230), 1))
-            q.setBrush(Qt.NoBrush)
-            q.drawRoundedRect(QRectF(pm.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
-            q.end()
-            self._pm, self._key = pm, key
-        QPainter(self).drawPixmap(0, 0, self._pm)
-
-
 class GoatWindow(QWidget):
     event_sig = Signal(str, str)
 
@@ -3615,7 +4104,10 @@ class GoatWindow(QWidget):
         self._work_mode = False    # composer sends to the working brain
         self._page = "home"
         self._prev_page = "home"
-        self._side_pinned = False  # he flipped Tools/Activity by hand
+        self._side_pinned = False  # he opened the work column by hand
+        self._col_open = False     # the work column is in (or sliding in)
+        self._col_dismissed = False  # he hid it mid-job: stays out till the next
+        self._last_you = (0.0, "")   # his last words (the hand-off card quotes them)
         self._sent_files: list = []
         self._made_files: list = []
         self._tx_cache: tuple = (None, [])
@@ -3636,8 +4128,16 @@ class GoatWindow(QWidget):
         row.setSpacing(0)
         self.rail = self._build_rail()
         row.addWidget(self.rail)
+        # v8: the centre carries a slim top bar (search, settings and, while
+        # Claude's column is out, the window's own buttons).
+        mid = QWidget()
+        ml = QVBoxLayout(mid)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(0)
+        ml.addWidget(self._build_topbar())
         self.center = self._build_center()
-        row.addWidget(self.center, 1)
+        ml.addWidget(self.center, 1)
+        row.addWidget(mid, 1)
         self.side = self._build_side()
         row.addWidget(self.side)
         self._titlebar_h = TITLEBAR_H
@@ -3656,6 +4156,7 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+E"), self, self.cycle_effort)
         QShortcut(QKeySequence("Ctrl+B"), self, self.toggle_bubble)
         QShortcut(QKeySequence("Ctrl+L"), self, self.cycle_lang)
+        QShortcut(QKeySequence("Ctrl+J"), self, self.toggle_column)
         # Manual work dispatch: Ctrl+Enter → working brain, +Shift → hard.
         QShortcut(QKeySequence("Ctrl+Return"), self, lambda: self._submit_work(False))
         QShortcut(QKeySequence("Ctrl+Enter"), self, lambda: self._submit_work(False))
@@ -3833,7 +4334,9 @@ class GoatWindow(QWidget):
         self.home_state.setAlignment(Qt.AlignHCenter)
         lay.addWidget(self.home_state)
         lay.addSpacing(8)
-        self.brains_line = QLabel("")
+        self.brains_line = ClickLabel("")
+        self.brains_line.setToolTip("Claude's work column — ctrl+j")
+        self.brains_line.clicked.connect(self.toggle_column)
         self.brains_line.setObjectName("brainsLine")
         self.brains_line.setTextFormat(Qt.RichText)
         self.brains_line.setAlignment(Qt.AlignHCenter)
@@ -4300,34 +4803,36 @@ class GoatWindow(QWidget):
         b.clicked.connect(cb)
         return b
 
-    def _build_side(self) -> QWidget:
-        side = QWidget()
-        lay = self._side_lay = QVBoxLayout(side)
-        lay.setSpacing(12)
-        ctl = QHBoxLayout()
-        ctl.setSpacing(2)
-        ctl.addStretch(1)
+    def _win_controls(self, row: QHBoxLayout) -> QPushButton:
+        """Collapse · full screen · quit, into a row; returns the full-screen
+        button (its glyph follows the window state)."""
         b_min = QPushButton(IC["min"])
         b_min.setObjectName("winbtn")
         # Collapse, not minimize: a voice assistant on the taskbar hides the
         # one thing worth seeing — whether it is listening (2026-09-14).
         b_min.setToolTip("collapse to a bubble — ctrl+b")
         b_min.clicked.connect(self.collapse)
-        self.b_full = QPushButton(IC["max"])
-        self.b_full.setObjectName("winbtn")
-        self.b_full.setToolTip("fullscreen — f11")
-        self.b_full.clicked.connect(self.toggle_fullscreen)
+        b_full = QPushButton(IC["max"])
+        b_full.setObjectName("winbtn")
+        b_full.setToolTip("fullscreen — f11")
+        b_full.clicked.connect(self.toggle_fullscreen)
         b_close = QPushButton(IC["close"])
         b_close.setObjectName("winclose")
         b_close.setToolTip("quit GOAT")
         b_close.clicked.connect(QApplication.quit)
-        for b in (b_min, self.b_full, b_close):
-            ctl.addWidget(b)
-        lay.addLayout(ctl)
+        for b in (b_min, b_full, b_close):
+            row.addWidget(b)
+        self._full_btns = getattr(self, "_full_btns", []) + [b_full]
+        return b_full
 
-        srow = QHBoxLayout()
-        srow.setSpacing(8)
-        sf = QFrame()
+    def _build_topbar(self) -> QWidget:
+        """v8: the slim bar over the centre — search (Ctrl F), settings, and
+        the window's buttons whenever Claude's column isn't out to hold them."""
+        bar = QWidget()
+        bl = self._topbar_lay = QHBoxLayout(bar)
+        bl.setSpacing(8)
+        bl.addStretch(1)
+        sf = self._search_frame = QFrame()
         sf.setObjectName("search")
         sl = self._search_lay = QHBoxLayout(sf)
         sl.setSpacing(8)
@@ -4338,39 +4843,65 @@ class GoatWindow(QWidget):
         self.search.textChanged.connect(lambda _t: self._search_timer.start(220))
         sl.addWidget(self.search, 1)
         sl.addWidget(mklabel("Ctrl F", "kbd"))
-        srow.addWidget(sf, 1)
+        bl.addWidget(sf)
         self.gear_btn = QPushButton(IC["settings"])
         self.gear_btn.setObjectName("gear")
         self.gear_btn.setCursor(Qt.PointingHandCursor)
         self.gear_btn.setToolTip("settings — ctrl+,")
         self.gear_btn.clicked.connect(self.toggle_settings)
-        srow.addWidget(self.gear_btn)
-        lay.addLayout(srow)
+        bl.addWidget(self.gear_btn)
+        self._center_ctl = QWidget()
+        cl = QHBoxLayout(self._center_ctl)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(2)
+        self.b_full = self._win_controls(cl)
+        bl.addWidget(self._center_ctl)
+        return bar
 
-        # Below the search row the cards scroll: on a short window (his box
-        # is 693px tall) they used to squeeze until rows clipped their text.
-        cards_host = QWidget()
-        outer_lay = lay
-        lay = self._cards_lay = QVBoxLayout(cards_host)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
-        self.side_scroll = self._scroll_page(cards_host)
-        outer_lay.addWidget(self.side_scroll, 1)
+    def _build_side(self) -> QWidget:
+        """v8 (design.md, mockup B): Claude's work column. Out of the way
+        until Claude works; slides in from the right (240 ms) when a job
+        starts and leaves a little after it ends. The column keeps its own
+        width while the host's width animates, so nothing re-wraps mid-slide."""
+        host = SlideHost()
+        self.work_panel = WorkColumn(self)
+        host.set_inner(self.work_panel)
+        self._win_controls(self.work_panel.ctl_row)
+        self.work_panel.close_link.clicked.connect(self.toggle_column)
+        host.entered.connect(self._col_linger_stop)
+        host.left.connect(self._col_linger_kick)
+        self._col_anim = QVariantAnimation(self)
+        self._col_anim.setDuration(240)
+        self._col_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._col_anim.valueChanged.connect(lambda v: host.setFixedWidth(int(v)))
+        self._col_anim.finished.connect(self._col_settled)
+        self._col_linger = QTimer(self)
+        self._col_linger.setSingleShot(True)
+        self._col_linger.timeout.connect(self._col_maybe_close)
+        host.setFixedWidth(0)
+        host.hide()
+        self._build_status_cards()
+        return host
+
+    def _build_status_cards(self):
+        """The old right rail's instruments, now at the top of Settings
+        (design.md: Brains card -> brains line + Settings, usage -> ambient
+        line + full meters in Settings, System switches -> Settings)."""
+        page = self.panel
+        cards = QWidget()
+        row = QHBoxLayout(cards)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(14)
 
         # Brains (2026-10-24, his order: "show this in the interface"): the
         # voice he talks to (Gemini) on top, the working brain doing the jobs
         # (Claude) under it — both named, both with their live state.
-        mc = Clickable("sideCard")
-        mc.setToolTip("brain settings")
-        mc.clicked.connect(lambda: self.show_page("settings"))
+        mc = QFrame()
+        mc.setObjectName("card")
         ml = self._model_lay = QVBoxLayout(mc)
         ml.setSpacing(8)
-        h = QHBoxLayout()
         self.brains_title = mklabel("Brains", "sectionTitle")
-        h.addWidget(self.brains_title)
-        h.addStretch(1)
-        h.addWidget(icon_label("chev", "chev"))
-        ml.addLayout(h)
+        ml.addWidget(self.brains_title)
         self.voice_row = QWidget()
         h = QHBoxLayout(self.voice_row)
         h.setContentsMargins(0, 0, 0, 0)
@@ -4411,12 +4942,13 @@ class GoatWindow(QWidget):
         v.addWidget(self.model_sub)
         h.addLayout(v, 1)
         ml.addLayout(h)
-        lay.addWidget(mc)
+        ml.addStretch(1)
+        row.addWidget(mc, 3)
 
         # Plan usage: 5-hour + weekly meters (fed by the "plan" event)
         pc = QFrame()
         pc.setObjectName("card")
-        pl = QVBoxLayout(pc)
+        pl = self._plan_lay = QVBoxLayout(pc)
         pl.setSpacing(6)
         pl.addWidget(mklabel("Claude usage", "sectionTitle"))
         self._plan_bars = {}
@@ -4429,11 +4961,12 @@ class GoatWindow(QWidget):
             pl.addWidget(lab)
             pl.addWidget(bar)
             self._plan_bars[key] = (lab, bar)
-        lay.addWidget(pc)
+        pl.addStretch(1)
+        row.addWidget(pc, 2)
         try:
-            import json as _j
-            _d = _j.load(open(os.path.join(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__))), ".plan_usage.json"), encoding="utf-8"))
+            with open(os.path.join(GOAT_ROOT, ".plan_usage.json"),
+                      encoding="utf-8") as f:
+                _d = json.load(f)
             for _k, _v, _n in (("fh", _d["five_hour"], "5-hour"),
                                ("wk", _d["seven_day"], "Weekly")):
                 self._plan_bars[_k][0].setText(f"{_n} {int(_v)}%")
@@ -4441,55 +4974,21 @@ class GoatWindow(QWidget):
         except Exception:
             pass
 
-        # Tools ⇄ Activity: the same slot. Activity takes it while he is in
-        # the chat or while work runs; Tools the rest of the time.
-        self.side_stack = QStackedWidget()
-        tc = QFrame()
-        tc.setObjectName("card")
-        tl = self._tools_lay = QVBoxLayout(tc)
-        tl.setSpacing(2)
-        h = QHBoxLayout()
-        h.setSpacing(8)
-        h.addWidget(icon_label("tools", "icoAcc"))
-        h.addWidget(mklabel("Tools", "paneltitle"))
-        h.addStretch(1)
-        act = QPushButton("Activity  ›")
-        act.setObjectName("link")
-        act.setCursor(Qt.PointingHandCursor)
-        act.clicked.connect(lambda: self._show_side("activity", pin=True))
-        h.addWidget(act)
-        tl.addLayout(h)
-        self.tool_rows = []
-        for key, title, desc, _ex in CAPABILITIES[:4]:
-            r = ListRow(key, title, desc.split(":")[0].split(",")[0].split(" — ")[0])
-            r.setProperty("first", "true" if not self.tool_rows else "false")
-            r.clicked.connect(lambda: self.show_page("tools"))
-            tl.addWidget(r)
-            self.tool_rows.append(r)
-            self._scaled.append(r)
-        tl.addStretch(1)
-        self.side_stack.addWidget(tc)
-        self.work_panel = WorkPanel(self)
-        self.work_panel.tools_link.clicked.connect(
-            lambda: self._show_side("tools", pin=True))
-        self.side_stack.addWidget(self.work_panel)
-        lay.addWidget(self.side_stack, 1)
-        self.side_stack.setMinimumHeight(230)
-
-        # System
+        # System switches, two to a row
         sc = QFrame()
         sc.setObjectName("card")
         sl2 = self._system_lay = QVBoxLayout(sc)
         sl2.setSpacing(0)
-        h = QHBoxLayout()
-        h.setSpacing(8)
-        h.addWidget(icon_label("settings", "icoAcc"))
-        h.addWidget(mklabel("System", "paneltitle"))
-        h.addStretch(1)
-        sl2.addLayout(h)
+        sl2.addWidget(mklabel("System", "sectionTitle"))
         sl2.addSpacing(4)
+        grid = QHBoxLayout()
+        grid.setSpacing(14)
+        cols = (QVBoxLayout(), QVBoxLayout())
+        for c in cols:
+            c.setSpacing(0)
+            grid.addLayout(c, 1)
         self.sys_rows: dict[str, tuple] = {}
-        for key, icon, title, sub, cb in (
+        for i, (key, icon, title, sub, cb) in enumerate((
                 ("memory", "memory", "Memory", "Remembers your context",
                  lambda: self.show_page("memory")),
                 ("voice", "volume", "Voice", "Talk naturally with Goat",
@@ -4497,9 +4996,9 @@ class GoatWindow(QWidget):
                 ("mic", "mic", "Microphone", "Hears you, even over music",
                  self.toggle_mic),
                 ("bubble", "desktop", "Desktop bubble", "Always by your side",
-                 self.collapse)):
+                 self.collapse))):
             r = Clickable("row")
-            r.setProperty("first", "true" if not self.sys_rows else "false")
+            r.setProperty("first", "true" if i < 2 else "false")
             rl = QHBoxLayout(r)
             tile = icon_label(icon, "icoTile")
             rl.addWidget(tile)
@@ -4515,15 +5014,80 @@ class GoatWindow(QWidget):
             v.addWidget(ElideLabel(sub, "rowSub"))
             rl.addLayout(v, 1)
             r.clicked.connect(cb)
-            sl2.addWidget(r)
+            cols[i % 2].addWidget(r)
             self.sys_rows[key] = (r, rl, tile, pill)
-        lay.addWidget(sc)
+        sl2.addLayout(grid)
 
-        self.today = QuoteCard()
-        self.clock = self.today.clock
-        self._themed.append(self.today)
-        lay.addWidget(self.today)
-        return side
+        page.insert_top(cards)
+        page.insert_top(sc)
+
+    # ---- the work column: in while Claude works, out a little after ----
+    COL_LINGER_MS = 10_000
+
+    def _col_width(self) -> int:
+        k = float(self.cfg.get("scale", 1.0))
+        return min(round(SIDE_W * k), int(self.width() * 0.32))
+
+    def _set_column(self, want: bool, animate: bool = True):
+        if want == self._col_open:
+            return
+        self._col_open = want
+        self._col_linger.stop()
+        host = self.side
+        self._col_anim.stop()
+        end = self._col_width() if want else 0
+        if want:
+            host.set_full(self._col_width())
+            host.show()
+            self._center_ctl.hide()
+        if not animate or not self.isVisible():
+            host.setFixedWidth(end)
+            self._col_settled()
+            return
+        self._col_anim.setStartValue(host.width() if host.isVisible() else 0)
+        self._col_anim.setEndValue(end)
+        self._col_anim.start()
+
+    def _col_settled(self):
+        if not self._col_open:
+            self.side.hide()
+            self._center_ctl.show()
+        self._fit_chips(self._center_avail())
+        self._apply_measure()
+
+    def _center_avail(self) -> int:
+        k = float(self.cfg.get("scale", 1.0))
+        col = self.side.width() if self.side.isVisible() else 0
+        return (self.width() - self.rail.width() - col
+                - round((CENTER_MARGIN[0] + CENTER_MARGIN[2]) * k))
+
+    def toggle_column(self):
+        """Ctrl J, the brains line or the column's Hide: by hand."""
+        if self._col_open:
+            self._side_pinned = False
+            self._col_dismissed = (self.work_panel.win_busy()
+                                   or bool(self.work_panel._t0))
+            self._set_column(False)
+        else:
+            self._side_pinned = True
+            self._col_dismissed = False
+            self._set_column(True)
+
+    def _col_linger_kick(self, ms: int | None = None):
+        if self._col_open and not self._side_pinned:
+            self._col_linger.start(self.COL_LINGER_MS if ms is None else ms)
+
+    def _col_linger_stop(self):
+        self._col_linger.stop()
+
+    def _col_maybe_close(self):
+        wp = self.work_panel
+        if self._side_pinned or wp.needs_you() or wp._t0 or wp.win_busy():
+            return
+        if self.side.underMouse():
+            self._col_linger_kick(4000)
+            return
+        self._set_column(False)
 
     # =====================================================================
     # pages, greeting, recent, side cards
@@ -4555,9 +5119,7 @@ class GoatWindow(QWidget):
             self._refresh_memory()
         elif key == "chat":
             QTimer.singleShot(0, self._pin.snap)
-        if not self._side_pinned or key == "chat":
-            self._side_pinned = False
-            self._auto_side()
+        self._auto_side()
 
     def _paint_nav_icons(self):
         t = self._theme()
@@ -4568,13 +5130,17 @@ class GoatWindow(QWidget):
             b.setIcon(glyph_icon(key, t["paper"] if on else t["dim"], px))
             b.setIconSize(QSize(px, px))
 
-    def _show_side(self, which: str, pin: bool = False):
-        self._side_pinned = pin
-        self.side_stack.setCurrentIndex(1 if which == "activity" else 0)
+    def _spark(self, back: bool = False):
+        for pr in (self.home_presence, self.presence, self.presence_mini):
+            pr.spark(back)
 
     def _auto_side(self):
-        busy = bool(self.goat and self.goat.busy) or bool(self.work_panel._t0)
-        self.side_stack.setCurrentIndex(1 if (self._page == "chat" or busy) else 0)
+        """The column is out while Claude works (unless he hid it), while
+        its report waits on him, or while he keeps it open by hand."""
+        wp = self.work_panel
+        busy = wp.win_busy() or bool(wp._t0)
+        if (busy and not self._col_dismissed) or wp.needs_you() or self._side_pinned:
+            self._set_column(True)
 
     def _refresh_greeting(self):
         h = time.localtime().tm_hour
@@ -5012,9 +5578,9 @@ class GoatWindow(QWidget):
         """
         super().changeEvent(ev)
         if ev.type() == QEvent.WindowStateChange:
-            if hasattr(self, "b_full"):
-                self.b_full.setText(IC["restore"] if (self.isFullScreen()
-                                                      or self.isMaximized()) else IC["max"])
+            for b in getattr(self, "_full_btns", []):
+                b.setText(IC["restore"] if (self.isFullScreen()
+                                            or self.isMaximized()) else IC["max"])
             if not self.isFullScreen():
                 QTimer.singleShot(0, self._native_frame)   # fullscreen exit resets it
         if (ev.type() == QEvent.WindowStateChange and self.isMinimized()
@@ -5103,30 +5669,33 @@ class GoatWindow(QWidget):
     def _apply_metrics(self):
         """Scale the page's BONES, not just its type (v6 lesson): rails,
         margins, cards and marks all follow the global zoom."""
-        if not hasattr(self, "_side_lay"):
+        if not hasattr(self, "sys_rows"):
             return  # apply_theme also runs mid-construction; nothing to move
         k = float(self.cfg.get("scale", 1.0))
 
         def m(box):
             return tuple(max(0, round(v * k)) for v in box)
 
-        # Rails grow with the zoom but never eat the centre.
+        # The rail grows with the zoom but never eats the centre. The work
+        # column paints its own panel, so the room behind spans to the edge.
         rail_w = min(round(RAIL_W * k), int(self.width() * 0.26))
-        side_w = min(round(SIDE_W * k), int(self.width() * 0.30))
         self.rail.setFixedWidth(rail_w)
-        self.side.setFixedWidth(side_w)
-        self.canvas.set_rails(rail_w, side_w)
+        self.canvas.set_rails(rail_w, 0)
+        if self._col_open:
+            self._col_anim.stop()
+            self.side.set_full(self._col_width())
+            self.side.setFixedWidth(self._col_width())
         self._rail_lay.setContentsMargins(*m(RAIL_MARGIN))
         self._center_lay.setContentsMargins(*m(CENTER_MARGIN))
-        self._side_lay.setContentsMargins(*m(SIDE_MARGIN))
+        self._topbar_lay.setContentsMargins(*m(TOPBAR_MARGIN))
+        self._search_frame.setFixedWidth(round(250 * k))
         self._presence_lay.setContentsMargins(*m((14, 12, 14, 12)))
         self._composer_lay.setContentsMargins(*m((10, 6, 7, 6)))
-        self._search_lay.setContentsMargins(*m((14, 0, 10, 0)))
-        self._model_lay.setContentsMargins(*m((16, 14, 16, 14)))
-        self._tools_lay.setContentsMargins(*m((14, 12, 10, 8)))
-        self._system_lay.setContentsMargins(*m((14, 12, 10, 8)))
-        self.today.layout().setContentsMargins(*m((18, 14, 18, 14)))
-        self.work_panel.layout().setContentsMargins(*m(WORK_MARGIN))
+        self._search_lay.setContentsMargins(*m((12, 0, 8, 0)))
+        self._model_lay.setContentsMargins(*m((18, 14, 18, 16)))
+        self._plan_lay.setContentsMargins(*m((18, 14, 18, 16)))
+        self._system_lay.setContentsMargins(*m((18, 14, 18, 12)))
+        self.work_panel.set_scale(k)
         self.model_tile.setFixedSize(round(44 * k), round(44 * k))
         self.voice_tile.setFixedSize(round(44 * k), round(44 * k))
         for r, rl, tile, _pill in self.sys_rows.values():
@@ -5136,7 +5705,6 @@ class GoatWindow(QWidget):
         for w in self._scaled:
             w.set_scale(k)
         self.presence_mini.setFixedHeight(round(34 * k))
-        self.today.setMinimumHeight(round(120 * k))
         # Docked presence: ring radius = 0.3 x height = 28 px at 1x (design
         # mockup B), so the conversation keeps the room.
         self.presence.setFixedHeight(round(94 * k))
@@ -5145,19 +5713,10 @@ class GoatWindow(QWidget):
         self.home_presence.setFixedHeight(
             round(min(166 * k, max(110 * k, self.height() * 0.185))))
         self._desk_lay.setSpacing(round(40 * k))
-        self._cards_lay.setSpacing(round(12 * k))
-        self.side_stack.setMinimumHeight(round(230 * k))
-        self._hero_gap.setFixedHeight(round(max(16, min(64, self.height() * 0.05)) * k))
+        self._hero_gap.setFixedHeight(round(max(8, min(48, self.height() * 0.035)) * k))
         self._titlebar_h = round(TITLEBAR_H * k)
-        self._fit_side()
-        self._fit_chips(self.width() - rail_w - side_w
-                        - round((CENTER_MARGIN[0] + CENTER_MARGIN[2]) * k))
+        self._fit_chips(self._center_avail())
         self._apply_measure()
-
-    def _fit_side(self):
-        """On a short window the Today card gives its room to Activity."""
-        k = float(self.cfg.get("scale", 1.0))
-        self.today.setVisible(self.height() >= 820 * k)
 
     def _apply_measure(self):
         """Hold the transcript to a readable measure, centred in the column —
@@ -5745,9 +6304,6 @@ class GoatWindow(QWidget):
         line = f"{mic} · up {up // 3600}:{up // 60 % 60:02d}{heard}{claude}"
         if line != self.footer.text():
             self.footer.setText(line)
-        clock = time.strftime("%H:%M  ·  %A, %d %B")
-        if clock != self.clock.text():
-            self.clock.setText(clock)
 
     # ---- input ----
     def _submit(self):
@@ -6016,6 +6572,9 @@ class GoatWindow(QWidget):
             self._pin.follow = True  # he spoke — bring him to the reply
             self._pin.snap()
             self._you_label = self._add_line(_sentence_case(data), "youNow")
+            if not data.lstrip().startswith("["):      # not a voice event
+                self._last_you = (time.time(), data.strip())
+                self.work_panel.answered()
             self.pop.hide()  # last reply's card must not stand in for the next one
             spacer = self._add_line("", "replyNow")
             spacer.setFixedHeight(2)
@@ -6051,11 +6610,17 @@ class GoatWindow(QWidget):
             self._add_line(f"·  {data.lower()}", "toolLine")
         elif kind == "work_start":
             model, _, task = data.partition("|")
-            self.work_panel.start(model.strip(), task)
+            t_you, his = self._last_you
+            his = his if time.time() - t_you < 120 else ""
+            self.work_panel.start(model.strip(), task, his)
             self.live.start(model.strip(), task)
             self._live_check.start()
-            if not self._side_pinned:
-                self._show_side("activity")
+            # The hand-off: a spark runs from the ring toward Claude's column
+            # as it slides in; the column's edge lights when it lands.
+            self._col_dismissed = False
+            self._spark(back=False)
+            self._set_column(True)
+            QTimer.singleShot(420, self.work_panel.flash)
         elif kind == "work_tool" or kind == "work_step":
             self.work_panel.step(data)
             self.live.step(data)
@@ -6098,11 +6663,17 @@ class GoatWindow(QWidget):
             self.work_panel.done()
             self.live.done()
             self._recent_timer.start(1500)
-            if not self._side_pinned:
-                QTimer.singleShot(4000, self._auto_side)
+            # ...and on done the light returns home along the string.
+            self.work_panel.flash()
+            QTimer.singleShot(180, lambda: self._spark(back=True))
+            self._auto_side()
+            self._col_linger_kick()
         elif kind == "work_fail":
             self.work_panel.fail(data)
             self.live.done(failed=data)
+            if not self._col_dismissed:
+                self._set_column(True)
+            self._col_linger_kick(14_000)
         elif kind == "turn_done":
             # Do NOT drop _reply_label here: the model finishes generating
             # seconds before the voice finishes speaking (often before it

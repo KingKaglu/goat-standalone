@@ -118,7 +118,7 @@ check("card pill shows this turn's depth", win.model_pill.text() == "low",
 check("chip keeps his pick (it is a selector)", "Opus 5.5" in win.chip_model.text(),
       win.chip_model.text())
 check("activity line: brain and real depth",
-      win.work_panel.sub.text().startswith("sonnet 5.5 · low"),
+      win.work_panel.sub.text().lower().startswith("sonnet 5.5 · thinking low"),
       win.work_panel.sub.text())
 check("the reply knows who answered it",
       win._reply_label is not None
@@ -135,7 +135,7 @@ check("deep turn: card switches to opus",
       and "code & serious work" in win.model_sub.text(),
       (win.model_name.text(), win.model_sub.text()))
 check("deep turn: activity line at his dial",
-      win.work_panel.sub.text().startswith("opus 5.5 · max"),
+      win.work_panel.sub.text().lower().startswith("opus 5.5 · thinking max"),
       win.work_panel.sub.text())
 
 shot = os.path.join(tempfile.gettempdir(), "goat-brain-ui.png")
