@@ -25,6 +25,13 @@ BARGE_NEEDED = 16            # voiced (16/20, ~510ms) within VOTE_WINDOW confirm
                              # any-single-quiet-chunk hard reset, which kept wiping
                              # out early progress and made the first ~1s of an
                              # interrupt attempt feel like it wasn't registering
+# GOAT counts as still talking for this long after its buffer runs dry.
+# 2026-10-24, his report "I can't interrupt Gemini": the voice streams clause
+# by clause, the buffer empties for a few hundred ms between clauses, and
+# every gap (a) wiped the barge vote and (b) let the 3-of-4 quiet vote start
+# a capture WITHOUT stopping playback — the next clause then played right
+# over him. Through a gap he is talking over GOAT, so the barge rules apply.
+SPEAKING_HOLD_S = 0.9
 QUIET_WINDOW = 4             # ~128ms window for plain speech detection when
                              # nothing is playing
 QUIET_NEEDED = 3
@@ -276,6 +283,8 @@ class DuplexAudio:
     first calls) runs on a separate thread so it can never make the
     real-time audio callback miss its 10ms deadline and glitch."""
 
+    _play_last_t = 0.0        # (class default: test harnesses skip __init__)
+
     def __init__(self, on_interrupt=None, on_status=None, on_utterance=None):
         self.aec = WebRtcCanceller()
         self.loopback = LoopbackTap()
@@ -283,6 +292,7 @@ class DuplexAudio:
         self._playback_buf = np.zeros(0, dtype=np.float32)
         self._playback_lock = threading.Lock()
         self.is_tts_playing = False
+        self._play_last_t = 0.0   # monotonic time a real sample last went out
         self.duck_gain = 1.0
         self._duck_active = False
         self.out_level = 0.0  # smoothed speaker level, read by the UI orb
@@ -452,6 +462,7 @@ class DuplexAudio:
         with self._playback_lock:
             self._playback_buf = np.zeros(0, dtype=np.float32)
             self.is_tts_playing = False
+            self._play_last_t = 0.0   # cut off: GOAT is silent now, no hold
             self.duck_gain = 1.0
             self._duck_active = False
 
@@ -464,6 +475,8 @@ class DuplexAudio:
                 block = self._playback_buf[:take]
                 self._playback_buf = self._playback_buf[take:]
                 self.played_samples += take
+                if take:
+                    self._play_last_t = self._last_cb
                 if take < frames:
                     block = np.concatenate([block, np.zeros(frames - take, dtype=np.float32)])
                     if take == 0:
@@ -584,6 +597,8 @@ class DuplexAudio:
 
     def _on_vad_chunk(self, chunk: np.ndarray, voiced: bool, chunk_ms: float,
                        was_playing: bool):
+        if not was_playing and self._play_last_t:
+            was_playing = time.monotonic() - self._play_last_t < SPEAKING_HOLD_S
         if was_playing != self._vote_hist_state:
             self._vote_hist.clear()
             self._vote_hist_state = was_playing
@@ -619,6 +634,14 @@ class DuplexAudio:
                     self.on_utt_audio(self._ear_level(chunk))
                 except Exception:  # noqa: BLE001 — audio callback deadline
                     pass
+            if was_playing and vote >= needed and not self._vetoed():
+                # He was already talking and GOAT started (or went on)
+                # speaking over him: the same half-second rule stops it.
+                self._vote_hist.clear()
+                self._status("confirmed interrupt — stopping playback")
+                self.clear_playback()
+                if self.on_interrupt:
+                    self.on_interrupt(self.preroll_audio())
             self._append_utt(chunk, voiced, chunk_ms)
         elif vote >= needed:
             self._vote_hist.clear()

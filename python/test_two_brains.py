@@ -524,6 +524,30 @@ async def main():
           and tb.CLAIM_RE.search("Sir, Claude's on it.")
           and tb.CLAIM_RE.search("ბატონო, Claude-ს გადავეცი.")
           and not tb.CLAIM_RE.search("Sir, Claude finished the build an hour ago."))
+    # Claude busy, voice says the plain truth "Claude's already on it": no
+    # extra note, no new job (2026-10-24 his "Yes." became a deep job).
+    t13b = FakeTalker(lambda text: (["Sir, Claude's already on it."], []))
+    app = make_app(t13b)
+    app._watch.start("Rebuild the shell", "", "Opus 5.5", "deep")
+    app.busy = True
+    app._job_silent = True
+    n0 = len(app.client.queries)
+    await app._talk("is it starting now")
+    await app._front_task
+    await settle()
+    check("busy + 'Claude's already on it' -> nothing extra sent to Claude",
+          len(app.client.queries) == n0, app.client.queries[n0:])
+    # Claude free, he answers the voice's question with a bare "Yes." and the
+    # voice claims without calling the tool: the job says what yes means.
+    t13c = FakeTalker(lambda text: (["Sir, Claude's starting the rebuild now."], []))
+    app = make_app(t13c)
+    t13c.remember("the shell looks old", "Sir, shall Claude rebuild the shell to match the mockups?")
+    await app._talk("yes")
+    await app._front_task
+    await settle()
+    q = app.client.queries[-1] if app.client.queries else ""
+    check("bare 'yes' becomes a job that carries the question it answered",
+          "rebuild the shell to match the mockups" in q and 'said "yes"' in q, q[-300:])
 
     # ---- 14. Google's back-off errors are understood ------------------------
     day = ('{"error":{"code":429,"details":[{"@type":"x.QuotaFailure","violations":[{"quotaId":'

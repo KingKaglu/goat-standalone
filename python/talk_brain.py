@@ -589,7 +589,11 @@ CLAIM_RE = re.compile(
     r"t[eo]ld|tell(?:ing)?|ask(?:ed|ing)?|forward(?:ed|ing)?|let)\b[^.?!]{0,40}\bclaude\b|"
     r"\bclaude(?:'s| is| will)\s+(?:now\s+|already\s+)?"
     r"(?:on it|working on (?:it|that|this)|handling|taking care|adjusting|changing|fixing|"
-    r"doing (?:it|that))|"
+    r"doing (?:it|that)|"
+    # 2026-10-24 22:57: "Claude's starting the shell rebuild now" twice, with
+    # no job running. (goat_app only acts on these while Claude is idle.)
+    r"(?:starting|beginning|running|building|rebuilding|making|writing|"
+    r"drafting|updating|checking|looking into|getting)\b)|"
     r"Claude-ს\s+(?:გადავეცი|ვუთხარი|ვაბარებ)", re.IGNORECASE)
 
 # "what's it doing / is it done / how's it going" — answerable from the

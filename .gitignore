@@ -31,6 +31,7 @@ boot-test.log
 
 # Large binaries and models — not in the repo, downloaded separately (see README "Download the voice stack")
 stt/bin/
+stt/bin-cuda/
 stt/*.bin
 stt/*.wav
 tts/piper/

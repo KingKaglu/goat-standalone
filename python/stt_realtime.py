@@ -139,8 +139,11 @@ def available(lang: str) -> bool:
     return AUTO_MODE == "dual"
 
 
-def _mark_down():
-    _down_until[0] = time.monotonic() + _DOWN_S
+def _mark_down(why: str = ""):
+    # Out of credits is not a blip (2026-10-24: "insufficient_funds" on every
+    # single turn for hours, each one a doomed connection first): rest 6 h.
+    broke = any(k in why for k in ("insufficient_funds", "quota_exceeded"))
+    _down_until[0] = time.monotonic() + (6 * 3600 if broke else _DOWN_S)
 
 
 class Session:
@@ -244,7 +247,7 @@ class Session:
         except Exception as e:  # noqa: BLE001 — a dead ear must not kill a turn
             self.error = f"{type(e).__name__}: {e}"
             self.ready.set()
-            _mark_down()
+            _mark_down(self.error)
         self._done.set()
 
     async def _commit(self, ws):
@@ -314,7 +317,7 @@ class Session:
                     return
             elif m.get("error") or "error" in mt:
                 self.error = f"{mt}: {m.get('error')}"
-                _mark_down()
+                _mark_down(self.error)
                 self._done.set()
                 return
 

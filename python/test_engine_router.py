@@ -645,6 +645,7 @@ async def main():
                     "Ⴀ" <= c <= "ჿ" for c in text) else "en")
 
         class FakeWhisper:
+            GPU = False   # the CPU ear: Georgian goes to the cloud ear
             def __init__(self):
                 self.calls = 0
             def transcribe(self, audio):
@@ -706,6 +707,47 @@ async def main():
             check("english mode keeps hearing local (no cloud audio)",
                   ear.calls == [] and whis.calls == 1 and app.turn_lang == "en",
                   f"ear={ear.calls} whisper={whis.calls}")
+
+            # 17j. OpenAI's Whisper on the GPU (2026-10-24): it hears every
+            #      language itself; the cloud ear is only its backup.
+            class GPUWhisper:
+                GPU = True
+                def __init__(self, text, lang):
+                    self.text, self.lang, self.calls = text, lang, []
+                def transcribe_lang(self, audio, sr=16000, force=None):
+                    self.calls.append(force)
+                    return self.text, self.lang
+
+            async def hear_gpu(mode, text, lang):
+                app = make_app(MockClient())
+                app.language = mode
+                app.wake_enabled = False
+                app.audio = type("A", (), {"is_tts_playing": False})()
+                spoken = []
+                async def fake_talk(t, echo=True):
+                    spoken.append(t)
+                app._talk = fake_talk
+                g.stt_gladia = FakeEar("cloud words", "en")
+                g.stt_whisper = GPUWhisper(text, lang)
+                g.tts_edge = FakeTTSEdge()
+                await app._handle_utterance(np.zeros(16000, dtype=np.float32))
+                return app, spoken, g.stt_gladia, g.stt_whisper
+
+            app, spoken, ear, whis = await hear_gpu("en", "open spotify", "en")
+            check("GPU whisper: English mode hears locally, pinned to English",
+                  spoken == ["open spotify"] and whis.calls == ["en"] and ear.calls == []
+                  and app.turn_lang == "en",
+                  f"spoken={spoken} whis={whis.calls} ear={ear.calls}")
+            # Whisper can't do his Georgian (forced "ka" -> "ეეეეეე" loops):
+            # Georgian and bilingual modes keep the cloud ear.
+            app, spoken, ear, whis = await hear_gpu("ka", "unused", "ka")
+            check("GPU whisper: Georgian mode still uses the cloud ear",
+                  ear.calls == ["ka"] and whis.calls == [] and spoken == ["cloud words"],
+                  f"ear={ear.calls} whis={whis.calls} spoken={spoken}")
+            app, spoken, ear, whis = await hear_gpu("auto", "unused", "ka")
+            check("GPU whisper: bilingual mode still uses the cloud ear",
+                  ear.calls == [None] and whis.calls == [],
+                  f"ear={ear.calls} whis={whis.calls}")
         finally:
             g.stt_gladia, g.stt_whisper, g.tts_edge = real_ear, real_whisper, real_tts
 

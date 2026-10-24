@@ -47,6 +47,22 @@ if os.path.exists(WHISPER_MODEL_BASE_Q8):
 WHISPER_MODEL_MULTI = os.path.join(GOAT_ROOT, "stt", "ggml-base.bin")
 WHISPER_MODEL_MULTI_SMALL = os.path.join(GOAT_ROOT, "stt", "ggml-small.bin")
 LANGUAGE = "en"  # set via set_language(); "ka" switches model + decode lang
+
+# GPU EAR (2026-10-24, his order: "I want to use OpenAI's Whisper"). The
+# cloud ear (ElevenLabs Scribe) ran out of credits and every turn fell to
+# base.en on the CPU — English only, and it misheard him ("Okay, Sannet" for
+# "send it"). OpenAI's Whisper large-v3-turbo on his RTX 3050 through the
+# CUDA build of whisper.cpp: free and offline. Measured on his own 20
+# recordings (2026-10-24): median 1.25 s vs 1.75 s for base.en on the CPU,
+# and long sentences near-perfect where base.en garbled them. Georgian is
+# beyond it — forced "ka" gave "ეეეეეე" loops — so it is the ENGLISH ear;
+# Georgian stays with the cloud ear. The vocabulary prompt made it worse
+# ("How are you GOAT?" -> "Hóaí, Björn"), so the GPU ear sends none.
+# Used when both files are present; GOAT_STT_GPU=off brings back the CPU ear.
+WHISPER_GPU_BIN = os.path.join(GOAT_ROOT, "stt", "bin-cuda", "whisper-server.exe")
+WHISPER_MODEL_TURBO = os.path.join(GOAT_ROOT, "stt", "ggml-large-v3-turbo-q8_0.bin")
+GPU = (os.environ.get("GOAT_STT_GPU", "on").strip().lower() not in ("off", "0", "no")
+       and os.path.exists(WHISPER_GPU_BIN) and os.path.exists(WHISPER_MODEL_TURBO))
 STT_PORT = 3781
 STT_URL = f"http://127.0.0.1:{STT_PORT}/inference"
 FIXES_FILE = os.path.join(GOAT_ROOT, "stt-fixes.json")
@@ -76,6 +92,8 @@ def _vocab_prompt() -> str:
 JUNK = re.compile(
     r"^(you|bye(\s*bye)?|thank you\.?|thanks?( for watching)?|and build\.?|a|the"
     r"|okay\.?|so\.?|yeah\.?|\.+|,+"
+    # large-v3-turbo's subtitle-credit inventions over silence (2026-10-24)
+    r"|sous-titrage.*|subtitles? by.*|.*amara\.org.*|transcribed by.*"
     r"|(\W*(m+|u+h+|u+m+|h+m+|a+h+|o+h+|e+h+)m*[.,!?]*\s*)+)$",
     re.IGNORECASE,
 )
@@ -96,6 +114,20 @@ def ensure_server() -> bool:
     except httpx.HTTPError:
         return True  # listening but grumpy about GET — still a live server
 
+    if GPU:
+        print(f"[stt] starting whisper-server (GPU) on {STT_PORT} with "
+              f"{os.path.basename(WHISPER_MODEL_TURBO)}, language per request")
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        _server_proc = subprocess.Popen(
+            # -nf: no temperature-fallback re-decodes — on hard audio they
+            # turned 1.2 s into 4 s (and Georgian into 20 s loops).
+            [WHISPER_GPU_BIN, "-m", WHISPER_MODEL_TURBO, "-t", "4", "-nt",
+             "-bs", "5", "-nf", "-l", "en",
+             "--host", "127.0.0.1", "--port", str(STT_PORT)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+        return _wait_up(60)
     if LANGUAGE != "en" and (os.path.exists(WHISPER_MODEL_MULTI_SMALL)
                              or os.path.exists(WHISPER_MODEL_MULTI)):
         model = (WHISPER_MODEL_MULTI_SMALL
@@ -119,8 +151,14 @@ def ensure_server() -> bool:
         creationflags=flags,
     )
     # small.en takes a bit longer to load than base
-    deadline = time.time() + 30
+    return _wait_up(30)
+
+
+def _wait_up(seconds: float) -> bool:
+    deadline = time.time() + seconds
     while time.time() < deadline:
+        if _server_proc is not None and _server_proc.poll() is not None:
+            break                  # it died on start (bad model, no CUDA)
         try:
             httpx.get(f"http://127.0.0.1:{STT_PORT}/", timeout=1.0)
             return True
@@ -128,7 +166,8 @@ def ensure_server() -> bool:
             time.sleep(0.5)
         except httpx.HTTPError:
             return True
-    print("[stt] whisper-server did not come up in 30s — transcription will fail")
+    print(f"[stt] whisper-server did not come up in {seconds:.0f}s — "
+          "transcription will fail")
     return False
 
 
@@ -141,6 +180,8 @@ def set_language(lang: str) -> bool:
     if lang == LANGUAGE:
         return True
     LANGUAGE = lang
+    if GPU:
+        return ensure_server()     # one model for every language: no restart
     shutdown()
     time.sleep(0.4)  # let the port go
     return ensure_server()
@@ -188,7 +229,8 @@ def clean_transcript(raw: str, chatting: bool = False) -> str:
     chatting=True means I spoke to him in the last half minute: a short
     "thank you" / "okay" is then a real reply, not whisper hallucinating over
     a quiet room, so it gets through."""
-    text = re.sub(r"\[BLANK_AUDIO\]|\[.*?\]|\(.*?\)", "", raw)
+    text = re.sub(r"\[BLANK_AUDIO\]|\[.*?\]|\(.*?\)|\*[^*]{0,40}\*", "", raw)
+    text = re.sub(r"^\s*-\s+", "", text)      # turbo's subtitle-style dash
     text = re.sub(r"\s+", " ", text).strip()
     words = [w for w in text.split(" ") if w]
     if text and SHORT_OK.match(text) and (chatting or not _HALLUCINATED.match(text)):
@@ -215,6 +257,37 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000):
     quiet); None means the STT server is BROKEN (the caller should tell
     Giorgi his hearing is down instead of silently eating his words).
     Blocking — call from a worker thread, not the event loop."""
+    if GPU:
+        return transcribe_lang(audio, sample_rate, "en")[0]
+    got = _post(audio, sample_rate, {"response_format": "json"})
+    if got is None or isinstance(got, str):
+        return got
+    return clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until)
+
+
+_LANG_NAMES = {"english": "en", "georgian": "ka", "en": "en", "ka": "ka"}
+
+
+def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
+                    force: str | None = None):
+    """GPU ear, any language: (text, "en"|"ka"|other) — text '' for silence,
+    None when the server is broken. force pins the language ("en"/"ka");
+    None lets Whisper detect it (bilingual mode)."""
+    data = {"response_format": "verbose_json", "language": force or "auto"}
+    got = _post(audio, sample_rate, data)
+    if got is None or isinstance(got, str):
+        return got, force or ""
+    text = clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until)
+    lang = str(got.get("detected_language") or got.get("language") or force or "")
+    lang = _LANG_NAMES.get(lang.strip().lower(), lang.strip().lower())
+    if re.search(r"[Ⴀ-ჿ]", text):
+        lang = "ka"                        # Georgian letters settle it
+    return text, lang
+
+
+def _post(audio: np.ndarray, sample_rate: int, data: dict):
+    """One request: the JSON reply, '' for audio too short to bother, None
+    when the server is broken."""
     if len(audio) < sample_rate * 0.3:
         return ""
     buf = io.BytesIO()
@@ -225,12 +298,11 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000):
             r = httpx.post(
                 STT_URL,
                 files={"file": ("audio.wav", buf.getvalue(), "audio/wav")},
-                data={"response_format": "json"},
+                data=data,
                 timeout=30.0,
             )
             r.raise_for_status()
-            return clean_transcript(r.json().get("text", ""),
-                                    time.monotonic() < _chatting_until)
+            return r.json()
         except httpx.ConnectError as e:
             if attempt == 1:
                 print("[stt] server gone — restarting it")

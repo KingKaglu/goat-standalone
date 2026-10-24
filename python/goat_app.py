@@ -406,6 +406,9 @@ TWO BRAINS — YOUR PLACE (his design, 2026-10-24): GOAT has two brains working 
 - "[note from Giorgi via the voice …]" mid-job = his addition, correction or answer: fold it in. A new unrelated job in a note: finish the current one, then do it.
 - On a long job you may send the voice ONE short mid-job line with the voice tool tell_voice (a milestone, how long it'll take, or a question he can answer while you continue). Rarely — the voice already sees your steps.
 - You never chat. If a job is really a question, the answer IS your report.
+- Your job is over when your reply ends — GOAT tells him "done" then. So run commands in the foreground and wait for them; never start background tasks or subagents, and never end on a progress line ("Capturing it now…"): your last words are the REPORT.
+- His Claude usage is limited and he watches it (2026-10-24: one redesign ate a whole 5-hour window). Work lean: grep and read line ranges instead of whole big files, don't re-read what you've read or re-check what you've verified, a screenshot only when you must see, no commentary between steps (the panel already shows them).
+- A very large job (a redesign, a dozen files, hours of work): do the first solid, working chunk, commit it, then REPORT what's done and what's left and ask whether to go on — don't run the whole thing in one go.
 - Name: you are Claude, GOAT's working brain; the voice is GOAT's voice. If a job asks which models run GOAT, the [models] line in the job says it.
 """
 WORKER_PERSONA = (
@@ -424,6 +427,9 @@ ACK_HANDOFF = {
 }
 ACK_NOTE = {"en": "Sir, I've told Claude.", "ka": "ბატონო, Claude-ს გადავეცი."}
 ACK_STOP = {"en": "Sir, I've stopped Claude.", "ka": "ბატონო, Claude გავაჩერე."}
+PASSED_RE = re.compile(r"\b(?:pass(?:ed|ing)?|told|tell(?:ing)?|hand(?:ed|ing)?|"
+                       r"sen[dt]|let\s+\w+\s+know)\b|გადავეცი|ვუთხარი|ვაბარებ",
+                       re.IGNORECASE)
 COVER_NOTE = ("[GOAT's voice (Gemini) can't answer this turn, so YOU speak to Giorgi "
               "directly, out loud: start with \"Sir,\", call him \"you\" (never \"he\"), "
               "one to three short spoken sentences, no markdown. Just talk — this "
@@ -1399,7 +1405,9 @@ class GoatApp:
         self.audio = DuplexAudio(
             on_interrupt=self._on_interrupt,
             on_utterance=self._on_utterance,
-            on_status=lambda m: None,  # meters are test-harness noise here
+            # Meters are noise here, but barge decisions were invisible too —
+            # "I can't interrupt it" (2026-10-24) left no trace to read.
+            on_status=self._audio_status,
         )
         # Streaming ear: transcribe WHILE he talks instead of after. These
         # three fire on the audio callback thread and only queue.
@@ -1621,6 +1629,18 @@ class GoatApp:
                 and time.monotonic() < getattr(self.tts, "muted_until", 0.0))
 
     # ---- audio-thread callbacks ----
+    _BARGE_LOG = ("possible interrupt", "confirmed interrupt",
+                  "someone else talking", "echo, not you")
+
+    def _audio_status(self, msg: str):
+        """Audio thread: log the barge-in decisions, drop the meters."""
+        if msg.startswith(self._BARGE_LOG):
+            now = time.monotonic()
+            if msg != getattr(self, "_barge_last", ("", 0.0))[0] or \
+                    now - self._barge_last[1] > 2.0:
+                self._barge_last = (msg, now)
+                print(f"[barge] {msg}", flush=True)
+
     def _on_interrupt(self, _preroll):
         if self.mic_muted or self.phone_live or self._phone_voicing():
             return
@@ -1849,6 +1869,9 @@ class GoatApp:
             return False
         return state
 
+    def _gpu_ear(self) -> bool:
+        return bool(getattr(stt_whisper, "GPU", False)) and self.language == "en"
+
     def _on_utt_start(self, preroll):
         self._utt_began = time.monotonic()
         self._utt_live = True       # the voice's news waits until he's done
@@ -1858,6 +1881,11 @@ class GoatApp:
         # Dial (or re-dial) the voice socket while he is still talking, so
         # the answer's first clause doesn't pay the connection. Non-blocking.
         tts_edge.prime()
+        if self._gpu_ear():
+            # OpenAI's Whisper on his GPU is the English ear (his choice,
+            # 2026-10-24): no ElevenLabs stream to open, nor pay for.
+            self._rt = None
+            return
         self._rt = stt_realtime.start_threadsafe(self._rt_lang(), self.loop)
         if self._rt is not None and preroll is not None and len(preroll):
             self._rt.feed(preroll)   # his first word lives in the preroll
@@ -2201,10 +2229,17 @@ class GoatApp:
             why = getattr(rt, "why", None)
             print(f"[stt-rt] missed -> batch ear ({why() if why else '?'})")
             self.emit("status", "streaming ear missed — using the full one")
-        elif stt_realtime.ENABLED and source != "phone":
+        elif stt_realtime.ENABLED and source != "phone" and not self._gpu_ear():
             print("[stt-rt] no stream opened -> batch ear "
                   "(realtime down after a failure, no key, or loop not ready)")
-        if self.language != "en" and stt_gladia.available():
+        if self._gpu_ear():
+            # OpenAI's Whisper large-v3-turbo on his GPU (2026-10-24): the
+            # English ear — local, no credits. Georgian is beyond it (see
+            # stt_whisper), so Georgian and bilingual modes keep the cloud.
+            text, _ = await asyncio.to_thread(
+                stt_whisper.transcribe_lang, audio_np, 16000, "en")
+            self._set_turn_lang("en")
+        elif self.language != "en" and stt_gladia.available():
             # Georgian or bilingual mode: cloud ear (local whisper can't do
             # ka at all — it romanizes it into English-looking nonsense,
             # which is exactly what "it hears English when I speak Georgian"
@@ -2868,6 +2903,20 @@ class GoatApp:
         if self.work_model == "fable 5.1" and not self.fable.ok:
             extra = (f"(Fable 5.1, Claude's top model, {self.fable.reason}; "
                      "Opus 5.5 does the work meanwhile)")
+        plan = getattr(self, "_plan_now", None) or {}
+        try:
+            five = float(plan.get("five_hour") or 0)
+        except (TypeError, ValueError):
+            five = 0.0
+        if five >= 70:
+            # 2026-10-24: one redesign ran the 5-hour window dry with no
+            # warning. He watches his usage — let the voice watch it too.
+            extra = ((extra + "\n") if extra else "") + (
+                f"Claude's 5-hour usage is at {five:.0f}%"
+                + (f" (resets {plan.get('five_hour_resets')})"
+                   if plan.get("five_hour_resets") else "")
+                + ". Before handing it a big (deep) job, tell him in one line "
+                "and ask; quick jobs are fine.")
         if self.claude_out:
             extra = ("Claude is OUT OF USAGE" + (f" until about {self.claude_reset}"
                      if self.claude_reset else "") + " — jobs can't run until then; "
@@ -3048,12 +3097,24 @@ class GoatApp:
                 return
             said = "".join(spoken)
             if (kind == "user" and res["ok"] and not acted
-                    and talk_brain.CLAIM_RE.search(said)):
+                    and talk_brain.CLAIM_RE.search(said)
+                    and (not self.busy or PASSED_RE.search(said))):
                 # It SAID Claude has it but called nothing: make it true.
+                # (Claude already busy: "Claude's on it" is simply true —
+                # only "I've passed/told it" owes Claude a note.)
+                # His bare words can be just "Yes." (2026-10-24: a deep job
+                # titled "Yes."), so the job carries what he said yes TO.
+                # (this turn isn't in the history yet: the last model line is
+                # what the voice said before he spoke)
+                asked = next((h["text"] for h in reversed(self.talker.history)
+                              if h["role"] == "model"), "")
+                task = (f'Giorgi said "{text}" in reply to GOAT\'s voice, which had just '
+                        f'said: "{asked[:400]}". Do what he agreed to or asked for.'
+                        if asked and len(text.split()) <= 6 else text)
                 print(f"[talk] claim without action — handing over: {text[:60]!r}",
                       flush=True)
                 acted.append("hand_to_worker")
-                asyncio.create_task(self._give_worker(text, "deep", his=text))
+                asyncio.create_task(self._give_worker(task, "deep", his=text))
             # End of the turn: same tail rules as the one-brain path.
             qstate = self._quiet_state
             if qstate is None and self._quiet_probe:
@@ -4339,6 +4400,7 @@ class GoatApp:
                    "seven_day": b, "seven_day_resets": _local(sd.get("resets_at")),
                    "plan": (r or {}).get("subscription_type"),
                    "at": datetime.datetime.now().isoformat(timespec="seconds")}
+            self._plan_now = out          # the voice sees it (_front_parts)
             with open(os.path.join(os.path.dirname(SESSION_FILE),
                                    ".plan_usage.json"), "w",
                       encoding="utf-8") as f:
