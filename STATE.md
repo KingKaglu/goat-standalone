@@ -3,6 +3,35 @@
 Current design: ONE Claude brain that speaks and sees (see first section). Older history, including the removed talk lane / front desk / Gemini, lives in STATE-archive.md — grep it, never load it whole. Keep this file under ~450 lines: when it grows, move the oldest sections to the archive.
 
 
+## v8 redesign, phase (b) the presence (2026-10-24 ~22:20)
+- ui_qt.Presence replaces StringLine (deleted, with its dead HUD reactor) and
+  the Chat page's VoiceOrb (VoiceOrb stays ONLY for the collapsed dot until
+  phase f). Ring on a string: states asleep/idle/listening/thinking/speaking/
+  error + a separate `work` flag (goat.busy) = Claude's orbiting light.
+  hud_tick maps muted/goat._asleep -> asleep, crash/failed/down words -> error.
+  window.presence (chat, docked, 94 px tall = r 28) + window.presence_mini
+  (rail card, 34 px); boot ritual = presence_mini.ignite().
+- Clock: every weight eases (exp ease-out, BLEND per state), last 1.5% snaps
+  so frames stop; repaints only while moving/live; idle = one breath per 8 s
+  at 15 fps; asleep = zero. Measured: idle 5.3% -> 2.6% of one core, presence
+  paints 57 -> 26 per 8 s at 1/3 the cost each.
+- Test: python/test_presence.py (fake clock; --render writes
+  goat-redesign/after-b/presence-states.png).
+
+## v8 redesign, phase (a) tokens/type/spacing (2026-10-24 ~19:20, 345caab)
+- Plan + mockups: workspace/goat-redesign/design.md (phases a-f). Phase (a)
+  only re-skins v7: new theme tokens surface/surface2/hairline/work/danger
+  (_complete_theme derives them), midnight accent #5aa2ff, "work" colour on
+  Claude's marks only (Activity model/step, composer work mode). TEXT_SIZES
+  24/27/31, REPLY_OLD_K 0.78 Light; labels = 11 px mono caps via capsify()
+  (QSS has no text-transform; a stylesheet font keeps the widget font's
+  capitalization). Radii 10/12/16 (trap 3 still applies).
+- Measure: goat-redesign/measure.py <ui_qt dir> <out> [theme] [text] renders
+  home/chat/settings and times idle CPU; paints.py counts paint events. v7 idle
+  repaints ~7 Hz (StringLine in the presence card) = ~3-4% of ONE core
+  (~0.3% of the 12-thread machine), unchanged by (a); phase (b) must stop it.
+- Tests print Georgian: run them with PYTHONIOENCODING=utf-8 or they "fail".
+
 ## Phone interruption, real-world pass (2026-10-19 ~11:10, his /goal:
 ## "interruption not perfect on the phone, dead in the bubble, and I must
 ## press mute/unmute before it records")

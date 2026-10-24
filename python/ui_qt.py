@@ -360,7 +360,6 @@ CENTER_MARGIN = (32, 24, 32, 16)  # centre column
 RAIL_MARGIN = (24, 24, 24, 24)
 SIDE_MARGIN = (16, 12, 16, 16)
 TITLEBAR_H = 52                   # the drag band along the top edge
-STRING_BAND = 140                 # StringLine's full-size band (compact: 34)
 # The chat transcript is still the one true reading column: reading margins
 # and a measure, never a spreadsheet row (v6).
 READ_MARGIN = (6, 0, 18, 0)
@@ -1029,224 +1028,337 @@ class GoatMark(QWidget):
                         self._t, self._glow)
 
 
-class StringLine(QWidget):
-    """GOAT's presence: a single stretched string of light.
+def _ease_k(dt: float, dur: float) -> float:
+    """Share of the remaining gap a value closes this frame so it lands
+    (~95%) on its target in `dur` seconds: an exponential ease-out."""
+    return 1.0 - math.exp(-3.0 * dt / max(0.02, dur))
 
-    idle      — flat, breathing almost imperceptibly
-    listening — ripples with Giorgi's live mic level
-    thinking  — fine, fast shimmer, low amplitude
-    speaking  — slow smooth traveling waves, amplitude = real speaker level
+
+class Presence(QWidget):
+    """GOAT's presence, v8 (design.md, 2026-10-24): the string and the sphere
+    become one form, a ring of light threaded on a string. The voice is the
+    ring; Claude is a small warm light that orbits it only while a work turn
+    runs.
+
+    state      ring                        string
+    asleep     dim, faint colour           flat, 25%      no repaint
+    idle       70%                         flat           one slow breath / 8 s
+    listening  core fills with his level   ripples out from the ring
+    thinking   a bright arc runs the ring  fine shiver
+    speaking   rings pulse outward         slow waves on the real TTS level
+    + work     Claude's light orbits       beads travel right
+    error      dashed, red, flinch once    kinks
+
+    Every value eases to its target (150 ms into listening, 300 speaking,
+    400 asleep). It repaints only while something moves or a live signal is
+    non-zero; at rest the window's 33 ms tick costs a few float compares.
+    compact = the rail's status card (34 px tall), same form, smaller.
     """
 
-    N = 180  # points across
+    STATES = ("asleep", "idle", "listening", "thinking", "speaking", "error")
+    # Seconds to blend INTO each state (design.md motion rules).
+    BLEND = {"listening": 0.15, "thinking": 0.25, "speaking": 0.3,
+             "idle": 0.35, "asleep": 0.4, "error": 0.2}
+    BREATH_EVERY, BREATH_LEN = 8.0, 2.4
 
     def __init__(self, compact: bool = False):
         super().__init__()
-        # compact: the v7 presence wave in the rail's status card — same
-        # string, same states, a few dozen pixels tall and no reactor.
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.compact = compact
+        self.state = "asleep"
+        self.work = False
         self.level = 0.0
-        self.state = "idle"
-        self._t = 0.0
-        self._seed = [random.uniform(0, math.tau) for _ in range(6)]
-        self._base = QColor("#6f6a60")
-        self._accent = QColor("#ffa94d")
-        self._ignite_t0 = 0.0  # boot ritual: light travels down the string
-        self.hud = False
-        self._paper = QColor("#e2f7ff")
-        self.setMinimumHeight(34 if compact else STRING_BAND)
-
-    def ignite(self, duration: float = 1.6):
-        self._ignite_dur = duration
-        self._ignite_t0 = time.time()
+        self.paints = 0               # paint count (tests, measure.py)
+        self._t = 0.0                 # animation clock: runs only while moving
+        now = time.monotonic()
+        self._last = now
+        self._breath_t0 = now
+        self._breathing = False
+        self._flinch_t0 = 0.0
+        self._ignite_t0 = 0.0
+        self._ignite_dur = 1.4
+        self._frame = 0
+        # Blend weight of every state + Claude's light, eased each tick.
+        self._v = {s: 0.0 for s in self.STATES}
+        self._v["asleep"] = 1.0
+        self._v["work"] = 0.0
+        self._voice = QColor("#5aa2ff")
+        self._workc = QColor("#f2b36b")
+        self._danger = QColor("#ff6b5e")
+        self._faint = QColor("#56627d")
+        self._paper = QColor("#e9eefa")
+        self.setMinimumHeight(28 if compact else 72)
 
     def set_theme(self, t: dict):
-        self._base = QColor(t["string_base"])
-        self._accent = QColor(t["accent"])
+        self._voice = QColor(t["accent"])
+        self._workc = QColor(t.get("work", "#f2b36b"))
+        self._danger = QColor(t.get("danger", "#ff6b5e"))
+        self._faint = QColor(t.get("faint", "#56627d"))
         self._paper = QColor(t["paper"])
-        self.hud = bool(t.get("hud")) and not self.compact
         self.update()
 
-    def tick(self, level: float, state: str):
-        self.level = self.level * 0.7 + max(0.0, min(1.0, level)) * 0.3
-        self.state = state
-        self._t += 0.05
-        # Idle is a slow ripple: every third tick (10 fps) is enough.
-        self._frame = getattr(self, "_frame", 0) + 1
-        if state != "idle" or self._frame % 3 == 0:
-            self.update()
+    def ignite(self, duration: float = 1.4):
+        """Boot ritual: the ring draws itself, then the string runs out."""
+        self._ignite_dur = duration
+        self._ignite_t0 = time.monotonic()
+        self.update()
 
-    def _amplitude_at(self, u: float) -> float:
-        """u in [0,1] across the string; returns y offset in px."""
-        t = self._t
-        s = self._seed
-        # ends pinned like a real string
-        pin = math.sin(math.pi * u) ** 1.5
-        if self.state == "idle":
-            return pin * 2.2 * math.sin(6.0 * u * math.tau * 0.5 + t * 0.6)
-        if self.state == "listening":
-            a = 4 + self.level * 46
-            w = (math.sin(u * 11 + t * 4 + s[0]) * 0.5
-                 + math.sin(u * 23 - t * 6 + s[1]) * 0.3
-                 + math.sin(u * 41 + t * 9 + s[2]) * 0.2)
-            return pin * a * w
-        if self.state in ("thinking", "working"):
-            w = (math.sin(u * 60 + t * 14 + s[3]) * 0.6
-                 + math.sin(u * 90 - t * 17 + s[4]) * 0.4)
-            return pin * 5.5 * w
-        # speaking — two slow, fat traveling waves
-        a = 6 + self.level * 40
-        w = (math.sin(u * 6 - t * 2.6 + s[5]) * 0.65
-             + math.sin(u * 11 - t * 3.4) * 0.35)
-        return pin * a * w
+    # ---- the clock ----
+    def tick(self, level: float, state: str, work: bool = False) -> bool:
+        """Advance one frame. Asks for a paint only if something on it
+        moves; returns whether it did (tests read it)."""
+        now = time.monotonic()
+        dt = max(0.0, min(0.1, now - self._last))
+        self._last = now
+        state = {"booting": "asleep", "working": "idle"}.get(state, state)
+        if state not in self.STATES:
+            state = "idle"
+        if state != self.state:
+            if state == "error":
+                self._flinch_t0 = now
+            if state == "idle":
+                self._breath_t0 = now    # first breath a full cycle later
+            self.state = state
+        self.work = bool(work)
+        lvl = max(0.0, min(1.0, level)) if state in ("listening", "speaking") else 0.0
+        # VU needle: fast attack, slower release.
+        self.level += (lvl - self.level) * (0.45 if lvl > self.level else 0.12)
+        if self.level < 0.004:
+            self.level = 0.0
+        k_state = _ease_k(dt, self.BLEND.get(state, 0.3))
+        k_work = _ease_k(dt, 0.3)
+        moving = False
+        for name, v in self._v.items():
+            if name == "work":
+                tg, k = (1.0 if self.work else 0.0), k_work
+            else:
+                tg, k = (1.0 if name == state else 0.0), k_state
+            if v != tg:
+                v += (tg - v) * k
+                # the last 1.5% snaps (invisible) so the frames stop on time
+                self._v[name] = tg if abs(tg - v) < 0.015 else v
+                moving = True
+        v = self._v
+        busy = (moving or self.level > 0.0
+                or v["listening"] + v["thinking"] + v["speaking"] + v["work"] > 0.0
+                or (self._flinch_t0 and now - self._flinch_t0 < 0.5)
+                or (self._ignite_t0 and now - self._ignite_t0 < self._ignite_dur + 0.1))
+        want = bool(busy)
+        if busy:
+            self._t += dt
+        elif self.state == "idle":
+            # Idle: one slow breath every 8 s, at 15 fps, then still.
+            if self._breath(now) > 0.0:
+                self._breathing = True
+                self._frame += 1
+                want = self._frame % 2 == 0
+            elif self._breathing:
+                self._breathing = False
+                want = True              # land the frame exactly at rest
+        if want and self.isVisible():
+            self.update()
+        return want
+
+    def _breath(self, now: float) -> float:
+        if self.state != "idle":
+            return 0.0
+        cyc = (now - self._breath_t0) % self.BREATH_EVERY
+        lead = self.BREATH_EVERY - self.BREATH_LEN
+        if cyc < lead:
+            return 0.0
+        return math.sin(math.pi * (cyc - lead) / self.BREATH_LEN) ** 2
+
+    # ---- the picture ----
+    def _offsets(self, d, X, side: int, half: float, sa: float):
+        """String y-offsets (px) at distances d from the ring (absolute x X)."""
+        v, t, lv = self._v, self._t, self.level
+        y = np.zeros_like(d)
+        if v["listening"] > 0.0:      # ripples running out from the ring
+            y += (9 * sa * v["listening"] * (0.3 + 0.7 * lv)
+                  * np.exp(-(d / (half * 0.35)) ** 2) * np.sin(d / (9 * sa) - t * 9))
+        if v["speaking"] > 0.0:       # slow fat waves on the real voice level
+            y += (13 * sa * v["speaking"] * (0.35 + 0.65 * lv)
+                  * np.exp(-(d / (half * 0.55)) ** 2)
+                  * np.sin(X / (34 * sa) - t * 2.6)
+                  * (0.6 + 0.4 * np.sin(X / (97 * sa) + t * 0.7)))
+        if v["thinking"] > 0.0:       # a fine shiver
+            y += (1.6 * sa * v["thinking"] * np.sin(X / (3.1 * sa) + t * 14)
+                  * np.exp(-(d / (half * 0.5)) ** 2))
+        if v["error"] > 0.0 and side > 0:   # a kink just off the ring
+            y -= 7 * sa * v["error"] * np.exp(-((d - 26 * sa) / (10 * sa)) ** 2)
+        return y
 
     def paintEvent(self, _ev):
+        self.paints += 1
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        now = time.monotonic()
         w, h = self.width(), self.height()
-        mid = h / 2
-        margin = 3 if self.compact else max(30, int(w * 0.06))
-        span = w - margin * 2
-        squash = min(1.0, h / STRING_BAND * 1.5) if self.compact else 1.0
+        if w < 20 or h < 12:
+            return
+        v = self._v
+        asleep, idle, err = v["asleep"], v["idle"], v["error"]
+        lis, thk, spk, wrk = v["listening"], v["thinking"], v["speaking"], v["work"]
+        lv = self.level
+        cx, cy = w / 2, h / 2
+        r = h * (0.25 if self.compact else 0.30)
+        sa = 0.45 if self.compact else max(0.45, r / 50)  # wave scale
+        half = w / 2 - 2
+        b = self._breath(now) * idle
+        live = lis + thk + spk + err
 
-        # HUD: the reactor owns the centre; the string runs into it from both
-        # sides, re-pinned at the reactor's rim so it reads as feeding it.
-        R = min(mid - 6, 78.0) if self.hud else 0.0
-        cx = w / 2
-        path = QPainterPath()
-        pen_down = False
-        for i in range(self.N + 1):
-            u = i / self.N
-            x = margin + span * u
-            gap = abs(x - cx) - (R + 10)
-            if self.hud and gap < 0:
-                pen_down = False
-                continue
-            amp = self._amplitude_at(u) * squash
-            if self.hud:
-                amp *= min(1.0, gap / max(1.0, span * 0.07))
-            y = mid + amp
-            if not pen_down:
-                path.moveTo(x, y)
-                pen_down = True
+        acc = _mixc(_mixc(self._voice, self._faint, asleep), self._danger, err)
+
+        def ca(a: float, c: QColor = acc) -> QColor:
+            q = QColor(c)
+            q.setAlphaF(max(0.0, min(1.0, a)))
+            return q
+
+        if self._flinch_t0:                       # error: flinch once
+            ft = now - self._flinch_t0
+            if ft < 0.45:
+                p.translate(4 * sa * math.sin(ft * 48) * (1 - ft / 0.45) * err, 0)
             else:
-                path.lineTo(x, y)
-
-        active = self.state != "idle"
-        heat = min(1.0, self.level * 2 + (0.35 if active else 0.0))
-
-        # color: quiet base at rest, the theme accent where alive
-        base, acc = self._base, self._accent
-        col = QColor(
-            int(base.red() + (acc.red() - base.red()) * heat),
-            int(base.green() + (acc.green() - base.green()) * heat),
-            int(base.blue() + (acc.blue() - base.blue()) * heat),
-        )
-
-        grad = QLinearGradient(margin, 0, margin + span, 0)
-        edge = QColor(col)
-        edge.setAlpha(0)
-        core = QColor(col)
-        core.setAlpha(230)
-        grad.setColorAt(0.0, edge)
-        grad.setColorAt(0.18, core)
-        grad.setColorAt(0.82, core)
-        grad.setColorAt(1.0, edge)
-
-        # boot ritual: the light travels left to right, then life as usual
-        if self._ignite_t0:
-            f = (time.time() - self._ignite_t0) / getattr(self, "_ignite_dur", 1.6)
+                self._flinch_t0 = 0.0
+        grow = 1.0
+        if self._ignite_t0:                       # boot ritual
+            f = (now - self._ignite_t0) / self._ignite_dur
             if f >= 1.0:
                 self._ignite_t0 = 0.0
             else:
-                eased = 1 - (1 - f) ** 3
-                p.setClipRect(0, 0, int(margin + span * eased + 26), h)
-                p.setOpacity(0.25 + 0.75 * eased)
+                grow = 1 - (1 - f) ** 3
+                p.setOpacity(0.25 + 0.75 * grow)
 
-        # halo pass then the string itself
-        halo = QColor(col)
-        halo.setAlpha(int(28 + 60 * heat))
-        p.setPen(QPen(halo, 7.0, Qt.SolidLine, Qt.RoundCap))
-        p.drawPath(path)
-        p.setPen(QPen(grad, 1.4, Qt.SolidLine, Qt.RoundCap))
-        p.drawPath(path)
-        if self.hud:
-            self._paint_reactor(p, QPointF(cx, mid), R, col, heat)
+        # halo: light pooled behind the ring, wider than tall, zero at edges
+        halo = (0.10 * idle + 0.22 * lis + 0.16 * thk + 0.26 * spk + 0.14 * err
+                + 0.05 * b + 0.08 * spk * lv)
+        halo = max(halo, 0.14 * wrk * (1 - asleep))
+        if halo > 0.003:
+            ry = cy * 0.98
+            rx = min(half, r * (2.6 if self.compact else 3.4))
+            g = QRadialGradient(QPointF(0, 0), ry)
+            g.setColorAt(0.0, ca(halo))
+            g.setColorAt(1.0, ca(0.0))
+            p.save()
+            p.translate(cx, cy)
+            p.scale(max(1.0, rx / ry), 1.0)
+            p.setPen(Qt.NoPen)
+            p.setBrush(g)
+            p.drawEllipse(QPointF(0, 0), ry, ry)
+            p.restore()
 
-    # How fast the reactor's rings turn per state (degrees per tick unit).
-    SPIN = {"idle": 10, "booting": 10, "listening": 28,
-            "thinking": 80, "working": 80, "speaking": 42}
-
-    def _paint_reactor(self, p: QPainter, c: QPointF, R: float,
-                       col: QColor, heat: float):
-        """JARVIS's presence: concentric rings around a live core.
-
-        Every ring is a different speed and direction, so even idle it reads
-        as a machine that is on. The core breathes with the real audio level
-        and the outermost arc IS the meter — it sweeps with his voice or ours.
-        """
-        t = self._t
-        spin = self.SPIN.get(self.state, 30)
-
-        def c_(alpha, base: QColor = col) -> QColor:
-            q = QColor(base)
-            q.setAlpha(max(0, min(255, int(alpha))))
-            return q
-
-        def ring(r: float) -> QRectF:
-            return QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
-
-        def arc(r, start, span, alpha, width):
-            p.setPen(QPen(c_(alpha), width, Qt.SolidLine, Qt.FlatCap))
-            p.drawArc(ring(r), int(start * 16), int(span * 16))
-
+        # the string, both sides of the ring
+        x0 = r + (2 if self.compact else 4)
+        reach = max(0.0, (half - x0) * grow)
+        str_a = (0.25 * asleep + 0.55 * idle + 0.85 * (lis + thk + spk)
+                 + 0.6 * err + 0.1 * b)
+        step = 2.0 if self.compact else 3.0
+        beads = None
         p.setBrush(Qt.NoBrush)
-        # core glow
-        pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * 1.3))
-        g = QRadialGradient(c, R * 0.62)
-        g.setColorAt(0.0, c_(150 + 100 * heat, self._paper))
-        g.setColorAt(0.22, c_((120 + 110 * heat) * pulse))
-        g.setColorAt(1.0, c_(0))
+        if reach > 2:
+            d = np.arange(0.0, reach + step, step)
+            for side in (-1, 1):
+                X = cx + side * (x0 + d)
+                g = QLinearGradient(cx + side * x0, cy, cx + side * (x0 + reach), cy)
+                g.setColorAt(0.0, ca(str_a))
+                g.setColorAt(1.0, ca(0.0))
+                p.setPen(QPen(g, (1.3 if self.compact else 1.6) + 0.4 * spk))
+                if live > 0.0:
+                    Y = cy + self._offsets(d, X, side, half, sa)
+                    p.drawPolyline(QPolygonF(
+                        [QPointF(a, c) for a, c in zip(X.tolist(), Y.tolist())]))
+                    if side > 0:
+                        beads = Y
+                else:
+                    p.drawLine(QPointF(float(X[0]), cy), QPointF(float(X[-1]), cy))
+
+        # Claude at work: beads run right along the string (toward his column)
+        if wrk > 0.0 and reach > 2:
+            p.setPen(Qt.NoPen)
+            br = 1.3 if self.compact else 1.9
+            for i in range(3):
+                u = (self._t * 0.45 + i / 3) % 1.0
+                dist = u * reach
+                y = cy
+                if beads is not None:
+                    y = float(beads[min(len(beads) - 1, int(dist / step))])
+                p.setBrush(ca(wrk * 0.9 * math.sin(math.pi * u), self._workc))
+                p.drawEllipse(QPointF(cx + x0 + dist, y), br, br)
+
+        # glass core
+        core = QRadialGradient(QPointF(cx - r * 0.3, cy - r * 0.35), r * 1.2)
+        core.setColorAt(0.0, ca(0.20 - 0.14 * asleep + 0.06 * b))
+        core.setColorAt(1.0, ca(0.02))
         p.setPen(Qt.NoPen)
-        p.setBrush(g)
-        p.drawEllipse(ring(R * 0.62))
+        p.setBrush(core)
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        # listening: his level fills the core
+        if lis > 0.0:
+            rf = r * (0.35 + 0.55 * lv)
+            g = QRadialGradient(QPointF(cx, cy), max(1.0, rf))
+            g.setColorAt(0.0, ca(0.6 * lis, self._voice))
+            g.setColorAt(1.0, ca(0.0, self._voice))
+            p.setBrush(g)
+            p.drawEllipse(QPointF(cx, cy), rf, rf)
         p.setBrush(Qt.NoBrush)
-        # inner ring + core rim
-        p.setPen(QPen(c_(210), 1.6))
-        p.drawEllipse(ring(R * 0.3))
-        p.setPen(QPen(c_(120 + 100 * heat, self._paper), 1.2))
-        p.drawEllipse(ring(R * 0.15 + self.level * R * 0.08))
-        # segmented ring — the reactor's coils
-        a = t * spin
-        for k in range(10):
-            arc(R * 0.47, a + k * 36, 24, 150 + 80 * heat, 3.2)
-        # thin guide ring
-        p.setPen(QPen(c_(70), 1))
-        p.drawEllipse(ring(R * 0.62))
-        # three long arcs counter-rotating
-        b = -t * spin * 0.6
-        for k in range(3):
-            arc(R * 0.76, b + k * 120, 78, 190, 2.2)
-        # tick crown
-        p.setPen(QPen(c_(80), 1))
-        for k in range(72):
-            ang = math.radians(k * 5 + t * spin * 0.15)
-            r0 = R * (0.86 if k % 6 else 0.83)
-            p.drawLine(QPointF(c.x() + math.cos(ang) * r0,
-                               c.y() + math.sin(ang) * r0),
-                       QPointF(c.x() + math.cos(ang) * R * 0.9,
-                               c.y() + math.sin(ang) * R * 0.9))
-        # level meter arc: sweeps from the top with the live audio
-        if self.state in ("listening", "speaking"):
-            sweep = 20 + 320 * min(1.0, self.level * 1.6)
-            arc(R * 0.97, 90, -sweep, 230, 2.6)
+        # speaking: rings pulse outward with the voice
+        if spk > 0.0:
+            reach_r = (min(cy - 1, r * 1.55) - r) if self.compact else 18 * sa
+            for i in range(2):
+                u = (self._t * 0.8 + i * 0.5) % 1.0
+                rr = r + 3 + reach_r * u
+                p.setPen(QPen(ca(spk * (1 - u) * (0.25 + 0.5 * lv)), 1.2))
+                p.drawEllipse(QPointF(cx, cy), rr, rr)
+
+        # the ring itself
+        ring_a = (0.35 * asleep + 0.7 * idle + 1.0 * (lis + thk + spk + err)
+                  + 0.2 * b)
+        pen = QPen(ca(ring_a), 1.4 if self.compact else (2.0 if r > 30 else 1.7))
+        if err > 0.5:
+            pen.setDashPattern([3, 2] if self.compact else [6, 3])
+        p.setPen(pen)
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        if grow < 1.0:
+            p.drawArc(rect, 90 * 16, -int(360 * 16 * min(1.0, grow * 1.6)))
         else:
-            arc(R * 0.97, 90 - (t * spin * 1.4) % 360, -40, 120, 1.6)
+            p.drawEllipse(rect)
+        # thinking: a bright arc runs the ring
+        if thk > 0.0:
+            a0 = (self._t * 300) % 360
+            wpx = 2.0 if self.compact else 2.6
+            for i in range(14):
+                pc = QPen(ca(0.9 * thk * (1 - i / 14), self._paper), wpx)
+                pc.setCapStyle(Qt.RoundCap)
+                p.setPen(pc)
+                p.drawArc(rect, int((a0 - i * 6) * 16), int(-6 * 16))
+        # Claude's light: a warm satellite with a trail, only while it works
+        if wrk > 0.0:
+            orb = r + max(4.0 if self.compact else 8.0, r * 0.28)
+            sat = (-self._t * 80) % 360
+            orect = QRectF(cx - orb, cy - orb, 2 * orb, 2 * orb)
+            for i in range(18):
+                pt = QPen(ca(0.55 * wrk * (1 - i / 18), self._workc), 1.4)
+                pt.setCapStyle(Qt.RoundCap)
+                p.setPen(pt)
+                p.drawArc(orect, int((sat + i * 5) * 16), int(5 * 16))
+            ang = math.radians(sat)
+            sx, sy = cx + orb * math.cos(ang), cy - orb * math.sin(ang)
+            gr = max(4.0, 14 * r / 50)
+            hg = QRadialGradient(QPointF(sx, sy), gr)
+            hg.setColorAt(0.0, ca(0.55 * wrk, self._workc))
+            hg.setColorAt(1.0, ca(0.0, self._workc))
+            p.setPen(Qt.NoPen)
+            p.setBrush(hg)
+            p.drawEllipse(QPointF(sx, sy), gr, gr)
+            p.setBrush(ca(wrk, self._workc))
+            dr = max(1.8, 3.6 * r / 50)
+            p.drawEllipse(QPointF(sx, sy), dr, dr)
 
 
 class VoiceOrb(QWidget):
-    """The conversation's presence (his order 2026-09-30: "a sphere in the
-    middle that moves like in the movies when AI talks").
+    """The collapsed dot's sphere (his order 2026-09-30: "a sphere in the
+    middle that moves like in the movies when AI talks"). Since v8 phase b
+    the window itself shows Presence; the dot keeps this until phase f.
 
     A globe of light points on a rotating sphere, projected with a little
     perspective so the near side is bright and large and the far side
@@ -1389,8 +1501,7 @@ class VoiceOrb(QWidget):
         return pm
 
     def paint_orb(self, p: QPainter, box: QRectF, dot_k: float = 1.0):
-        """Paint the orb into any box — the Chat page's widget, or the
-        collapsed bubble, so both are the same sphere."""
+        """Paint the orb into any box (the collapsed bubble)."""
         w, h = box.width(), box.height()
         if w < 10 or h < 10:
             return
@@ -3483,8 +3594,9 @@ class GoatWindow(QWidget):
             self.nav[key] = b
         lay.addStretch(1)
 
-        # Presence: the living string, shrunk into a status card — the one
-        # thing a voice assistant must always show is whether it hears you.
+        # Presence (v8): the ring on its string, small, in a status card —
+        # the one thing a voice assistant must always show is whether it
+        # hears you.
         card = QFrame()
         card.setObjectName("presence")
         cl = self._presence_lay = QVBoxLayout(card)
@@ -3499,8 +3611,8 @@ class GoatWindow(QWidget):
         self.stateword.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         top.addWidget(self.stateword, 1)
         cl.addLayout(top)
-        self.string = StringLine(compact=True)
-        cl.addWidget(self.string)
+        self.presence_mini = Presence(compact=True)
+        cl.addWidget(self.presence_mini)
         self.footer = QLabel("")
         self.footer.setObjectName("footer")
         self.footer.setWordWrap(True)
@@ -3629,14 +3741,14 @@ class GoatWindow(QWidget):
             head.addWidget(b)
         lay.addLayout(head)
 
-        # ---- the orb: GOAT's presence in the middle of the conversation ----
-        self.orb = VoiceOrb()
-        self._themed.append(self.orb)
-        lay.addWidget(self.orb)
-        self.orb_caption = capsify(QLabel(""))
-        self.orb_caption.setObjectName("orbCaption")
-        self.orb_caption.setAlignment(Qt.AlignHCenter)
-        lay.addWidget(self.orb_caption)
+        # ---- the presence, docked over the conversation (v8: r 28 px) ----
+        self.presence = Presence()
+        self._themed.append(self.presence)
+        lay.addWidget(self.presence)
+        self.presence_caption = capsify(QLabel(""))
+        self.presence_caption.setObjectName("orbCaption")
+        self.presence_caption.setAlignment(Qt.AlignHCenter)
+        lay.addWidget(self.presence_caption)
 
         # ---- the page: the conversation ----
         self.col = QVBoxLayout()
@@ -4657,7 +4769,7 @@ class GoatWindow(QWidget):
         self.setStyleSheet(build_style(t, TEXT_SIZES[self.cfg["text"]],
                                        float(self.cfg.get("scale", 1.0))))
         self.canvas.set_theme(t)
-        self.string.set_theme(t)
+        self.presence_mini.set_theme(t)
         self.work_panel.set_theme(t)
         for w in self._themed:
             w.set_theme(t)
@@ -4713,11 +4825,11 @@ class GoatWindow(QWidget):
             tile.setFixedSize(round(34 * k), round(34 * k))
         for w in self._scaled:
             w.set_scale(k)
-        self.string.setFixedHeight(round(34 * k))
+        self.presence_mini.setFixedHeight(round(34 * k))
         self.today.setMinimumHeight(round(120 * k))
-        # The orb takes about a quarter of the window: big enough to read as
-        # the presence, small enough that the conversation keeps the room.
-        self.orb.setFixedHeight(round(max(130 * k, min(300 * k, self.height() * 0.27))))
+        # Docked presence: ring radius = 0.3 x height = 28 px at 1x (design
+        # mockup B), so the conversation keeps the room.
+        self.presence.setFixedHeight(round(94 * k))
         self._cards_lay.setSpacing(round(12 * k))
         self.side_stack.setMinimumHeight(round(230 * k))
         self._hero_gap.setFixedHeight(round(max(28, min(96, self.height() * 0.09)) * k))
@@ -5255,9 +5367,18 @@ class GoatWindow(QWidget):
             self.voice_pill.setText({"speaking": "speaking", "thinking": "thinking",
                                      "listening": "listening"}.get(state, "voice"))
         if shown:
-            self.string.tick(mic_level, state)
-        if self._page == "chat" and shown:
-            self.orb.tick(mic_level, state)
+            # The presence reads three things: the voice's state, Claude's
+            # work turn (its orbiting light) and asleep/error from the words.
+            muted_ = bool(self.goat and self.goat.mic_muted)
+            pstate = state
+            if muted_ or (self.goat and getattr(self.goat, "_asleep", False)):
+                pstate = "asleep"
+            w_ = self.stateword.text()
+            if "crash" in w_ or "failed" in w_ or " down" in w_:
+                pstate = "error"
+            work = bool(self.goat and self.goat.busy)
+            self.presence_mini.tick(mic_level, pstate, work)
+            self.presence.tick(mic_level, pstate, work)
         # Status lines ("calibrating…", "reconnected") hold the word for a
         # few seconds — without the hold, the 33ms audio-state ticker stomps
         # every status within one frame and none of them are ever seen.
@@ -5270,8 +5391,8 @@ class GoatWindow(QWidget):
             self.bubble.set_state(state)
         if self._page == "chat":
             cap = self.stateword.text()
-            if cap != self.orb_caption.text():
-                self.orb_caption.setText(cap)
+            if cap != self.presence_caption.text():
+                self.presence_caption.setText(cap)
         muted = bool(self.goat and self.goat.mic_muted)
         word = self.stateword.text()
         mood = ("bad" if (self._claude_out or "out of usage" in word
@@ -5748,7 +5869,7 @@ def main():
     if startup:
         win.collapse()   # before the loop paints: no full-screen flash
     else:
-        win.string.ignite()  # boot ritual: the light travels down the string
+        win.presence_mini.ignite()  # boot ritual: the ring draws itself
 
     holder: dict = {}
 
