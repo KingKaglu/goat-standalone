@@ -52,6 +52,7 @@ import stt_realtime
 import stt_whisper
 import talk_brain
 import live_talk
+import voice_hands
 import tts_edge
 import voice_id
 from audio_io import EAR_QUIET_PEAK, DuplexAudio
@@ -1604,6 +1605,8 @@ class GoatApp:
         # the REST talker above stays as its fallback and keeps the history.
         self.live = (live_talk.LiveTalk(self.talker)
                      if live_talk.ENABLED and self.talker.available() else None)
+        if self.live is not None:
+            self.live.tool_runner = self._voice_tool
         self.fable = talk_brain.FableGate()
         self._watch = talk_brain.WATCH
         self.talk_busy = False          # a voice turn is composing (UI: thinking)
@@ -2898,6 +2901,17 @@ class GoatApp:
     def _worker_label(self) -> str:
         return _friendly_model_name(self._worker_target()).title()
 
+    async def _voice_tool(self, name: str, args: dict):
+        """Live's own hands: run it, hand the result back to Google to say.
+        None = not one of them (GOAT runs that action itself)."""
+        if name not in voice_hands.NAMES:
+            return None
+        t0 = time.monotonic()
+        r = await asyncio.to_thread(voice_hands.execute, name, args)
+        print(f"[voice-hands] {name} {str(args)[:80]} -> {r[:120]!r} "
+              f"({time.monotonic() - t0:.1f}s)", flush=True)
+        return r
+
     def _voice_label(self) -> str:
         """Who is talking: Gemini Live, or the REST voice standing in."""
         if self.live is not None and self.live.usable():
@@ -3075,12 +3089,19 @@ class GoatApp:
             self.tts.say_audio("".join(live_txt), pcm)
             live_txt.clear()
 
+        hands: list = []      # the voice's own hands, for the REST voice's 2nd pass
+
         def on_call(name: str, args: dict):
             if not live():
                 return
             acted.append(name)
             his = text if kind == "user" else ""
-            if name == "hand_to_worker":
+            if name in voice_hands.NAMES:
+                # Live runs these through _voice_tool and speaks the result;
+                # the REST voice gets them in a second pass below.
+                self.emit("tool", f"{name} {json.dumps(args, ensure_ascii=False)[:90]}")
+                hands.append((name, args))
+            elif name == "hand_to_worker":
                 task = str(args.get("task") or text).strip()
                 depth = "quick" if args.get("depth") == "quick" else "deep"
                 print(f"[voice→claude] {depth}: {task[:100]!r}", flush=True)
@@ -3147,6 +3168,24 @@ class GoatApp:
                 else:   # every Gemini model is resting: don't wait on a sure "no"
                     res = {"ok": False, "model": "", "ttft": None,
                            "error": f"Gemini out of quota until {self.talker.out_until()}"}
+            rounds = 0
+            while (not via_live and res["ok"] and hands and live() and rounds < 3):
+                # The REST voice can't take results mid-stream: run its hands,
+                # then ask again with what they returned.
+                rounds += 1
+                batch, hands[:] = list(hands), []
+                got = []
+                for n, a in batch:
+                    r = await asyncio.to_thread(voice_hands.execute, n, a)
+                    print(f"[voice-hands] {n} {str(a)[:80]} -> {r[:120]!r}", flush=True)
+                    got.append(f"{n}({json.dumps(a, ensure_ascii=False)[:200]}) "
+                               f"returned:\n{r[:4000]}")
+                said = "".join(spoken).strip()
+                parts = parts + [{"text": "[what your own hands returned — answer him from "
+                                          "it" + (f'; you already said "{said}", go on '
+                                                  "without repeating it" if said else "")
+                                          + "]\n" + "\n\n".join(got)}]
+                res = await self.talker.reply(parts, on_text, on_call)
             if res["ok"] and look and live():
                 shot = await asyncio.to_thread(talk_brain.screenshot_part)
                 said = "".join(spoken).strip()
@@ -4965,6 +5004,7 @@ class GoatApp:
                 print(f"[brains] live voice: {live_talk.MODEL} first, REST voice "
                       "as its fallback", flush=True)
                 asyncio.create_task(self.live.warm())
+            voice_hands.warm()      # the voice's file index, built once at boot
         # This code just booted end to end — it IS the last-good version.
         # Snapshot it so a future bad self-edit always has a way back.
         threading.Thread(target=self_check.snapshot, daemon=True).start()

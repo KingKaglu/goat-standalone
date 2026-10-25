@@ -52,6 +52,7 @@ IDLE_S = 8.0               # a started answer silent this long is over
 # voiced as part of it instead of leaking into his next turn (it came out as
 # a lone "now." there).
 TOOL_TAIL_S = 2.0
+TOOL_RUN_S = 30.0          # one of the voice's own hands may take this long
 DOWN_S = 120.0             # after a failure, the REST voice answers this long
 SEED_TURNS = 12            # history messages replayed into a fresh session
 OUT_RATE = 24000           # Live speaks 24 kHz PCM16; GOAT plays 16 kHz
@@ -121,6 +122,11 @@ class LiveTalk:
         # you stopped talking?") — and a call's follow-up leaked into his
         # next answer as a lone "now.".
         self._q: deque = deque()      # [sink, "turn" | "follow"], oldest first
+        # async (name, args) -> str | None. A string is the real result of
+        # one of the voice's own hands (voice_hands: files, phone, terminal
+        # Claude) and goes back to Google, which then SAYS it. None = an
+        # action GOAT runs on its own ("started").
+        self.tool_runner = None
         self.dropped = 0              # late pieces that belonged to no turn
         self._lock = asyncio.Lock()
         self._down_until = 0.0
@@ -153,6 +159,9 @@ class LiveTalk:
                     "prebuiltVoiceConfig": {"voiceName": voice}}},
                 "thinkingConfig": {"thinkingBudget": THINK_BUDGET}},
             "systemInstruction": {"parts": [{"text": self.talker._system}]},
+            # (No googleSearch: on his free tier any Live session that
+            # includes it is refused, "You exceeded your current quota" —
+            # measured 2026-10-25. The voice's web_search hand does it.)
             "tools": talk_brain.TOOLS,
             "outputAudioTranscription": {},
             # text in, so no voice detection on Google's side: GOAT's own
@@ -238,17 +247,15 @@ class LiveTalk:
                 live = sink is not None and sink.active
                 if content:
                     if live:
-                        if entry[1] == "follow":
-                            sink.follow_started = True
                         sink.server(sc)
                     else:
                         self.dropped += 1     # a turn he cut off: never voiced
                 if live and (sc.get("generationComplete") or sc.get("interrupted")):
-                    sink.gen_done(entry[1])
+                    sink.gen_done()
                 if sc.get("turnComplete") and entry is not None:
                     self._q.popleft()
                     if live:
-                        sink.closed(entry[1])
+                        sink.closed()
         except Exception as e:  # noqa: BLE001 - the next turn reconnects
             self.last_error = f"{type(e).__name__}: {e}"[:160]
         finally:
@@ -259,26 +266,44 @@ class LiveTalk:
                 sk.ev.set()
 
     async def _answer_calls(self, ws, tc: dict, entry):
-        responses = []
+        """Every call is answered; Google then speaks a follow-up as a
+        generation of its own, queued right behind the generation that
+        called (it may call again: find, then read, then open)."""
+        calls = tc.get("functionCalls") or []
+        if not calls:
+            return
         sink = entry[0] if entry else None
-        for fc in tc.get("functionCalls") or []:
-            if sink is not None and sink.active:
+        live = sink is not None and sink.active
+        if entry is not None:
+            self._q.insert(self._q.index(entry) + 1, [sink, "follow"])
+        if live:
+            for fc in calls:
                 sink.call(fc.get("name", ""), fc.get("args") or {})
-            # Answered at once: GOAT runs the hands itself and reports back
-            # through its own lines. Google still speaks a short follow-up
-            # after it, which belongs to the same turn (see _q).
-            responses.append({"id": fc.get("id"), "name": fc.get("name"),
-                              "response": {"result": "started",
-                                           "scheduling": "SILENT"}})
-        if responses:
-            if entry is not None and not any(
-                    e[0] is entry[0] and e[1] == "follow" for e in self._q):
-                self._q.insert(self._q.index(entry) + 1, [entry[0], "follow"])
-                entry[0].has_follow = True
-            try:
-                await ws.send(json.dumps({"toolResponse": {"functionResponses": responses}}))
-            except Exception:  # noqa: BLE001
-                pass
+            sink.pending += 1
+        asyncio.create_task(self._respond(ws, calls, sink if live else None))
+
+    async def _respond(self, ws, calls: list, sink):
+        async def one(fc):
+            name, args = fc.get("name", ""), fc.get("args") or {}
+            result = None
+            if sink is not None and self.tool_runner is not None:
+                try:
+                    result = await self.tool_runner(name, args)
+                except Exception as e:  # noqa: BLE001
+                    result = f"ERROR: {type(e).__name__}: {e}"
+            if result is None:
+                # an action GOAT runs itself and reports on in its own lines
+                resp = {"result": "started", "scheduling": "SILENT"}
+            else:
+                resp = {"result": str(result)[:8000]}
+            return {"id": fc.get("id"), "name": name, "response": resp}
+        responses = await asyncio.gather(*(one(fc) for fc in calls))
+        try:
+            await ws.send(json.dumps({"toolResponse": {"functionResponses": responses}}))
+        except Exception:  # noqa: BLE001
+            pass
+        if sink is not None:
+            sink.answered()
 
     async def warm(self):
         """Open the session ahead of the turn (he just started talking), so
@@ -320,12 +345,16 @@ class LiveTalk:
                         if now >= t0 + FIRST_S:
                             return self._fail(f"no answer in {FIRST_S:.0f}s")
                         wait = t0 + FIRST_S - now
+                    elif sink.pending:
+                        if now - sink.t_last >= TOOL_RUN_S:
+                            break                 # a hand that never came back
+                        wait = TOOL_RUN_S
                     elif now - sink.t_last >= IDLE_S:
                         break
                     elif sink.waiting_follow():
-                        left = TOOL_TAIL_S - (now - sink.turn_closed_t)
+                        left = TOOL_TAIL_S - (now - sink.tail_from())
                         if left <= 0:
-                            # no follow-up this time: give up its place
+                            # no follow-up this time: give up its place(s)
                             self._q = deque(e for e in self._q
                                             if not (e[0] is sink and e[1] == "follow"))
                             break
@@ -375,13 +404,12 @@ class _Turn:
         self.active = True            # False once reply() has let go of it
         self.t_first = 0.0            # first anything (sound, words or a call)
         self.t_last = 0.0
-        self.spoke = False
-        self.has_follow = False       # a call queued a spoken follow-up
-        self.follow_started = False
-        self.follow_done = False
-        self.sound_done = False       # generationComplete for the turn itself
-        self.turn_closed_t = 0.0
-        self.follow_closed = False
+        self.called = False
+        self.pending = 0              # tool calls not answered yet
+        self.resp_t = 0.0             # when the last tool answer went back
+        self.spoke_since = False      # sound/words since the last answer
+        self.sound_done = False       # that generation's sound is over
+        self.closed_t = 0.0           # Google's last turnComplete for it
         self.lost = False
         self._rs = Resampler()
 
@@ -390,7 +418,7 @@ class _Turn:
         self.t_first = self.t_first or now
         self.t_last = now
         if content:
-            self.spoke = True
+            self.spoke_since = True
         self.ev.set()
 
     def server(self, sc: dict):
@@ -408,35 +436,41 @@ class _Turn:
 
     def call(self, name: str, args: dict):
         self._mark(content=False)
+        self.called = True
         self.on_call(name, args)
 
-    def gen_done(self, kind: str):
-        if kind == "follow":
-            self.follow_done = self.follow_started
-        elif self.spoke:
+    def answered(self):
+        self.pending = max(0, self.pending - 1)
+        self.resp_t = time.monotonic()
+        self.spoke_since = False      # what counts now is the follow-up
+        self.sound_done = False
+        self.t_last = self.resp_t
+        self.ev.set()
+
+    def gen_done(self):
+        if self.spoke_since:
             self.sound_done = True
         self.ev.set()
 
-    def closed(self, kind: str):
-        if kind == "follow":
-            self.follow_closed = True
-        else:
-            self.turn_closed_t = time.monotonic()
+    def closed(self):
+        self.closed_t = time.monotonic()
         self.ev.set()
 
+    def tail_from(self) -> float:
+        return max(self.resp_t, self.closed_t)
+
     def waiting_follow(self) -> bool:
-        """The call's turn is closed and its follow-up hasn't started yet."""
-        return (self.has_follow and bool(self.turn_closed_t)
-                and not self.follow_started and not self.follow_closed)
+        """A call was answered and its spoken follow-up hasn't started."""
+        return self.called and not self.pending and not self.spoke_since
 
     def over(self) -> bool:
         if self.lost:
             return True
-        if not self.t_first:
+        if not self.t_first or self.pending:
             return False
-        if self.has_follow:
-            return self.follow_done or self.follow_closed
-        return self.sound_done or bool(self.turn_closed_t)
+        if self.called:
+            return self.spoke_since and self.sound_done
+        return self.sound_done or bool(self.closed_t)
 
     def finish(self):
         tail = self._rs.flush()

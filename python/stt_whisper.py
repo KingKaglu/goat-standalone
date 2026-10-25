@@ -277,18 +277,60 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000):
 EN_PROB_MIN = 0.10      # Whisper's English score at/above this = English
 
 
+# Speech nearby in a language he doesn't use with GOAT (2026-10-25, Essen:
+# the phone heard the Germans around him, and the English-pinned ear turned
+# "Was machst du da?" into "What's was marks to diga?" — fake English that
+# then reached the voice as his words). Whisper names German with certainty:
+# 1.00 on German speech, while his English scores 0.00-0.02 German and his
+# Georgian (which it calls "Russian") 0.02-0.03. Russian can't be on this
+# list for exactly that reason.
+FOREIGN = {"de": 0.6}
+FOREIGN_EN_MAX = 0.2
+
+
+def _foreign(got: dict) -> str | None:
+    lp = got.get("language_probabilities") or {}
+    if float(lp.get("en", 0.0) or 0.0) >= FOREIGN_EN_MAX:
+        return None
+    for code, p_min in FOREIGN.items():
+        if float(lp.get(code, 0.0) or 0.0) >= p_min:
+            return code
+    return None
+
+
 def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
                     force: str | None = None):
     """GPU ear, any language: (text, "en"|"ka"|other) — text '' for silence,
     None when the server is broken. force pins the language ("en"/"ka");
-    None lets Whisper detect it (bilingual mode)."""
-    data = {"response_format": "verbose_json", "language": force or "auto"}
-    got = _post(audio, sample_rate, data)
-    if got is None or isinstance(got, str):
-        return got, force or ""
-    text = clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until)
+    None lets Whisper detect it (bilingual mode). Speech in a FOREIGN
+    language comes back as ("", code): someone near him, not him."""
+    if force == "en":
+        # Listen first, pin second: one request when it IS English (most
+        # turns), a second pinned one only when Whisper guessed otherwise.
+        got = _post(audio, sample_rate, {"response_format": "verbose_json",
+                                         "language": "auto"})
+        if got is None or isinstance(got, str):
+            return got, "en"
+        code = _foreign(got)
+        if code:
+            print(f"[stt] {code} speech nearby, not him: "
+                  f"{(got.get('text') or '').strip()[:80]!r}", flush=True)
+            return "", code
+        if str(got.get("detected_language") or "").lower() == "english":
+            return clean_transcript(got.get("text", ""),
+                                    time.monotonic() < _chatting_until), "en"
+        return _pinned(audio, sample_rate, "en")
     if force:
-        return text, force
+        return _pinned(audio, sample_rate, force)
+    got = _post(audio, sample_rate, {"response_format": "verbose_json", "language": "auto"})
+    if got is None or isinstance(got, str):
+        return got, ""
+    code = _foreign(got)
+    if code:
+        print(f"[stt] {code} speech nearby, not him: "
+              f"{(got.get('text') or '').strip()[:80]!r}", flush=True)
+        return "", code
+    text = clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until)
     # Bilingual: turbo can't name Georgian (p=0.000 on every Georgian clip,
     # top guess "icelandic"/"russian"), but its English score separates his
     # two languages — English 0.12-1.00 (one-word "Opus" 0.12), Georgian
@@ -301,8 +343,15 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
     if lang == "en" and str(got.get("detected_language") or "").lower() != "english":
         # English, but decoded in the language it wrongly guessed
         # ("Opus" -> "Obrigado."): once more, pinned to English.
-        return transcribe_lang(audio, sample_rate, "en")
+        return _pinned(audio, sample_rate, "en")
     return text, lang
+
+
+def _pinned(audio: np.ndarray, sample_rate: int, lang: str):
+    got = _post(audio, sample_rate, {"response_format": "verbose_json", "language": lang})
+    if got is None or isinstance(got, str):
+        return got, lang
+    return clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until), lang
 
 
 def _post(audio: np.ndarray, sample_rate: int, data: dict):
