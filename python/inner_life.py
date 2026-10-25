@@ -422,6 +422,11 @@ class InnerLife:
         self._save()
         a = self.app
         print(f"[inner] spoke first ({why}): {line}")
+        try:     # v8 (e): what I said unprompted stays on screen a while
+            a.emit("card", json.dumps({"text": line, "kicker": "on my mind",
+                                       "key": "inner"}))
+        except Exception:  # noqa: BLE001
+            pass
 
         def say():
             a._say_now(line)

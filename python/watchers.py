@@ -63,6 +63,12 @@ class Watchers:
 
     def alert(self, kind: str, spoken: str, push: str):
         eng = self.engine
+        try:     # v8 (e): a quiet card in the window too, spoken or not
+            import json as _j
+            eng.emit("card", _j.dumps({"text": push, "kicker": "heads up",
+                                       "key": f"watch-{kind}"}))
+        except Exception:  # noqa: BLE001
+            pass
         phone = getattr(eng, "phone", None)
         if phone is not None:
             try:

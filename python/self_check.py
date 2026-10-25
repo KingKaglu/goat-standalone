@@ -60,6 +60,7 @@ CORE = [
     "live_view.py",
     "reflex.py",
     "ui_qt.py",
+    "ui_palette.py",
     "goat_doctor.py",
     "self_check.py",
     "self_update.py",

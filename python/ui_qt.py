@@ -125,6 +125,7 @@ import subprocess
 # and edge_tts (~2s) in FRONT of the window. The engine thread loads it
 # anyway, behind the first paint.
 from goat_paths import GOAT_ROOT
+from ui_palette import CommandPalette, Entry, ProactiveCard
 
 ICON = os.path.join(GOAT_ROOT, "goat.ico")
 INBOX = os.path.join(GOAT_ROOT, "inbox")  # pasted images land here
@@ -538,6 +539,34 @@ QPushButton#chip[on="true"] {{ border: 1px solid {acc}; background: {tint_hi}; }
 
 QLabel#hintRow, QLabel#topHint {{ color: {t['faint']}; font-family: {MONO_FONT};
   font-size: {s(10)}px; }}
+
+/* ---- v8 (e): Ctrl K palette + proactive cards ---- */
+QFrame#palette {{ background: {_hex_mix(t['surface'], t['bg_top'], 0.25)}; border: 1px solid {rgba(t['paper'], 24)};
+  border-radius: {s(16)}px; }}
+QFrame#paletteTop {{ border: none; border-bottom: 1px solid {line}; background: transparent; }}
+QLabel#paletteGlass {{ color: {t['dim']}; font-size: {s(18)}px; }}
+QLineEdit#paletteField {{ background: transparent; border: none; color: {t['paper']};
+  font-size: {s(18)}px; padding: {s(6)}px 0px; selection-background-color: {t['sel']}; }}
+QLabel#paletteKbd {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(10)}px; }}
+QLabel#paletteEmpty {{ color: {t['dim']}; font-size: {s(14)}px; }}
+QListWidget#paletteList {{ background: transparent; border: none; outline: none; padding-top: {s(4)}px; }}
+QListWidget#paletteList::item {{ border: none; background: transparent; }}
+QFrame#pcard {{ background: {_hex_mix(t['surface'], t['bg_top'], 0.15)}; border: 1px solid {rgba(acc, 90)};
+  border-radius: {s(16)}px; }}
+QFrame#pcard[tone="work"] {{ border: 1px solid {rgba(work, 110)}; }}
+QFrame#pcard[tone="danger"] {{ border: 1px solid {rgba(danger, 120)}; }}
+QLabel#pcardKicker {{ color: {acc2}; font-family: {MONO_FONT}; font-size: {s(10)}px; }}
+QLabel#pcardKicker[tone="work"] {{ color: {work}; }}
+QLabel#pcardKicker[tone="danger"] {{ color: {danger_soft}; }}
+QLabel#pcardText {{ color: {t['paper']}; font-size: {s(15)}px; }}
+QPushButton#pcardX {{ background: transparent; border: none; color: {t['faint']}; font-size: {s(11)}px;
+  padding: {s(2)}px {s(4)}px; }}
+QPushButton#pcardX:hover {{ color: {t['paper']}; }}
+QPushButton#pcardBtn {{ background: transparent; border: 1px solid {rgba(t['paper'], 40)}; color: {t['paper']};
+  border-radius: {s(10)}px; padding: {s(6)}px {s(18)}px; font-size: {s(13)}px; }}
+QPushButton#pcardBtn:hover {{ background: {rgba(t['paper'], 14)}; }}
+QPushButton#pcardBtn[primary="true"] {{ background: {acc}; border: 1px solid {acc}; color: white; font-weight: 600; }}
+QPushButton#pcardBtn[primary="true"]:hover {{ background: {acc2}; }}
 
 /* ---- right rail ---- */
 QFrame#search {{ background: {card}; border: 1px solid {line}; border-radius: {s(12)}px; }}
@@ -4197,6 +4226,14 @@ class GoatWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+Shift+Return"), self, lambda: self._submit_work(True))
         QShortcut(QKeySequence("Ctrl+Shift+Enter"), self, lambda: self._submit_work(True))
 
+        # v8 phase (e): the Ctrl K / Ctrl F palette and the proactive cards,
+        # both floating children of the window (never modal, never a dialog).
+        self.palette = CommandPalette(self, self._palette_entries)
+        self.palette.area = self._room_rect
+        self.palette.closed.connect(self._palette_closed)
+        self._themed.append(self.palette)
+        self.pcard = ProactiveCard(self)
+        self.pcard.anchor = self._pcard_box
         # Collapsed form. Built last so apply_theme() below has something to
         # style, and hidden until he asks for it.
         self.bubble = Bubble({**THEMES.get(self._theme_name, THEMES["midnight"]),
@@ -5716,14 +5753,118 @@ class GoatWindow(QWidget):
             self.showFullScreen()
 
     def _show_cmd(self):
-        self.input.setFocus()
-        self.input.selectAll()
+        """Ctrl K (mockup C): the command palette. Typing anywhere or "/"
+        goes to the message box instead (keyPressEvent)."""
+        if self.palette.isVisible() and self.palette.mode == "all":
+            self.palette.close_palette()
+        else:
+            self.palette.open("all")
 
     def _show_search(self):
-        self._search_frame.show()
-        self.cmd_hint.hide()
-        self.search.setFocus()
-        self.search.selectAll()
+        """Ctrl F: the same palette, scoped to past conversations."""
+        if self.palette.isVisible() and self.palette.mode == "chat":
+            self.palette.close_palette()
+        else:
+            self.palette.open("chat")
+
+    def _palette_closed(self):
+        if self._page in ("home", "chat") and QApplication.focusWidget() in (None, self):
+            self.input.setFocus()
+
+    def _room_rect(self) -> QRect:
+        """The centre room (the page stack) in window coordinates."""
+        st = self.stack
+        return QRect(st.mapTo(self, QPoint(0, 0)), st.size())
+
+    def _pcard_box(self) -> QRect:
+        """Where a proactive card sits: bottom-right of the room, just above
+        the composer (or the room's floor on pages without one)."""
+        k = float(self.cfg.get("scale", 1.0))
+        room = self._room_rect()
+        right = room.right() - round(28 * k)
+        bottom = room.bottom() - round(24 * k)
+        c = self.composer
+        if c.isVisible():
+            bottom = c.mapTo(self, QPoint(0, 0)).y() - round(16 * k)
+        return QRect(QPoint(room.left(), room.top()), QPoint(right, bottom))
+
+    def proactive(self, text: str, kicker: str = "GOAT", tone: str = "accent",
+                  actions: list | None = None, key: str = ""):
+        """Say something quietly on screen (design.md motion rules)."""
+        if self.bubble.isVisible():
+            return          # collapsed: the dot's own card already speaks
+        self.pcard.push(text, kicker, tone, actions, key)
+
+    def _palette_entries(self, mode: str) -> list:
+        if mode == "chat":
+            out = []
+            for ex in list(reversed(self._transcript()))[:400]:
+                user = _sentence_case(" ".join((ex.get("user") or "").split()))
+                reply = " ".join((ex.get("reply") or "").split())
+                out.append(Entry("Conversations", user[:160], _ago(ex.get("t", 0)),
+                                 lambda e=ex: self._open_exchange(e),
+                                 extra=reply[:600], sub=reply[:200]))
+            return out
+        A, S, K, P = "Actions", "Settings", "Skills", "Pages"
+        g = self.goat
+        muted = bool(g and g.mic_muted)
+        e = [
+            Entry(A, "Restart GOAT", "action", self.restart_goat, "reload reboot"),
+            Entry(A, "New chat", "Ctrl N", self.new_chat, "fresh clear reset"),
+            Entry(A, "Unmute the mic" if muted else "Mute the mic", "Ctrl M",
+                  self.toggle_mic, "microphone listen quiet"),
+            Entry(A, "Search conversations", "Ctrl F",
+                  lambda: self.palette.open("chat"), "history find"),
+            Entry(A, "Send a file", "Ctrl O", self._pick_files, "attach upload image"),
+            Entry(A, "Collapse to the dot", "Ctrl B", self.toggle_bubble,
+                  "bubble minimise hide small"),
+            Entry(A, "Claude's work column", "Ctrl J", self.toggle_column,
+                  "activity log steps worker panel"),
+            Entry(A, "Full screen", "F11", self.toggle_fullscreen, "maximise"),
+        ]
+        for name in THEME_ORDER:
+            cur = "  (on)" if name == self._theme_name else ""
+            e.append(Entry(S, f"Theme · {name.capitalize()}{cur}", "Ctrl T",
+                           lambda n=name: self.set_theme_opt(n), "colour color look"))
+        for lv in EFFORT_OPTS:
+            cur = "  (on)" if lv == self.cfg.get("effort") else ""
+            e.append(Entry(S, f"Thinking · {lv}{cur}", "Ctrl E",
+                           lambda v=lv: (self.set_effort_opt(v),
+                                         self.work_panel.set_effort(v),
+                                         self.panel.refresh()),
+                           "effort depth claude"))
+        for label, code in LANGS.items():
+            cur = "  (on)" if code == self.cfg.get("lang") else ""
+            e.append(Entry(S, f"Language · {label}{cur}", "Ctrl L",
+                           lambda l=label: (self.set_lang_opt(l), self.panel.refresh()),
+                           f"{code} english georgian bilingual"))
+        for size in TEXT_SIZES:
+            cur = "  (on)" if size == self.cfg.get("text") else ""
+            e.append(Entry(S, f"Text size · {size}{cur}", "setting",
+                           lambda v=size: self.set_text_opt(v), "font reply"))
+        for label in UI_SCALES:
+            e.append(Entry(S, f"Zoom · {label}", "setting",
+                           lambda v=label: self.set_scale_opt(v), "scale size ui"))
+        wake = bool(self.cfg.get("wake"))
+        e.append(Entry(S, "Wake word · " + ("off" if wake else "on"), "setting",
+                       lambda v=("off" if wake else "on"): self.set_wake_opt(v),
+                       "goat name hotword"))
+        top = bool(self.cfg.get("ontop"))
+        e.append(Entry(S, "Keep on top · " + ("off" if top else "on"), "setting",
+                       lambda v=("normal" if top else "on top"): self.set_ontop_opt(v),
+                       "pin float always"))
+        e.append(Entry(S, "All settings", "Ctrl ,", lambda: self.show_page("settings"),
+                       "preferences options"))
+        for name, desc in _read_skills():
+            e.append(Entry(K, name, "skill",
+                           lambda n=name: self._prefill(f"Use the {n} skill: "),
+                           desc[:300]))
+        for key, label in (("home", "Home"), ("chat", "Chat"), ("skills", "Skills"),
+                           ("files", "Files"), ("memory", "Memory"),
+                           ("tools", "Tools"), ("settings", "Settings")):
+            if key in self.pages:
+                e.append(Entry(P, label, "page", lambda k=key: self.show_page(k)))
+        return e
 
     def _search_fold(self):
         if not self.search.text() and not self.search.hasFocus():
@@ -5731,7 +5872,11 @@ class GoatWindow(QWidget):
             self.cmd_hint.show()
 
     def _escape(self):
-        if self.search.hasFocus():
+        if self.palette.isVisible():
+            self.palette.close_palette()
+        elif self.pcard.showing():
+            self.pcard.dismiss()
+        elif self.search.hasFocus():
             if self.search.text():
                 self.search.clear()
             else:
@@ -5908,6 +6053,10 @@ class GoatWindow(QWidget):
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._apply_metrics()   # rails, the reading column, the Today card
+        if hasattr(self, "palette") and self.palette.isVisible():
+            self.palette._place()
+        if hasattr(self, "pcard") and self.pcard.isVisible():
+            self.pcard._place(final=True)
         self._debounce_geom_save()
 
     def _save(self):
@@ -6331,6 +6480,20 @@ class GoatWindow(QWidget):
             self._send_files(paths)
 
     def keyPressEvent(self, ev):
+        # v8 (design.md): "/" or plain typing anywhere lands in the message
+        # box (Ctrl K is the palette now). Only when no text field has focus.
+        fw = QApplication.focusWidget()
+        mods = ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        txt = ev.text()
+        if (not mods and txt and txt.isprintable() and not txt.isspace()
+                and not isinstance(fw, QLineEdit) and not hasattr(fw, "textCursor")
+                and not self.palette.isVisible() and not self.bubble.isVisible()):
+            if self._page not in ("home", "chat"):
+                self.show_page("home")
+            self.input.setFocus()
+            if txt != "/":
+                self.input.insert(txt)
+            return
         # Ctrl+V with an image on the clipboard (screenshot etc.) sends it.
         # When the text field has focus it eats Ctrl+V first — Esc, then paste.
         if ev.matches(QKeySequence.Paste):
@@ -6701,6 +6864,19 @@ class GoatWindow(QWidget):
             self._statew = "out of usage"
             self.stateword.setText("out of usage")
             self._status_hold = time.time() + 15.0
+            self.proactive(data, "usage limit", "danger", key="limit")
+        elif kind == "card":
+            # v8 (e): the engine's quiet notes (watchers, a thought GOAT
+            # spoke first). data = JSON {text, kicker?, tone?, page?}.
+            try:
+                c = json.loads(data) if data.lstrip().startswith("{") else {"text": data}
+            except ValueError:
+                c = {"text": data}
+            acts = []
+            if c.get("page") in self.pages:
+                acts.append(("Open", lambda p=c["page"]: self.show_page(p)))
+            self.proactive(str(c.get("text") or ""), str(c.get("kicker") or "GOAT"),
+                           str(c.get("tone") or "accent"), acts, str(c.get("key") or ""))
         elif kind == "you":
             if self.epigraph is not None:
                 self.epigraph.deleteLater()
@@ -6815,6 +6991,11 @@ class GoatWindow(QWidget):
             self.live.done(failed=data)
             if not self._col_dismissed:
                 self._set_column(True)
+            elif not data.lower().startswith("stopped"):
+                # he'd put the column away: say it on a card instead
+                self.proactive(data, "Claude · failed", "danger",
+                               [("Show", lambda: (setattr(self, "_col_dismissed", False),
+                                           self._set_column(True)))], key="work")
             self._col_linger_kick(14_000)
         elif kind == "turn_done":
             # Do NOT drop _reply_label here: the model finishes generating
