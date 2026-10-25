@@ -1405,6 +1405,7 @@ class TtsPipeline:
 # GOAT's name always passes. GOAT_SOFT_VOICE=off turns it off.
 SOFT_VOICE = os.environ.get("GOAT_SOFT_VOICE", "on").strip().lower() not in ("off", "0", "no")
 SOFT_VOICE_REJECT = 0.0
+SOFT_VOICE_WAIT_S = 0.3        # the most the soft filter may hold a turn
 
 
 class GoatApp:
@@ -2380,7 +2381,29 @@ class GoatApp:
     async def _voice_gate(self, vcheck, text: str | None) -> bool:
         """The voice lock's door: True lets the turn through."""
         try:
-            v = await vcheck
+            if self.vid.locked:
+                v = await vcheck
+            else:
+                # The soft filter must never cost him time: on his phone's
+                # 5-8 s clips the voiceprint took 1.5-4 s and every answer
+                # waited for it (7-8.5 s to the first word, 2026-10-25 17:18).
+                # Not done by the time his words are: the turn goes through,
+                # and a "that was him" still teaches the mic when it lands.
+                try:
+                    v = await asyncio.wait_for(asyncio.shield(vcheck), SOFT_VOICE_WAIT_S)
+                except asyncio.TimeoutError:
+                    loop = asyncio.get_running_loop()
+
+                    def late(f):
+                        try:
+                            lv = f.result()
+                        except Exception:  # noqa: BLE001
+                            return
+                        if lv is not None and lv.decision == "me":
+                            self._voice_ok_t = time.monotonic()
+                            loop.run_in_executor(None, self.vid.adapt, lv)
+                    vcheck.add_done_callback(late)
+                    return True
         except Exception as e:  # noqa: BLE001 — a broken check must not deafen him
             print(f"[voice-id] check failed, let through: {e!r}")
             return True

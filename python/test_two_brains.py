@@ -759,6 +759,16 @@ async def main():
     await asyncio.sleep(0.05)
     check("him passes and teaches the mic his voice", ok and len(adapted) == 1)
 
+    async def slow_me():
+        await asyncio.sleep(1.0)
+        return voice_id.Verdict("me", 6.0, 6.0, "phone")
+    t0 = time.monotonic()
+    ok = await app._voice_gate(asyncio.ensure_future(slow_me()), "what time is it")
+    waited = time.monotonic() - t0
+    check(f"a slow voiceprint never holds his turn ({waited:.2f} s)", ok and waited < 0.5)
+    await asyncio.sleep(1.1)
+    check("...and still teaches the mic when it lands", len(adapted) == 2, len(adapted))
+
     # ---- 16. the side card's names ------------------------------------------
     import ui_qt
     check("card shows the voice by a readable name",
