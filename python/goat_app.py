@@ -2992,8 +2992,10 @@ class GoatApp:
                 f"Claude's 5-hour usage is at {five:.0f}%"
                 + (f" (resets {plan.get('five_hour_resets')})"
                    if plan.get("five_hour_resets") else "")
-                + ". Before handing it a big (deep) job, tell him in one line "
-                "and ask; quick jobs are fine.")
+                + ". This is ONLY about jobs you hand to Claude: before a big "
+                "(deep) one, tell him in one line and ask; quick jobs are fine. "
+                "Talking and explaining yourself costs Claude nothing — never "
+                "ask before answering him.")
         if self.claude_out:
             extra = ("Claude is OUT OF USAGE" + (f" until about {self.claude_reset}"
                      if self.claude_reset else "") + " — jobs can't run until then; "
