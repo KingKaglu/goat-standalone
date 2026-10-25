@@ -76,6 +76,10 @@ class MockTTS:
     def say_lead(self, lead):
         pass
 
+    def say_audio(self, text, samples):
+        self.live_audio = getattr(self, "live_audio", [])
+        self.live_audio.append((text, None if samples is None else len(samples)))
+
 
 class MockClient:
     def __init__(self, script=None):
@@ -677,6 +681,63 @@ async def main():
     finally:
         mail_hands.send, mail_hands.open_draft = real_send, real_draft
         os.environ.pop("GOAT_MY_EMAIL", None)
+
+    # ---- 19. Gemini Live answers first; the REST voice stands in -----------
+    import numpy as np
+
+    class FakeLive:
+        def __init__(self, script):
+            self.script, self.seen, self.ok = script, [], True
+
+        def label(self):
+            return "Gemini Live"
+
+        def usable(self):
+            return self.ok
+
+        async def reply(self, parts, on_text, on_call, on_audio):
+            self.seen.append(parts[0]["text"])
+            out = self.script(parts[0]["text"])
+            if out is None:
+                return {"ok": False, "error": "no answer in 6s", "model": "", "ttft": None}
+            for piece in out[0]:
+                on_text(piece)
+                on_audio(np.zeros(1600, dtype=np.float32))
+            for name, args in out[1]:
+                on_call(name, args)
+            return {"ok": True, "error": "", "model": "gemini-3.8-live", "ttft": 0.5}
+
+    rest = FakeTalker(lambda tx: (["Sir, REST here."], []))
+    app = make_app(rest)
+    app.live = FakeLive(lambda tx: (["Sir, ", "it's four."], []) if "two plus two" in tx else None)
+    await app._talk("what's two plus two")
+    await app._front_task
+    said = getattr(app.tts, "live_audio", [])
+    check("Live answers in its own audio, the transcript riding on it",
+          [x[0] for x in said] == ["Sir, ", "it's four."] and all(x[1] for x in said), said)
+    check("Live's words are never synthesised again by edge-tts",
+          "it's four." not in " ".join(app.tts.spoken), app.tts.spoken)
+    check("the REST voice is not asked when Live answered", not rest.seen, rest.seen[-1:])
+    check("history keeps Live's answer for the REST voice and reconnects",
+          any(h["text"] == "Sir, it's four." for h in rest.history), list(rest.history)[-2:])
+    await app._talk("what's the weather")
+    await app._front_task
+    check("Live silent -> the REST voice takes the same turn",
+          rest.seen and "Sir, REST here." in " ".join(app.tts.spoken), app.tts.spoken[-2:])
+
+    app = make_app(FakeTalker(lambda tx: ([], [])))
+    app.live = FakeLive(lambda tx: ([], [("do_now", {"command": "open notepad"})]))
+    ran = []
+    async def _fake_do(cmd, his=""):
+        ran.append(cmd)
+    app._voice_do = _fake_do
+    await app._talk("open notepad")
+    await app._front_task
+    await settle()
+    check("Live's tool calls drive GOAT's hands", ran == ["open notepad"], ran)
+    app.live.ok = False
+    check("the card names whoever is answering",
+          app._voice_label() == "Gemini 3.6 Flash")
 
     # ---- 16. the side card's names ------------------------------------------
     import ui_qt

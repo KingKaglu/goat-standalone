@@ -51,6 +51,7 @@ import stt_gladia
 import stt_realtime
 import stt_whisper
 import talk_brain
+import live_talk
 import tts_edge
 import voice_id
 from audio_io import EAR_QUIET_PEAK, DuplexAudio
@@ -1163,6 +1164,14 @@ class TtsPipeline:
             for piece in (split_long(text) if not filler else [text]):
                 self.q.put((self.gen, self._epoch, piece, filler))
 
+    def say_audio(self, text: str, samples):
+        """Speech that is already sound — the Live voice's own audio — played
+        in order with everything else, `text` revealed across it. samples
+        None: text only (a transcript tail with no audio left to carry it)."""
+        with self._lock:
+            self.q.put((self.gen, self._epoch, text, False,
+                        samples if samples is not None else False))
+
     def say_lead(self, lead: str):
         """The reply's first words just arrived from the model: say the cached
         "Sir," NOW, while its first sentence is still being written and
@@ -1242,7 +1251,7 @@ class TtsPipeline:
         parts = []
         with self._lock:
             for start, end, text, epoch in self._segments:
-                if epoch != self._epoch:
+                if epoch != self._epoch or not text:
                     continue  # belongs to a label the UI already left behind
                 if p >= end:
                     parts.append(text)
@@ -1280,8 +1289,20 @@ class TtsPipeline:
         """Producer: start each sentence's synthesis at once, in order."""
         import concurrent.futures as _cf
         while True:
-            gen, epoch, text, filler = self.q.get()
+            item = self.q.get()
+            gen, epoch, text, filler = item[:4]
+            pre = item[4] if len(item) > 4 else None
             if gen != self.gen:
+                continue
+            if pre is not None:
+                # Live voice audio: nothing to synthesise. (Muted, its text
+                # still reveals — a zero-length segment, as for voice off.)
+                if pre is False or not self.enabled:
+                    self._ordered.put((gen, epoch, text, filler, None, True))
+                    continue
+                fut = _cf.Future()
+                fut.set_result(pre)
+                self._ordered.put((gen, epoch, text, filler, fut, True))
                 continue
             if not self.enabled or UNSPEAKABLE_RE.search(text):
                 self._ordered.put((gen, epoch, text, filler, None))
@@ -1299,7 +1320,9 @@ class TtsPipeline:
         """Consumer: play finished sentences in order; skip a cancelled
         turn's sentences without waiting for their synthesis."""
         while True:
-            gen, epoch, text, filler, fut = self._ordered.get()
+            item = self._ordered.get()
+            gen, epoch, text, filler, fut = item[:5]
+            live = len(item) > 5
             if gen != self.gen:
                 continue
             if fut is None:
@@ -1323,7 +1346,7 @@ class TtsPipeline:
                 self._tap(text, None)
                 continue
             key = (tts_edge.VOICE, text)
-            if (key not in self._synth_cache and len(text) <= 48
+            if (not live and key not in self._synth_cache and len(text) <= 48
                     and len(self._synth_cache) < 40):
                 self._synth_cache[key] = samples
             if gen == self.gen:
@@ -1387,6 +1410,7 @@ class GoatApp:
     _talk_body_seen = False
     _t_last_heard = 0.0
     _utt_live = False
+    live = None                  # Gemini Live voice (live_talk.py)
 
     def __init__(self, emit=_default_emit):
         self.emit = emit
@@ -1575,6 +1599,11 @@ class GoatApp:
         # below and decides when there's news to tell him.
         self.talker = talk_brain.GeminiTalk()
         self.two_brains = TWO_BRAINS and self.talker.available()
+        # The voice's fast path (2026-10-25): one Gemini Live session that
+        # answers in its own voice ~0.5 s after the turn's text reaches it;
+        # the REST talker above stays as its fallback and keeps the history.
+        self.live = (live_talk.LiveTalk(self.talker)
+                     if live_talk.ENABLED and self.talker.available() else None)
         self.fable = talk_brain.FableGate()
         self._watch = talk_brain.WATCH
         self.talk_busy = False          # a voice turn is composing (UI: thinking)
@@ -1895,7 +1924,10 @@ class GoatApp:
         # Dial (or re-dial) the voice socket while he is still talking, so
         # the answer's first clause doesn't pay the connection. Non-blocking.
         tts_edge.prime()
-        if getattr(self, "talker", None) is not None:
+        if self.live is not None:
+            # and the Live voice's session, same reason
+            asyncio.run_coroutine_threadsafe(self.live.warm(), self.loop)
+        elif getattr(self, "talker", None) is not None:
             talk_brain.prime()      # and Gemini's socket, same reason
         if self._gpu_ear():
             # OpenAI's Whisper on his GPU is the English ear (his choice,
@@ -2642,7 +2674,7 @@ class GoatApp:
                     self.emit("work_fail", "Stopped.")
                 self._front_cancel()
                 self.tts.mark_reply()
-                self.emit("voice_note", self.talker.label())
+                self.emit("voice_note", self._voice_label())
                 self.emit("delta", "")
                 self.tts.say(ACK_STOP.get(self.turn_lang) or ACK_STOP["en"])
                 self.talker.remember(text, ACK_STOP.get(self.turn_lang) or ACK_STOP["en"])
@@ -2866,6 +2898,12 @@ class GoatApp:
     def _worker_label(self) -> str:
         return _friendly_model_name(self._worker_target()).title()
 
+    def _voice_label(self) -> str:
+        """Who is talking: Gemini Live, or the REST voice standing in."""
+        if self.live is not None and self.live.usable():
+            return self.live.label()
+        return self.talker.label()
+
     def _emit_brains(self):
         """The interface's picture of both brains: 'voice|work|note'."""
         note = ""
@@ -2876,6 +2914,9 @@ class GoatApp:
                 f" — back at {self.claude_reset}" if self.claude_reset else "")
         if not self.two_brains:
             self.emit("brains", f"|{self._worker_label()}|{note}")
+            return
+        if self.live is not None and self.live.usable():
+            self.emit("brains", f"{self.live.label()}|{self._worker_label()}|{note}|")
             return
         voice = self.talker.label()
         vnote = self.talker.quota_note()
@@ -2966,7 +3007,8 @@ class GoatApp:
                               "this in one short sentence]\n"
                               + self._watch.event_prompt(final))
         if MODEL_Q_RE.search(text or ""):
-            blocks.append(f"[models: you, the voice, are {self.talker.label()}; "
+            blocks.append(f"[models: you, the voice, are "
+                          f"{self._voice_label()}; "
                           f"Claude, the working brain, is {self._worker_label()}]")
         if self.turn_lang == "ka":
             blocks.append(KA_TALK_NOTE.strip())
@@ -3010,6 +3052,27 @@ class GoatApp:
             spoken.append(t)
             self._speak_delta(t)
 
+        live_txt: list = []
+
+        def on_text_live(t: str):
+            # Live speaks for itself: its transcript is shown, never voiced
+            # again. It rides on the next piece of its own audio.
+            nonlocal started_speaking
+            if not live():
+                return
+            started_speaking = True
+            spoken.append(t)
+            live_txt.append(t)
+            self.emit("delta", t)
+
+        def on_audio_live(pcm):
+            nonlocal started_speaking
+            if not live():
+                return
+            started_speaking = True
+            self.tts.say_audio("".join(live_txt), pcm)
+            live_txt.clear()
+
         def on_call(name: str, args: dict):
             if not live():
                 return
@@ -3042,7 +3105,7 @@ class GoatApp:
                 # last answer's label.
                 self.tts.mark_reply()
                 self.tts.new_turn()
-                self.emit("voice_note", self.talker.label())
+                self.emit("voice_note", self._voice_label())
                 self.emit("delta", "")
             elif not getattr(self, "_stale_voice", False):
                 self.tts.new_turn()
@@ -3058,11 +3121,30 @@ class GoatApp:
                     and not side_talk.looks_aside(text, WAKE_RE)):
                 asyncio.create_task(self._front_filler(my))
             parts = await self._front_parts(text, kind, event, probe)
-            if self.talker.usable():
-                res = await self.talker.reply(parts, on_text, on_call)
-            else:   # every Gemini model is resting: don't wait on a sure "no"
-                res = {"ok": False, "model": "", "ttft": None,
-                       "error": f"Gemini out of quota until {self.talker.out_until()}"}
+            res = {"ok": False, "model": "", "ttft": None, "error": ""}
+            # Live first. Side-talk probes stay on the REST voice: their
+            # [[quiet]] token would be SPOKEN by a voice that speaks itself.
+            via_live = (self.live is not None and self.live.usable() and not probe)
+            if via_live:
+                self._quiet_state = "speak"
+                res = await self.live.reply(parts, on_text_live, on_call, on_audio_live)
+                if live_txt and live():
+                    self.tts.say_audio("".join(live_txt), None)
+                    live_txt.clear()
+                if not res["ok"]:
+                    print(f"[live] {res['error']} — REST voice takes the turn"
+                          if not started_speaking else
+                          f"[live] {res['error']} (after speaking)", flush=True)
+                if res["ok"] or started_speaking or acted:
+                    res["ok"] = True
+                else:
+                    via_live = False
+            if not via_live:
+                if self.talker.usable():
+                    res = await self.talker.reply(parts, on_text, on_call)
+                else:   # every Gemini model is resting: don't wait on a sure "no"
+                    res = {"ok": False, "model": "", "ttft": None,
+                           "error": f"Gemini out of quota until {self.talker.out_until()}"}
             if res["ok"] and look and live():
                 shot = await asyncio.to_thread(talk_brain.screenshot_part)
                 said = "".join(spoken).strip()
@@ -3072,12 +3154,19 @@ class GoatApp:
                         if shot else "[the screenshot failed — answer from the "
                         "desktop note, or hand it to Claude to look]")
                 parts2 = parts + ([shot] if shot else []) + [{"text": note}]
-                res = await self.talker.reply(
-                    parts2, on_text,
-                    lambda n, a: None if n == "look_at_screen" else on_call(n, a))
+                no_look = (lambda n, a: None if n == "look_at_screen" else on_call(n, a))
+                if via_live:
+                    res = await self.live.reply(parts2, on_text_live, no_look, on_audio_live)
+                    if live_txt and live():
+                        self.tts.say_audio("".join(live_txt), None)
+                        live_txt.clear()
+                    res["ok"] = True
+                else:
+                    res = await self.talker.reply(parts2, on_text, no_look)
             self._emit_brains()          # winner model / quota state for the card
             if res["ok"]:
-                self.emit("talkbrain", self.talker.label())
+                self.emit("talkbrain", self.live.label() if via_live
+                          else self.talker.label())
                 if res.get("ttft") is not None:
                     print(f"[talk] {res['model']} first token {res['ttft']:.2f}s"
                           + (f" (ended: {res['error']})" if res["error"] else ""),
@@ -3498,7 +3587,7 @@ class GoatApp:
         if convo:
             send += ("\n\n[recent conversation between Giorgi and the voice — "
                      "context only]\n" + convo)
-        send += (f"\n\n[models: the voice is {self.talker.label()}; you are "
+        send += (f"\n\n[models: the voice is {self._voice_label()}; you are "
                  f"{name.title()}]")
         send += "\n\n[job from GOAT's voice"
         if his and his.strip() and his.strip() != task:
@@ -4859,7 +4948,7 @@ class GoatApp:
         # actually PICKED — this line used to hardcode Gemini, so booting with
         # "sonnet 5" selected put a model name in the footer that was simply
         # not answering him. MODEL TRUTH applies to the chrome too.
-        self.emit("talkmodel", self.talker.label() if self.two_brains
+        self.emit("talkmodel", self._voice_label() if self.two_brains
                   else _friendly_model_name(self.model))
         self.emit("model", _friendly_model_name(self.model))
         self._emit_brains()
@@ -4870,6 +4959,10 @@ class GoatApp:
             print(f"[brains] voice: {' > '.join(self.talker._models()) or 'none (all resting)'}; "
                   f"work: {self._worker_label()} — Fable 5.1 {self.fable.reason}",
                   flush=True)
+            if self.live is not None:
+                print(f"[brains] live voice: {live_talk.MODEL} first, REST voice "
+                      "as its fallback", flush=True)
+                asyncio.create_task(self.live.warm())
         # This code just booted end to end — it IS the last-good version.
         # Snapshot it so a future bad self-edit always has a way back.
         threading.Thread(target=self_check.snapshot, daemon=True).start()
@@ -4943,7 +5036,7 @@ class GoatApp:
                             "lost", f"GOAT's engine hiccuped ({type(e).__name__}) "
                             "and the job was cut off; it reconnected.")
                         self.emit("work_fail", "engine hiccup — job lost")
-                    self.emit("talkmodel", self.talker.label() if self.two_brains
+                    self.emit("talkmodel", self._voice_label() if self.two_brains
                               else _friendly_model_name(self.model))
                     self.emit("status", "reconnected — working brain back")
                     continue
