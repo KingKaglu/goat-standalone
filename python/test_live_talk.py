@@ -66,6 +66,12 @@ def text_msg(s):
     return {"serverContent": {"outputTranscription": {"text": s}}}
 
 
+# Google's real order, traced 2026-10-25: the sound ends with
+# generationComplete; turnComplete trails it by 2-4 s; a function call's
+# turn closes and THEN a spoken follow-up comes as a generation of its own;
+# a turn sent while one is open gets "interrupted" + turnComplete for the
+# old one before its own answer starts.
+GEN = {"serverContent": {"generationComplete": True}}
 END = {"serverContent": {"turnComplete": True}}
 CUT = {"serverContent": {"interrupted": True}}
 
@@ -109,16 +115,19 @@ async def main():
                                    _system="sys", _refresh_system=lambda: None)
     lt = live_talk.LiveTalk(talker)
     ws = FakeWS([
-        [text_msg("Sir, "), audio_msg(), text_msg("it's four."), audio_msg(), END],
+        [text_msg("Sir, "), audio_msg(), text_msg("it's four."), audio_msg(), GEN, 0.6, END],
         [{"toolCall": {"functionCalls": [{"id": "c1", "name": "do_now",
-                                           "args": {"command": "open notepad"}}]}}, END],
-        # a long answer he cuts off: its tail arrives AFTER the cut
-        [text_msg("Once upon"), audio_msg(), 0.3, text_msg(" a time"), audio_msg(), CUT],
-        [text_msg("Nine."), audio_msg(), END],
+                                           "args": {"command": "open notepad"}}]}}, GEN, END,
+         0.3, text_msg("Sir, opening Notepad."), audio_msg(), GEN, 0.6, END],
+        # a long answer he cuts off: its tail is still on the wire
+        [text_msg("Once upon"), audio_msg(), 0.4, text_msg(" a time"), audio_msg()],
+        # ...and his next turn: Google closes the old one first
+        [CUT, END, text_msg("Nine."), audio_msg(), GEN, 0.6, END],
     ])
 
     async def fake_connect():
         lt.ws = ws
+        lt._voice = lt._wanted_voice()   # as _setup would
         lt._reader = asyncio.create_task(lt._read(ws))
     lt._connect = fake_connect
 
@@ -127,7 +136,11 @@ async def main():
     on_a = lambda a: got["audio"].append(len(a))
     on_c = lambda n, a: got["calls"].append((n, a))
 
+    import time as _t
+    t_a = _t.monotonic()
     res = await lt.reply([{"text": "Giorgi: two plus two"}], on_t, on_c, on_a)
+    check("the turn ends when the sound does, not 2-4 s later at turnComplete",
+          _t.monotonic() - t_a < 0.4, _t.monotonic() - t_a)
     check("a text turn comes back as transcript + 16 kHz audio",
           res["ok"] and "".join(got["text"]) == "Sir, it's four." and sum(got["audio"]) >= 3000,
           (res, got))
@@ -138,6 +151,8 @@ async def main():
     tr = [m for m in ws.sent if "toolResponse" in m]
     check("a tool call reaches GOAT's hands", got["calls"] == [("do_now", {"command": "open notepad"})],
           got["calls"])
+    check("...and the spoken follow-up after it belongs to the same turn",
+          "".join(got["text"]) == "Sir, opening Notepad." and got["audio"], got)
     check("...and is answered at once, SILENT",
           tr and tr[-1]["toolResponse"]["functionResponses"][0]["response"]["scheduling"] == "SILENT",
           tr[-1:])
@@ -154,7 +169,9 @@ async def main():
     got = {"text": [], "audio": [], "calls": []}
     res = await lt.reply([{"text": "Giorgi: three times three"}], on_t, on_c, on_a)
     check("the cut-off story never leaks into the next answer",
-          "".join(got["text"]) == "Nine." and story[:1] == ["Once upon"], (story, got["text"]))
+          "".join(got["text"]) == "Nine." and " a time" not in story, (story, got["text"]))
+    check("...and the old turn's 'interrupted' doesn't end the new one (no silence)",
+          res["ok"] and got["audio"], (res, got))
 
     # a session that dies before answering: the turn fails, the app falls back
     lt2 = live_talk.LiveTalk(talker)
