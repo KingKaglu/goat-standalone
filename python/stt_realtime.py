@@ -88,6 +88,18 @@ def commit_wait() -> float:
 LANG3 = {"ka": "kat", "en": "eng"}
 
 _down_until = [0.0]      # back off after a failure instead of retrying hot
+# Out of credits survives a restart (2026-10-25: GOAT restarts many times a
+# day, and the first phone turn after each one waited on a doomed ElevenLabs
+# connection — "insufficient_funds" — before the batch ear: 8.5 s to his
+# answer). Wall-clock epoch on disk, monotonic in memory.
+_BROKE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".stt-rt-broke.json")
+try:
+    with open(_BROKE_FILE, encoding="utf-8") as _f:
+        _left = float(json.load(_f).get("until", 0)) - time.time()
+    if _left > 0:
+        _down_until[0] = time.monotonic() + _left
+except (OSError, ValueError, TypeError, AttributeError):
+    pass
 # One handshake timeout used to put the fast ear down for 2 minutes, so every
 # turn in that window paid the batch ear (1.3-1.6s in his log). A retry per
 # utterance is cheap — the socket opens while he is still talking.
@@ -144,6 +156,12 @@ def _mark_down(why: str = ""):
     # single turn for hours, each one a doomed connection first): rest 6 h.
     broke = any(k in why for k in ("insufficient_funds", "quota_exceeded"))
     _down_until[0] = time.monotonic() + (6 * 3600 if broke else _DOWN_S)
+    if broke:
+        try:
+            with open(_BROKE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"until": time.time() + 6 * 3600, "why": why[:120]}, f)
+        except OSError:
+            pass
 
 
 class Session:

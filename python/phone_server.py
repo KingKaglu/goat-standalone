@@ -1147,7 +1147,13 @@ class PhoneServer:
                 lang = self.app._rt_lang()
                 if time.time() < self._voice_end + ECHO_TAIL_S and lang == "en":
                     lang = "auto"
-                rt = stt_realtime.start_threadsafe(lang, self.loop)
+                gpu = getattr(self.app, "_gpu_ear", None)
+                if lang == "en" and gpu is not None and gpu():
+                    # English on the GPU Whisper, as on the laptop: no cloud
+                    # ear to open (or wait on when it's out of credits).
+                    rt = None
+                else:
+                    rt = stt_realtime.start_threadsafe(lang, self.loop)
             except Exception as e:  # noqa: BLE001 — batch ear still has the clip
                 print(f"[phone] streaming ear not started: {e!r}", flush=True)
             s = self._streams[sid] = {"rt": rt, "t": now}

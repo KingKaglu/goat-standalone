@@ -57,3 +57,4 @@ voiceid/
 python/.talk-quota.json
 python/.fable-gate.json
 .plan_usage.json
+python/.stt-rt-broke.json
