@@ -1637,6 +1637,10 @@ class GoatApp:
         """Audio thread: log the barge-in decisions, drop the meters."""
         if msg.startswith(self._BARGE_LOG):
             now = time.monotonic()
+            if msg.startswith("vad said speech") and not (
+                    self.audio.is_tts_playing
+                    or now - getattr(self.audio, "_play_last_t", 0.0) < 1.0):
+                return     # room noise while GOAT is silent: not a barge story
             kind = msg.split(" (")[0][:24]      # the numbers vary: key on the kind
             if kind != getattr(self, "_barge_last", ("", 0.0))[0] or \
                     now - self._barge_last[1] > 2.0:
