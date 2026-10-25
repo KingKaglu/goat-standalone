@@ -103,6 +103,17 @@ check("terminal Claude: WORKING and on what", "WORKING" in r and "Wiring the voi
 r = vh.terminal_claude({"action": "continue"})
 check("a working session is not resumed twice", "still working" in r, r)
 
+# ---- where he is -------------------------------------------------------------
+import io
+import json as _json
+real_open = vh.urllib.request.urlopen
+vh.urllib.request.urlopen = lambda url, timeout=8: io.BytesIO(_json.dumps({
+    "status": "success", "city": "Essen", "regionName": "North Rhine-Westphalia",
+    "country": "Germany", "zip": "45356", "timezone": "Europe/Berlin"}).encode())
+r = vh.execute("where_am_i", {})
+vh.urllib.request.urlopen = real_open
+check("where am I: the city, honestly approximate", "Essen" in r and "approximately" in r, r)
+
 # ---- wiring -----------------------------------------------------------------
 names = {d["name"] for d in talk_brain.TOOLS[0]["functionDeclarations"]}
 check("every hand is declared to the voice", vh.NAMES <= names, vh.NAMES - names)

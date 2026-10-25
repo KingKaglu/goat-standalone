@@ -492,6 +492,29 @@ def terminal_claude(args: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# where he is (2026-10-25: "Do you see my location?" got "I do not")
+# ---------------------------------------------------------------------------
+# GOAT's phone app has no location access and Windows location is switched
+# off on the laptop, so this is the laptop's internet connection, looked up
+# (ip-api.com, free, no key): the city, not the street. Phone and laptop
+# share his Wi-Fi in Essen, so it is where he is when he's home.
+
+def where_am_i() -> str:
+    try:
+        with urllib.request.urlopen(
+                "http://ip-api.com/json/?fields=status,city,regionName,country,zip,timezone",
+                timeout=8) as r:
+            d = json.load(r)
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: location lookup failed ({e})"
+    if d.get("status") != "success":
+        return "ERROR: location lookup found nothing"
+    return (f"approximately {d.get('city')}, {d.get('regionName')}, {d.get('country')} "
+            f"(postcode area {d.get('zip')}, time zone {d.get('timezone')}) — from the "
+            "laptop's internet connection: the city, not the exact street")
+
+
+# ---------------------------------------------------------------------------
 
 def execute(name: str, args: dict) -> str:
     args = args or {}
@@ -508,6 +531,8 @@ def execute(name: str, args: dict) -> str:
             return phone(args)
         if name == "terminal_claude":
             return terminal_claude(args)
+        if name == "where_am_i":
+            return where_am_i()
         if name == "web_search":
             import local_hands
             q = str(args.get("query") or "")
@@ -524,7 +549,7 @@ def execute(name: str, args: dict) -> str:
 
 
 NAMES = {"find_files", "read_file", "list_folder", "open_path", "phone",
-         "terminal_claude", "web_search"}
+         "terminal_claude", "web_search", "where_am_i"}
 
 DECLS = [
     {"name": "find_files",
@@ -572,6 +597,10 @@ DECLS = [
      "parameters": {"type": "object", "properties": {
          "query": {"type": "string"},
          "read_first": {"type": "boolean"}}, "required": ["query"]}},
+    {"name": "where_am_i",
+     "description": "Roughly where he is right now (city, region, country, "
+                    "postcode area) — for 'where am I', 'near me', local hours.",
+     "parameters": {"type": "object", "properties": {}}},
     {"name": "terminal_claude",
      "description": "The Claude Code sessions in his terminal (not GOAT's own Claude): "
                     "action 'status' says which are WORKING and on what, 'continue' "
