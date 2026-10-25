@@ -47,6 +47,13 @@ IDLE_S = 8.0               # a started answer silent this long is over
 DOWN_S = 120.0             # after a failure, the REST voice answers this long
 SEED_TURNS = 12            # history messages replayed into a fresh session
 OUT_RATE = 24000           # Live speaks 24 kHz PCM16; GOAT plays 16 kHz
+# Live thinks before it speaks unless told not to: with GOAT's full prompt
+# (persona + 14k of memory) its first sound came 2.0-3.1 s after the text;
+# with thinkingBudget 0, 0.37-0.47 s — and it still routed every test order
+# right (notepad -> do_now, builds/folders -> Claude, email -> email, chat
+# answered itself). Measured 2026-10-25 on his key. ("thinkingLevel" is
+# refused by this model.)
+THINK_BUDGET = int(os.environ.get("GOAT_LIVE_THINK", "0"))
 
 
 class Resampler:
@@ -124,7 +131,8 @@ class LiveTalk:
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {"voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": voice}}}},
+                    "prebuiltVoiceConfig": {"voiceName": voice}}},
+                "thinkingConfig": {"thinkingBudget": THINK_BUDGET}},
             "systemInstruction": {"parts": [{"text": self.talker._system}]},
             "tools": talk_brain.TOOLS,
             "outputAudioTranscription": {},
