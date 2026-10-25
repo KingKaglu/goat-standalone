@@ -1396,6 +1396,17 @@ class TtsPipeline:
                 pass
 
 
+# Soft voice filter (2026-10-25, his phone in Essen kept turning the people
+# around him into "his" messages; the voice lock is off and his phone voice
+# was never taught). With the lock off, a turn is dropped only when the
+# voiceprint is sure it's someone else: scored against his laptop print, his
+# own clips came out 5.2-7.6 and other voices (English and German) -1.3 to
+# -3.0, so "below 0" leaves a wide margin on his side. A turn that says
+# GOAT's name always passes. GOAT_SOFT_VOICE=off turns it off.
+SOFT_VOICE = os.environ.get("GOAT_SOFT_VOICE", "on").strip().lower() not in ("off", "0", "no")
+SOFT_VOICE_REJECT = 0.0
+
+
 class GoatApp:
     # Two-brain state defaults (set for real in __init__; the class-level
     # values keep harnesses that build a bare GoatApp on the one-brain path).
@@ -2259,7 +2270,7 @@ class GoatApp:
         # Voiceprint check runs beside the ear (~100ms for 3s of speech vs
         # ~270ms for the streaming transcript), so the lock costs no latency.
         vcheck = None
-        if vid is not None and vid.locked:
+        if vid is not None and (vid.locked or (SOFT_VOICE and vid.enrolled("laptop"))):
             vcheck = asyncio.ensure_future(
                 asyncio.to_thread(vid.check, audio_np, source))
         # The streaming ear has been transcribing since he started speaking,
@@ -2379,6 +2390,19 @@ class GoatApp:
         active = (self.audio.is_tts_playing
                   or now - self._voice_ok_t < VOICE_ACTIVE_S)
         addressed = bool(text and WAKE_RE.search(text))
+        if not self.vid.locked:
+            # Soft filter, lock off: only a voice that is CLEARLY someone
+            # else and doesn't call GOAT by name is dropped; everything else
+            # passes, and turns that are clearly him teach the mic his voice.
+            if (v.decision == "not_me" and v.score is not None
+                    and v.score < SOFT_VOICE_REJECT and not addressed):
+                print(f"[voice-id] someone else, not him: {text!r} ({v.line()})")
+                self.emit("status", "someone else talking — ignored")
+                return False
+            if v.decision == "me":
+                self._voice_ok_t = now
+                asyncio.get_running_loop().run_in_executor(None, self.vid.adapt, v)
+            return True
         if not voice_id.allow(v, active, addressed):
             print(f"[voice-id] not him, ignored: {text!r} ({v.line()})")
             self.emit("status", "not your voice — ignored")

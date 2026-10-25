@@ -739,6 +739,26 @@ async def main():
     check("the card names whoever is answering",
           app._voice_label() == "Gemini 3.6 Flash")
 
+    # ---- 20. soft voice filter (lock off) -----------------------------------
+    import voice_id
+    app = make_app(FakeTalker(lambda tx: (["Sir."], [])))
+    adapted = []
+    app.vid = types.SimpleNamespace(locked=False, adapt=lambda v: adapted.append(v))
+    app._voice_ok_t = 0.0
+
+    async def verdict(d, sc):
+        return voice_id.Verdict(d, sc, 3.0, "phone")
+    check("someone else, clearly, is dropped",
+          not await app._voice_gate(verdict("not_me", -2.2), "because we have to move"))
+    check("...unless they say GOAT's name",
+          await app._voice_gate(verdict("not_me", -2.2), "Goat, what time is it"))
+    check("a not-quite-sure 'not him' still passes",
+          await app._voice_gate(verdict("not_me", 1.0), "open my notes"))
+    check("unsure passes", await app._voice_gate(verdict("unsure", None), "hm yes"))
+    ok = await app._voice_gate(verdict("me", 6.0), "check my phone")
+    await asyncio.sleep(0.05)
+    check("him passes and teaches the mic his voice", ok and len(adapted) == 1)
+
     # ---- 16. the side card's names ------------------------------------------
     import ui_qt
     check("card shows the voice by a readable name",
