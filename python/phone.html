@@ -1596,7 +1596,7 @@ function Aec(opt) {
 // quantum: the echo canceller's reference is sample-locked to the mic.
 const WORKLET = "class T extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];" +
   "if(c){const r=i[1]&&i[1][0];this.port.postMessage([c.slice(0),r?r.slice(0):null])}return true}}registerProcessor('tap2',T)";
-let floor = 0.003, inSpeech = false, voiced = 0, silent = 0, above = 0, speechAt = 0;
+let floor = 0.003, inSpeech = false, voiced = 0, silent = 0, above = 0, speechAt = 0, uttLvl = 0;
 const HIST = 50; const hist = new Float32Array(HIST).fill(0.003); let hn = 0;   // 1 s of frame levels
 let pre = [], utt = [];
 function resetVad() { streamDrop(); inSpeech = false; voiced = silent = above = 0; pre = []; utt = []; orb.classList.remove("hear"); }
@@ -1746,14 +1746,20 @@ function frame(raw, ref) {
   if (!inSpeech) {
     pre.push(f); if (pre.length > 15) pre.shift();          // 300 ms pre-roll
     above = rms > Math.max(0.005, floor * 2.2) ? above + 1 : 0;
-    if (above >= 3) { inSpeech = true; speechAt = performance.now(); utt = pre.slice(); voiced = 3; silent = 0; streamStart(utt); orb.classList.add("hear"); setStatus("hearing you"); }
+    if (above >= 3) { inSpeech = true; speechAt = performance.now(); utt = pre.slice(); voiced = 3; silent = 0; uttLvl = rms; streamStart(utt); orb.classList.add("hear"); setStatus("hearing you"); }
     return;
   }
   utt.push(f); streamPush(f);
   // A lone spike (crowd, clatter) only buys back 100 ms; real speech is dense
   // enough to keep the counter at zero.
-  if (rms > Math.max(0.004, floor * 1.7)) { voiced++; silent = Math.max(0, silent - 5); } else silent++;
-  if (silent >= 40 || utt.length >= 1500) endUtterance();   // 800 ms quiet or 30 s
+  // "Quiet" is measured against HIS level in this clip too, not just the
+  // room's (2026-10-25, Essen: people talking a few metres away dip between
+  // words like he does, so the floor never rose and every clip ran to the
+  // 30 s cap). He holds the phone; they don't: their talk reaches the mic
+  // >14 dB under his voice, so it no longer keeps his clip open.
+  if (rms > uttLvl) uttLvl = rms; else uttLvl *= 0.9985;    // his loudness, ~-0.4 dB/s decay
+  if (rms > Math.max(0.004, floor * 1.7, uttLvl * 0.2)) { voiced++; silent = Math.max(0, silent - 5); } else silent++;
+  if (silent >= 40 || utt.length >= 1000) endUtterance();   // 800 ms quiet or 20 s
 }
 
 function endUtterance() {
