@@ -279,6 +279,7 @@ DEFAULT_CFG = {"theme": "midnight", "text": "normal", "voice": True,
                "effort": "high", "last_lang": "en",
                "scale": 1.0, "colors": {},
                "geom": None,    # [x, y, w, h] — remembered window box
+               "mind_dismissed": "",  # the On my mind thought he dismissed
                "bubble": None,  # [x, y] — remembered collapsed-bubble corner
                "design": 0}     # last DESIGN_VERSION this config has seen
 
@@ -355,12 +356,13 @@ MONO_FONT = "'Cascadia Mono', 'Consolas'"
 # Every size below is at 100% and passes through the global zoom in
 # _apply_metrics(), so at 200% the furniture grows with the type (the v6
 # lesson: scaling only fonts crowded big type into small rooms).
-RAIL_W = 256                      # left rail: mark, pages, presence
+RAIL_W = 72                       # v8 icon rail: the ring mark + page icons
 SIDE_W = 384                      # Claude's work column (out only while it works)
 # v8: margins sit on the 4/8/16/24/32 spacing scale.
 CENTER_MARGIN = (32, 4, 32, 16)   # centre column (under the top bar)
-TOPBAR_MARGIN = (32, 12, 16, 4)   # search · settings · window buttons
-RAIL_MARGIN = (24, 24, 24, 24)
+TOPBAR_MARGIN = (32, 8, 12, 0)    # Ctrl K hint · window buttons
+RAIL_MARGIN = (14, 18, 14, 24)
+COMPOSER_MAX_W = 900              # the box keeps a readable width, centred
 TITLEBAR_H = 52                   # the drag band along the top edge
 # The chat transcript is still the one true reading column: reading margins
 # and a measure, never a spreadsheet row (v6).
@@ -433,16 +435,13 @@ QLabel#brand {{ color: {t['paper']}; font-family: {VOICE_FONT};
   font-size: {s(27)}px; font-weight: 600; }}
 QLabel#brandSub {{ color: {t['dim']}; font-size: {s(12)}px; }}
 QPushButton#nav {{
-  background: transparent; color: {t['dim']}; border: 1px solid transparent;
-  border-radius: {s(10)}px; text-align: left; font-size: {s(15)}px;
-  padding: {s(10)}px {s(16)}px;
+  background: transparent; border: none; border-radius: {s(12)}px;
+  min-width: {s(44)}px; max-width: {s(44)}px; min-height: {s(44)}px; max-height: {s(44)}px;
+  padding: 0;
 }}
-QPushButton#nav:hover {{ background: {rgba(t['paper'], 12)}; color: {t['paper']}; }}
+QPushButton#nav:hover {{ background: {rgba(t['paper'], 12)}; }}
 QPushButton#nav:pressed {{ background: {rgba(t['paper'], 6)}; }}
-QPushButton#nav[on="true"] {{
-  color: {t['paper']}; border: 1px solid {rgba(acc, 60)}; background: {rgba(acc, 38)};
-}}
-QFrame#presence {{ background: {card}; border: 1px solid {line}; border-radius: {s(16)}px; }}
+QPushButton#nav[on="true"] {{ background: {rgba(acc, 36)}; }}
 QLabel#statedot {{ color: {t['ok']}; font-size: {s(11)}px; }}
 QLabel#statedot[mood="busy"] {{ color: {acc2}; }}
 QLabel#statedot[mood="off"] {{ color: {t['faint']}; }}
@@ -467,6 +466,13 @@ QLabel#cardTitle {{ color: {t['paper']}; font-size: {s(15)}px; font-weight: 500;
 QLabel#cardSub {{ color: {t['dim']}; font-size: {s(13)}px; }}
 QLabel#chev {{ color: {t['faint']}; font-family: {ICON_FONT}; font-size: {s(10)}px; }}
 QFrame#card {{ background: {card}; border: 1px solid {line}; border-radius: {s(16)}px; }}
+QFrame#mindCard {{ background: {rgba(t['paper'], 10)}; border: 1px solid {rgba(t['paper'], 22)};
+  border-radius: {s(16)}px; }}
+QLabel#mindHead {{ font-family: {MONO_FONT}; font-size: {s(10)}px; letter-spacing: {track}px; }}
+QLabel#mindText {{ color: {t['paper']}; font-size: {s(14)}px; }}
+QPushButton#linkDim {{ background: transparent; border: none; color: {t['dim']};
+  font-size: {s(13)}px; padding: {s(4)}px {s(6)}px; }}
+QPushButton#linkDim:hover {{ color: {t['paper']}; }}
 QLabel#sectionTitle, QLabel#paneltitle {{ color: {t['dim']}; font-family: {MONO_FONT};
   font-size: {s(11)}px; font-weight: 500; letter-spacing: {track}px; }}
 QLabel#pageTitle {{ color: {t['paper']}; font-family: {VOICE_FONT};
@@ -530,6 +536,9 @@ QPushButton#chip:hover {{ background: {card_hi}; border: 1px solid {ring}; }}
 QPushButton#chip:pressed {{ background: {rgba(t['paper'], 6)}; }}
 QPushButton#chip[on="true"] {{ border: 1px solid {acc}; background: {tint_hi}; }}
 
+QLabel#hintRow, QLabel#topHint {{ color: {t['faint']}; font-family: {MONO_FONT};
+  font-size: {s(10)}px; }}
+
 /* ---- right rail ---- */
 QFrame#search {{ background: {card}; border: 1px solid {line}; border-radius: {s(12)}px; }}
 QLineEdit#searchField {{ background: transparent; border: none; color: {t['paper']};
@@ -569,17 +578,16 @@ QLabel#quote {{ color: {t['paper']}; font-family: {VOICE_FONT}; font-size: {s(15
 QLabel#clock {{ color: {t['dim']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
 
 /* ---- chat ---- */
-QLabel#youNow, QLabel#youOld {{
-  background: {rgba(acc, 46)}; border: 1px solid {rgba(acc, 80)};
-  border-radius: {s(16)}px; font-size: {s(15)}px;
-}}
-QLabel#youNow {{ color: {t['paper']}; }}
-QLabel#youOld {{ color: {t['you_old']}; background: {rgba(acc, 26)};
-  border: 1px solid {rgba(acc, 45)}; }}
+QLabel#youNow, QLabel#youOld {{ background: transparent; border: none;
+  font-size: {s(15)}px; }}
+QLabel#youNow {{ color: {rgba(t['paper'], 215)}; }}
+QLabel#youOld {{ color: {rgba(t['paper'], 140)}; }}
+QLabel#youOld[far="true"] {{ color: {rgba(t['paper'], 76)}; }}
 QLabel#replyNow {{ color: {t['paper']}; font-family: {VOICE_FONT};
   font-size: {reply}px; font-weight: 400; }}
-QLabel#replyOld {{ color: {t['reply_old']}; font-family: {VOICE_FONT};
+QLabel#replyOld {{ color: {rgba(t['paper'], 140)}; font-family: {VOICE_FONT};
   font-size: {max(1, round(reply * REPLY_OLD_K))}px; font-weight: 300; }}
+QLabel#replyOld[far="true"] {{ color: {rgba(t['paper'], 76)}; }}
 QLabel#toolLine {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {s(11)}px; }}
 QLabel#notice {{ color: {danger_soft}; background: {rgba(danger, 26)};
   border: 1px solid {rgba(danger, 70)}; border-radius: {s(12)}px; font-size: {s(15)}px; }}
@@ -903,7 +911,7 @@ class Backdrop(QWidget):
         self.t = THEMES["midnight"]
         self.rail_w = RAIL_W
         self.side_w = SIDE_W
-        self.dim = 0.0           # veil over the range on the working pages
+        self.glow_y, self.glow = 0.28, 0.17   # pooled light (set_glow)
         self._cache: QPixmap | None = None
         self._cache_key = None
 
@@ -919,58 +927,67 @@ class Backdrop(QWidget):
             self.update()
 
     def set_dim(self, dim: float):
-        """The mountains are the home page's; behind a conversation or a
-        settings page they sink back so the words win."""
-        if abs(dim - self.dim) > 0.001:
-            self.dim = dim
+        """Kept for callers: the room's glow strength follows the page."""
+        self.set_glow(self.glow_y, max(0.0, 0.17 * (1.0 - dim) / 0.5))
+
+    def set_glow(self, y_frac: float, strength: float):
+        """v8 room (mockup A/B): light pooled behind the presence. Home pools
+        it around the big ring, Chat high where the ring docks, the other
+        pages keep only a faint wash."""
+        y_frac, strength = round(y_frac, 3), round(strength, 3)
+        if (y_frac, strength) != (self.glow_y, self.glow):
+            self.glow_y, self.glow = y_frac, strength
             self._cache = None
             self.update()
 
     def paintEvent(self, _ev):
         p = QPainter(self)
-        key = (self.width(), self.height(), self.rail_w, self.side_w, self.dim,
-               self.t.get("bg_top"), self.t.get("accent"), self.t.get("glow"))
+        key = (self.width(), self.height(), self.rail_w, self.side_w,
+               self.glow_y, self.glow, self.t.get("bg_top"),
+               self.t.get("accent"), self.t.get("paper"))
         if self._cache is None or key != self._cache_key:
             self._cache = self._paint()
             self._cache_key = key
         p.drawPixmap(0, 0, self._cache)
 
     def _paint(self) -> QPixmap:
+        """v8 'far quiet horizon' (design.md): a calm vertical wash, accent
+        light pooled behind the presence, two low waves along the foot, and
+        a slim darker rail. No mountains, no stars: the presence reads first."""
         w, h = max(1, self.width()), max(1, self.height())
         pm = QPixmap(w, h)
         p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
         t = self.t
         g = QLinearGradient(0, 0, 0, h)
         g.setColorAt(0.0, QColor(t["bg_top"]))
         g.setColorAt(1.0, QColor(t["bg_bot"]))
         p.fillRect(0, 0, w, h, g)
         cx0, cx1 = self.rail_w, max(self.rail_w + 1, w - self.side_w)
-        # Centre: the range behind the greeting, about the top 58%.
-        # Fade into exactly the page colour at the scene's foot, or the
-        # light rooms show a seam where the painting stops.
-        paint_scene(p, QRect(cx0, 0, cx1 - cx0, int(h * 0.58)), t, seed=11,
-                    peak_x=0.74, fade_to=_mixc(QColor(t["bg_top"]),
-                                               QColor(t["bg_bot"]), 0.58))
-        if self.dim:
-            p.fillRect(cx0, 0, cx1 - cx0, h, _qc(t["bg_bot"], int(255 * self.dim)))
-        # Left rail: its own darker panel with a small range and pines at
-        # the foot, like the concept's sidebar.
-        rail = QColor(t["rail"])
-        p.fillRect(0, 0, cx0, h, _qc(t["rail"], 238))
-        sh = int(h * 0.36)
-        p.setOpacity(0.42)
-        paint_scene(p, QRect(0, h - sh, cx0, sh), t, seed=5, peak_x=0.3,
-                    stars=0, trees=True, fade_to=rail)
-        p.setOpacity(1.0)
-        top = QLinearGradient(0, h - sh, 0, h - sh + sh * 0.5)
-        top.setColorAt(0.0, _qc(t["rail"], 255))
-        top.setColorAt(1.0, _qc(t["rail"], 0))
-        p.fillRect(0, h - sh, cx0, int(sh * 0.5), top)
-        # Right rail: plain and dark — it holds the instruments.
-        p.fillRect(cx1, 0, w - cx1, h, _qc(t["rail"], 225))
-        p.setPen(QPen(_qc(t["line"], 200), 1))
-        p.drawLine(cx0, 0, cx0, h)
-        p.drawLine(cx1, 0, cx1, h)
+        cx = cx0 + (cx1 - cx0) / 2
+        if self.glow > 0.0:
+            rad = max(200.0, 620.0 * h / 900.0)
+            rg = QRadialGradient(QPointF(cx, h * self.glow_y), rad)
+            rg.setColorAt(0.0, _qc(t["accent"], int(255 * self.glow)))
+            rg.setColorAt(0.45, _qc(t["accent"], int(255 * self.glow * 0.25)))
+            rg.setColorAt(1.0, _qc(t["accent"], 0))
+            p.fillRect(0, 0, w, h, rg)
+        # The horizon: two soft waves of paper at 2.5-3.5% along the foot.
+        sy = h / 900.0
+        for i, (base, amp, a) in enumerate(((830, 70, 0.025), (862, 46, 0.035))):
+            path = QPainterPath(QPointF(0, h))
+            for x in range(0, w + 20, 20):
+                y = (base - amp * (0.5 + 0.5 * math.sin(x / (170 + 60 * i) + i * 2.1))
+                     - amp * 0.35 * math.sin(x / 61 + i)) * sy
+                path.lineTo(x, y)
+            path.lineTo(w, h)
+            path.closeSubpath()
+            p.setPen(Qt.NoPen)
+            p.setBrush(_qc(t["paper"], int(255 * a)))
+            p.drawPath(path)
+        # The rail: the room, a shade darker, one hairline.
+        p.fillRect(0, 0, cx0, h, QColor(0, 0, 0, 56))
+        p.fillRect(QRectF(cx0, 0, 1, h), _qc(t["paper"], 15))
         p.end()
         return pm
 
@@ -2138,55 +2155,39 @@ class ListRow(Clickable):
 
 
 class ChatBubble(QLabel):
-    """His side of the conversation: a rounded bubble on the right, as wide
-    as its words and never wider than ~3/4 of the column. The width comes
-    from the text itself — Qt's own guess for a word-wrapped label is a
-    squat, too-narrow box."""
+    """His side of the conversation, v8 (mockup B): no bubble. A small
+    'YOU' label in the left gutter and his words in plain body type, on the
+    same left edge as my reply, so the page reads like a transcript, not a
+    messenger. (Name kept: the rest of the window looks for it.)"""
 
-    PAD = (14, 9, 14, 10)
+    GUTTER = 40          # px at 1x for the YOU label
 
     def __init__(self, text: str = ""):
         super().__init__(text)
         self.setWordWrap(True)
         self.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        # A right-aligned item in a column gets its height worked out at the
-        # FULL column width (one line) and is then squeezed to its own width
-        # — the second line was clipped. The bubble picks its own width, so
-        # it reports a plain size and opts out of height-for-width.
-        sp = self.sizePolicy()
-        sp.setHeightForWidth(False)
-        self.setSizePolicy(sp)
         self._k = 1.0
         self.set_scale(1.0)
 
-    def hasHeightForWidth(self) -> bool:
-        return False
-
     def set_scale(self, k: float):
         self._k = k
-        self.setContentsMargins(*(round(v * k) for v in self.PAD))
+        self.setContentsMargins(round(self.GUTTER * k), round(4 * k), 0, round(2 * k))
         self.updateGeometry()
 
-    def _maxw(self) -> int:
-        pw = self.parentWidget().width() if self.parentWidget() else 700
-        return max(160, int(pw * 0.72))
-
-    def sizeHint(self):
-        m = self.contentsMargins()
-        text_w = self.fontMetrics().horizontalAdvance(self.text() or " ")
-        # +8: the QSS border (2px) and a hair of slack, or a one-liner wraps
-        # its last word onto a second line.
-        w = min(text_w + m.left() + m.right() + 8, self._maxw())
-        return QSize(w, self.heightForWidth(w))
-
-    def minimumSizeHint(self):
-        h = self.sizeHint()
-        return QSize(min(h.width(), 120), h.height())
-
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        if ev.oldSize().width() != ev.size().width():
-            self.updateGeometry()
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        p = QPainter(self)
+        f = QFont(MONO_FONT.split(",")[0].strip("' "))
+        f.setPixelSize(max(7, round(9 * self._k)))
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 1.4 * self._k)
+        p.setFont(f)
+        c = QColor(self.palette().color(self.foregroundRole()))
+        c.setAlpha(int(c.alpha() * 0.55))
+        p.setPen(c)
+        fm = self.fontMetrics()
+        base = self.contentsMargins().top() + fm.ascent()
+        p.drawText(0, base - round(1 * self._k), "YOU")
+        p.end()
 
 
 class SettingsPage(QWidget):
@@ -2988,7 +2989,7 @@ class WorkColumn(QWidget):
         self.title.setText(_job_title(task))
         self.title.setToolTip(task[:600])
         voice = self._voice_name
-        who = f"{voice.split()[0].lower() if voice else 'you'} → Claude"
+        who = f"{'voice' if voice else 'you'} → Claude"
         self.hand_head.setText(f"{who}   {time.strftime('%H:%M')}")
         quote = " ".join((his or "").split()) or task
         if len(quote) > 220:
@@ -3602,6 +3603,16 @@ def _desk_read(path: str) -> str:
     return text
 
 
+def desk_mind(text: str | None = None) -> str:
+    """My newest thought from self.md's 'On my mind' (time stamp dropped)."""
+    if text is None:
+        text = _desk_read(SELF_MD)
+    rows = _md_section(text, "On my mind")
+    if not rows:
+        return ""
+    return re.sub(r"^\d{2}-\d{2}\s+\d{1,2}:\d{2}:\s*", "", rows[0]).strip()
+
+
 def _md_section(text: str, head: str) -> list:
     """The '- ' bullets under '## head', up to the next heading."""
     rows, on = [], False
@@ -4063,6 +4074,29 @@ def _exclude_from_capture(w: QWidget):
         pass
 
 
+class NavRail(QWidget):
+    """The slim left rail; paints the accent tick beside the page that's on."""
+
+    def __init__(self):
+        super().__init__()
+        self.nav: dict = {}
+        self.page = "home"
+        self.accent = QColor("#5aa2ff")
+
+    def set_page(self, key: str, accent: str):
+        self.page, self.accent = key, QColor(accent)
+        self.update()
+
+    def paintEvent(self, _ev):
+        b = self.nav.get(self.page)
+        if b is None or not b.isVisible():
+            return
+        p = QPainter(self)
+        g = b.geometry()
+        tick = max(14, round(g.height() * 0.45))
+        p.fillRect(QRectF(0, g.center().y() - tick / 2 + 1, 3, tick), self.accent)
+
+
 class GoatWindow(QWidget):
     event_sig = Signal(str, str)
 
@@ -4220,58 +4254,36 @@ class GoatWindow(QWidget):
     # construction
     # =====================================================================
     def _build_rail(self) -> QWidget:
-        rail = QWidget()
+        """v8 icon rail (mockup A): the presence in miniature as the mark,
+        page icons, settings at the foot. The state words it used to carry
+        live on as hidden labels; the presence and its caption show them."""
+        rail = NavRail()
         lay = self._rail_lay = QVBoxLayout(rail)
-        lay.setSpacing(4)
-        brand = QHBoxLayout()
-        brand.setSpacing(12)
-        self.rail_mark = GoatMark(50)
-        self._themed.append(self.rail_mark)
-        self._scaled.append(self.rail_mark)
-        brand.addWidget(self.rail_mark)
-        words = QVBoxLayout()
-        words.setSpacing(0)
-        words.addWidget(mklabel("Goat", "brand"))
-        words.addWidget(mklabel("Your Personal AI Assistant", "brandSub"))
-        brand.addLayout(words)
-        brand.addStretch(1)
-        lay.addLayout(brand)
-        self._rail_gap = lay.count()
+        lay.setSpacing(12)
+        self.presence_mini = Presence(compact=True)
+        lay.addWidget(self.presence_mini, 0, Qt.AlignHCenter)
         lay.addSpacing(30)
         self.nav: dict[str, QPushButton] = {}
         for key, label in self.PAGES:
-            b = QPushButton("  " + label)
+            b = QPushButton("")
             b.setObjectName("nav")
             b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(label + {"settings": "  ·  ctrl+,"}.get(key, ""))
             b.clicked.connect(lambda _=False, k=key: self.show_page(k))
-            lay.addWidget(b)
             self.nav[key] = b
-        lay.addStretch(1)
-
-        # Presence (v8): the ring on its string, small, in a status card —
-        # the one thing a voice assistant must always show is whether it
-        # hears you.
-        card = QFrame()
-        card.setObjectName("presence")
-        cl = self._presence_lay = QVBoxLayout(card)
-        cl.setSpacing(4)
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        self.statedot = QLabel("●")
+            if key == "settings":
+                lay.addStretch(1)
+            lay.addWidget(b, 0, Qt.AlignHCenter)
+        rail.nav = self.nav
+        # Hidden state carriers (read by hud_tick, set by events).
+        self.statedot = QLabel("●", rail)
         self.statedot.setObjectName("statedot")
-        top.addWidget(self.statedot)
-        self.stateword = capsify(QLabel("booting"))
+        self.stateword = capsify(QLabel("booting", rail))
         self.stateword.setObjectName("stateword")
-        self.stateword.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        top.addWidget(self.stateword, 1)
-        cl.addLayout(top)
-        self.presence_mini = Presence(compact=True)
-        cl.addWidget(self.presence_mini)
-        self.footer = QLabel("")
+        self.footer = QLabel("", rail)
         self.footer.setObjectName("footer")
-        self.footer.setWordWrap(True)
-        cl.addWidget(self.footer)
-        lay.addWidget(card)
+        for w in (self.statedot, self.stateword, self.footer):
+            w.hide()
         return rail
 
     def _build_center(self) -> QWidget:
@@ -4345,6 +4357,35 @@ class GoatWindow(QWidget):
         self.ambient = ElideLabel("", "ambient")
         self.ambient.setAlignment(Qt.AlignHCenter)
         lay.addWidget(self.ambient)
+        # v8 (mockup A): my newest quiet-moment thought, one card, dismissable.
+        lay.addSpacing(24)
+        mc = self.mind_card = QFrame()
+        mc.setObjectName("mindCard")
+        ml = QHBoxLayout(mc)
+        ml.setContentsMargins(24, 14, 24, 14)
+        ml.setSpacing(24)
+        words = QVBoxLayout()
+        words.setSpacing(6)
+        self.mind_head = QLabel("")
+        self.mind_head.setObjectName("mindHead")
+        self.mind_head.setTextFormat(Qt.RichText)
+        words.addWidget(self.mind_head)
+        self.mind_text = mklabel("", "mindText", wrap=True)
+        words.addWidget(self.mind_text)
+        ml.addLayout(words, 1)
+        for text, cb in (("Tell me", self._mind_tell), ("Dismiss", self._mind_dismiss)):
+            b = QPushButton(text)
+            b.setObjectName("link" if text == "Tell me" else "linkDim")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(cb)
+            ml.addWidget(b, 0, Qt.AlignVCenter)
+        mc.setMaximumWidth(700)
+        mc.hide()
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(mc, 100)
+        row.addStretch(1)
+        lay.addLayout(row)
         self._desk_gap = lay.count()
         lay.addSpacing(40)
 
@@ -4428,9 +4469,32 @@ class GoatWindow(QWidget):
             box.addWidget(r)
             self._scaled.append(r)
 
+    def _refresh_mind(self):
+        if not hasattr(self, "mind_card"):
+            return
+        thought = desk_mind()
+        self._mind = thought
+        show = bool(thought) and thought != self.cfg.get("mind_dismissed", "")
+        if show:
+            t = self._theme()
+            self.mind_head.setText(
+                f"<span style='color:{t['accent']}'>●&nbsp;&nbsp;ON&nbsp;MY&nbsp;MIND</span>")
+            self.mind_text.setText(thought)
+        self.mind_card.setVisible(show)
+
+    def _mind_tell(self):
+        if getattr(self, "_mind", ""):
+            self._ask(f"Tell me about what's on your mind: {self._mind}")
+
+    def _mind_dismiss(self):
+        self.cfg["mind_dismissed"] = getattr(self, "_mind", "")
+        save_ui_config(self.cfg)
+        self.mind_card.hide()
+
     def _refresh_desk(self):
         if not hasattr(self, "desk_cols"):
             return
+        self._refresh_mind()
         n, items = desk_open()
         self.desk_heads["open"].setText(f"Open  \u00b7  {n}" if n else "Open")
         self._fill_desk("open", [
@@ -4528,17 +4592,8 @@ class GoatWindow(QWidget):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
-        head = QHBoxLayout()
-        head.addWidget(mklabel("Conversation", "pageTitle"))
-        head.addStretch(1)
-        for text, cb in (("Copy reply", self.copy_last_reply),
-                         ("New chat", self.new_chat)):
-            b = QPushButton(text)
-            b.setObjectName("actbtn")
-            b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(cb)
-            head.addWidget(b)
-        lay.addLayout(head)
+        # v8 (mockup B): no header and no buttons over the conversation;
+        # New chat is Ctrl N, Copy last reply is on Settings.
 
         # ---- the presence, docked over the conversation (v8: r 28 px) ----
         self.presence = Presence()
@@ -4718,7 +4773,7 @@ class GoatWindow(QWidget):
         cl.addWidget(attach)
         self.input = QLineEdit()
         self.input.setObjectName("cmd")
-        self.input.setPlaceholderText("Message Goat — or just say the word")
+        self.input.setPlaceholderText("Speak, or type to GOAT…")
         self.input.returnPressed.connect(self._submit)
         cl.addWidget(self.input, 1)
         # Mic toggle lives on the composer — the single most-used switch of a
@@ -4737,7 +4792,16 @@ class GoatWindow(QWidget):
         cl.addWidget(send)
         lay.addWidget(self.composer)
 
-        chips = FlowLayout(spacing=8)
+        # v8 (mockup A/B): under the box a quiet row of key hints; the chips
+        # take its place only while the box has focus.
+        self._under = QStackedWidget()
+        self.hint_row = QLabel("")
+        self.hint_row.setObjectName("hintRow")
+        self.hint_row.setTextFormat(Qt.RichText)
+        self.hint_row.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self._under.addWidget(self.hint_row)
+        chip_host = QWidget()
+        chips = FlowLayout(chip_host, spacing=8)
         self.chip_model = self._chip("", self._menu_model, "working brain")
         self.chip_effort = self._chip("", self._menu_effort, "thinking depth — ctrl+e")
         self.chip_work = self._chip("  Work mode", self._toggle_work_mode,
@@ -4749,15 +4813,57 @@ class GoatWindow(QWidget):
         self.chip_lang = self._chip("", self._menu_lang, "language — ctrl+l")
         for c in (self.chip_model, self.chip_effort, self.chip_work, self.chip_web,
                   self.chip_screen, self.chip_file, self.chip_lang):
+            c.setFocusPolicy(Qt.NoFocus)     # a click keeps the box focused
             chips.addWidget(c)
-        lay.addLayout(chips)
+        self._under.addWidget(chip_host)
+        # The chips' flow layout answers height-for-width and the stack took
+        # that as "give me the room" (the box floated mid-window). One row.
+        self._under.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        lay.addWidget(self._under)
+        QApplication.instance().focusChanged.connect(self._composer_focus)
         # Labels the row can drop to icons when it would otherwise wrap.
         self._chip_labels = {c: c.text() for c in (self.chip_work, self.chip_web,
                                                    self.chip_screen, self.chip_file)}
         self._chips_all = (self.chip_model, self.chip_effort, self.chip_work,
                            self.chip_web, self.chip_screen, self.chip_file,
                            self.chip_lang)
-        return box
+        # Centred, never wider than a readable box (COMPOSER_MAX_W).
+        self._composer_box = box
+        box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        outer = QWidget()
+        outer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        ol = QHBoxLayout(outer)
+        ol.setContentsMargins(0, 0, 0, 0)
+        ol.addStretch(1)
+        ol.addWidget(box, 100)
+        ol.addStretch(1)
+        return outer
+
+    def _composer_focus(self, _old, now):
+        """Chips in while the box has focus; a chip's menu popping up
+        doesn't count as leaving."""
+        if not hasattr(self, "_under") or isinstance(now, QMenu):
+            return
+        on = now is self.input
+        self._under.setCurrentIndex(1 if on else 0)
+
+    def _composer_hints(self):
+        """The key-hint row under the box, per page (mockup A vs B)."""
+        if not hasattr(self, "hint_row"):
+            return
+        t = self._theme()
+        if self._page == "home":
+            pairs = (("Ctrl K", "commands"), ("Ctrl B", "the dot"),
+                     ("Ctrl Enter", "hand to Claude"), ("Ctrl T", "theme"))
+        else:
+            pairs = (("Ctrl K", "commands"), ("Ctrl Enter", "hand to Claude"),
+                     ("Esc", "back"))
+        gap = "&nbsp;" * 9
+        self.cmd_hint.setText(f"<span style='color:{t['dim']}'>Ctrl&nbsp;K</span>"
+                              "&nbsp;&nbsp;&nbsp;commands")
+        self.hint_row.setText(gap.join(
+            f"<span style='color:{t['dim']}'>{k.replace(' ', '&nbsp;')}</span>"
+            f"&nbsp;&nbsp;{v.replace(' ', '&nbsp;')}" for k, v in pairs))
 
     def _fit_chips(self, avail: int):
         """One row of chips, always. At 150% on a 1536px screen the row
@@ -4844,12 +4950,18 @@ class GoatWindow(QWidget):
         sl.addWidget(self.search, 1)
         sl.addWidget(mklabel("Ctrl F", "kbd"))
         bl.addWidget(sf)
-        self.gear_btn = QPushButton(IC["settings"])
-        self.gear_btn.setObjectName("gear")
-        self.gear_btn.setCursor(Qt.PointingHandCursor)
-        self.gear_btn.setToolTip("settings — ctrl+,")
-        self.gear_btn.clicked.connect(self.toggle_settings)
-        bl.addWidget(self.gear_btn)
+        # v8 (mockup A): the bar is only a hint; search shows on Ctrl F and
+        # folds away again once it's empty and left. Settings is on the rail.
+        sf.hide()
+        self.search.editingFinished.connect(self._search_fold)
+        self.cmd_hint = ClickLabel("")
+        self.cmd_hint.setObjectName("topHint")
+        self.cmd_hint.setTextFormat(Qt.RichText)
+        self.cmd_hint.setCursor(Qt.PointingHandCursor)
+        self.cmd_hint.setToolTip("commands — ctrl+k  ·  search — ctrl+f")
+        self.cmd_hint.clicked.connect(self._show_cmd)
+        bl.addWidget(self.cmd_hint)
+        bl.addSpacing(16)
         self._center_ctl = QWidget()
         cl = QHBoxLayout(self._center_ctl)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -5099,17 +5211,15 @@ class GoatWindow(QWidget):
             self._prev_page = self._page
         self._page = key
         self.stack.setCurrentWidget(self.pages[key])
-        # v8: the mountains are a far quiet horizon on Home, so the presence
-        # reads first (design.md); deeper on the reading pages.
-        self.canvas.set_dim(0.5 if key == "home" else 0.62 if key == "chat" else 0.72)
+        # v8 room: light pools where the presence sits on this page.
+        self._glow_for_page()
         for k, b in self.nav.items():
             on = k == key
             b.setProperty("on", "true" if on else "false")
             repolish(b)
         self._paint_nav_icons()
-        # One presence per screen: Home and Chat carry their own, the rail
-        # card's small one shows on the other pages.
-        self.presence_mini.setVisible(key not in ("home", "chat"))
+        self.rail.set_page(key, self._theme()["accent"])
+        self._composer_hints()
         if key == "home":
             self._refresh_desk()
             QTimer.singleShot(0, self._refresh_ambient)
@@ -5121,10 +5231,22 @@ class GoatWindow(QWidget):
             QTimer.singleShot(0, self._pin.snap)
         self._auto_side()
 
+    def _glow_for_page(self):
+        key = self._page
+        if key == "home":
+            hp = self.home_presence
+            y = hp.mapTo(self.canvas, QPoint(0, hp.height() // 2)).y()
+            frac = y / max(1, self.canvas.height()) if hp.isVisible() else 0.28
+            self.canvas.set_glow(min(0.45, max(0.15, frac)), 0.17)
+        elif key == "chat":
+            self.canvas.set_glow(0.10, 0.13)
+        else:
+            self.canvas.set_glow(0.18, 0.05)
+
     def _paint_nav_icons(self):
         t = self._theme()
         k = float(self.cfg.get("scale", 1.0))
-        px = round(20 * k)
+        px = round(18 * k)
         for key, b in self.nav.items():
             on = key == self._page
             b.setIcon(glyph_icon(key, t["paper"] if on else t["dim"], px))
@@ -5598,8 +5720,15 @@ class GoatWindow(QWidget):
         self.input.selectAll()
 
     def _show_search(self):
+        self._search_frame.show()
+        self.cmd_hint.hide()
         self.search.setFocus()
         self.search.selectAll()
+
+    def _search_fold(self):
+        if not self.search.text() and not self.search.hasFocus():
+            self._search_frame.hide()
+            self.cmd_hint.show()
 
     def _escape(self):
         if self.search.hasFocus():
@@ -5607,6 +5736,7 @@ class GoatWindow(QWidget):
                 self.search.clear()
             else:
                 self.search.clearFocus()
+                self._search_fold()
         elif self.input.hasFocus() and self.input.text():
             self.input.clear()
         elif self.input.hasFocus():
@@ -5661,6 +5791,9 @@ class GoatWindow(QWidget):
         self.panel.refresh()
         self._apply_metrics()
         self._paint_nav_icons()
+        self._composer_hints()
+        if hasattr(self, "rail"):
+            self.rail.set_page(self._page, t["accent"])
         if hasattr(self, "sys_rows"):
             self._refresh_side()
         if hasattr(self, "hello"):
@@ -5678,7 +5811,7 @@ class GoatWindow(QWidget):
 
         # The rail grows with the zoom but never eats the centre. The work
         # column paints its own panel, so the room behind spans to the edge.
-        rail_w = min(round(RAIL_W * k), int(self.width() * 0.26))
+        rail_w = min(round(RAIL_W * k), int(self.width() * 0.12))
         self.rail.setFixedWidth(rail_w)
         self.canvas.set_rails(rail_w, 0)
         if self._col_open:
@@ -5689,7 +5822,6 @@ class GoatWindow(QWidget):
         self._center_lay.setContentsMargins(*m(CENTER_MARGIN))
         self._topbar_lay.setContentsMargins(*m(TOPBAR_MARGIN))
         self._search_frame.setFixedWidth(round(250 * k))
-        self._presence_lay.setContentsMargins(*m((14, 12, 14, 12)))
         self._composer_lay.setContentsMargins(*m((10, 6, 7, 6)))
         self._search_lay.setContentsMargins(*m((12, 0, 8, 0)))
         self._model_lay.setContentsMargins(*m((18, 14, 18, 16)))
@@ -5704,7 +5836,12 @@ class GoatWindow(QWidget):
             tile.setFixedSize(round(34 * k), round(34 * k))
         for w in self._scaled:
             w.set_scale(k)
-        self.presence_mini.setFixedHeight(round(34 * k))
+        self.presence_mini.setFixedSize(round(52 * k), round(34 * k))
+        for b in self.nav.values():
+            b.setFixedSize(round(44 * k), round(44 * k))
+        self._composer_box.setMaximumWidth(round(COMPOSER_MAX_W * k))
+        self._under.setFixedHeight(max(self.chip_model.sizeHint().height(),
+                                       self.hint_row.sizeHint().height()) + round(2 * k))
         # Docked presence: ring radius = 0.3 x height = 28 px at 1x (design
         # mockup B), so the conversation keeps the room.
         self.presence.setFixedHeight(round(94 * k))
@@ -6325,20 +6462,24 @@ class GoatWindow(QWidget):
 
     # ---- the page ----
     def _dim_previous(self):
-        """The current exchange is bright; everything before it recedes."""
-        for i in range(self.col.count() - 1):
-            item = self.col.itemAt(i)
-            wdg = item.widget()
+        """The current exchange is bright; everything before it recedes, and
+        older turns fade further as they rise (v8: 100% -> 55% -> 30%)."""
+        seen_you = 0
+        for i in range(self.col.count() - 2, -1, -1):
+            wdg = self.col.itemAt(i).widget()
             if wdg is None:
                 continue
             name = wdg.objectName()
-            if name == "youNow":
-                wdg.setObjectName("youOld")
-            elif name == "replyNow":
-                wdg.setObjectName("replyOld")
-            else:
+            if name not in ("youNow", "youOld", "replyNow", "replyOld"):
                 continue
-            repolish(wdg)
+            new = {"youNow": "youOld", "replyNow": "replyOld"}.get(name, name)
+            far = "true" if seen_you >= 1 else "false"
+            if name.startswith("you"):
+                seen_you += 1
+            if new != name or wdg.property("far") != far:
+                wdg.setObjectName(new)
+                wdg.setProperty("far", far)
+                repolish(wdg)
 
     def _load_transcript_tail(self, keep: int = 8) -> bool:
         """Old exchanges from workspace/transcript.jsonl, painted dimmed.
@@ -6365,6 +6506,8 @@ class GoatWindow(QWidget):
             self._add_line(_sentence_case(user), "youOld")
             if reply:
                 self._add_line(reply, "replyOld")
+        if pairs:
+            self._dim_previous()
         return bool(pairs)
 
     # The page kept every line of every exchange forever. Two costs, both
@@ -6431,8 +6574,7 @@ class GoatWindow(QWidget):
 
     def _add_line(self, text: str, name: str) -> QLabel:
         lbl = self._make_line(text, name)
-        align = Qt.AlignRight if isinstance(lbl, ChatBubble) else Qt.Alignment()
-        self.col.insertWidget(self.col.count() - 1, lbl, 0, align)
+        self.col.insertWidget(self.col.count() - 1, lbl)
         self._trim_page()
         QTimer.singleShot(30, self._scroll_down)
         return lbl
