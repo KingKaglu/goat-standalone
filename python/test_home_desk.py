@@ -103,9 +103,10 @@ def test_window():
     for key in ("open", "days", "ask"):
         check(w.desk_cols[key].count() >= 1, f"desk column '{key}' has rows")
     check(w.desk_cols["ask"].count() == 4, "Ask me has its four rows")
-    check(not w.presence_mini.isVisible(), "Home: rail's small presence hidden")
+    # v8 shell (mockup A): the rail's small presence is the logo mark, on every page.
+    check(w.presence_mini.isVisible(), "Home: rail's mark (small presence) shown")
     w.show_page("skills")
-    check(w.presence_mini.isVisibleTo(w), "other pages: rail's small presence back")
+    check(w.presence_mini.isVisibleTo(w), "other pages: rail's mark still shown")
     w.show_page("home")
 
     # Search swaps the desk for results, clearing gives it back.

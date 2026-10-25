@@ -363,6 +363,7 @@ SIDE_W = 384                      # Claude's work column (out only while it work
 CENTER_MARGIN = (32, 4, 32, 16)   # centre column (under the top bar)
 TOPBAR_MARGIN = (32, 8, 12, 0)    # Ctrl K hint · window buttons
 RAIL_MARGIN = (14, 18, 14, 24)
+DESK_MAX_W = 1270                 # Home desk columns, centred (mockup A)
 COMPOSER_MAX_W = 900              # the box keeps a readable width, centred
 TITLEBAR_H = 52                   # the drag band along the top edge
 # The chat transcript is still the one true reading column: reading margins
@@ -514,13 +515,16 @@ QPushButton#cbtn {{
 }}
 QPushButton#cbtn:hover {{ color: {t['paper']}; background: {rgba(t['paper'], 14)}; }}
 QPushButton#micbtn {{
-  background: transparent; border: none; color: {t['dim']};
-  font-family: {ICON_FONT}; font-size: {s(17)}px; padding: {s(6)}px;
-  border-radius: {s(16)}px;
+  background: transparent; border: 1px solid {rgba(acc, 70)}; color: {t['dim']};
+  font-family: {ICON_FONT}; font-size: {s(16)}px; padding: 0;
+  border-radius: {s(18)}px; min-width: {s(36)}px; max-width: {s(36)}px;
+  min-height: {s(36)}px; max-height: {s(36)}px;
 }}
 QPushButton#micbtn:hover {{ color: {t['paper']}; background: {rgba(t['paper'], 14)}; }}
 QPushButton#micbtn[muted="true"] {{ color: {danger}; }}
-QPushButton#micbtn[hot="true"] {{ color: {acc2}; background: {tint}; }}
+QPushButton#micbtn[hot="true"] {{ color: {acc2}; background: {tint}; border: 1px solid {ring}; }}
+QPushButton#micbtn[muted="true"] {{ border: 1px solid {rgba(danger, 110)}; }}
+QPushButton#micbtn:pressed {{ background: {rgba(t['paper'], 6)}; }}
 QPushButton#sendbtn {{
   background: {acc}; border: none; color: white; font-family: {ICON_FONT};
   font-size: {s(16)}px; border-radius: {s(10)}px;
@@ -711,10 +715,11 @@ QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: {s(8)}px; margin: 0; }}
 QScrollBar::handle:vertical {{
-  background: {rgba(t['paper'], 34)}; border-radius: {s(3)}px;
+  background: {rgba(t['paper'], 14)}; border-radius: {s(3)}px;
   min-height: {s(40)}px; margin: 0 {s(2)}px;
 }}
-QScrollBar::handle:vertical:hover {{ background: {rgba(t['paper'], 70)}; }}
+QScrollBar:vertical:hover {{ background: {rgba(t['paper'], 5)}; }}
+QScrollBar::handle:vertical:hover {{ background: {rgba(t['paper'], 60)}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 QMenu {{ background: {t['surface']}; border: 1px solid {line}; padding: {s(4)}px; }}
@@ -1301,8 +1306,12 @@ class Presence(QWidget):
         self.paints += 1
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
+        self.paint_into(p, self.width(), self.height())
+
+    def paint_into(self, p: QPainter, w: float, h: float):
+        """Draw the presence into a w x h box at the painter's origin, so the
+        collapsed dot can wear the same ring without being a child widget."""
         now = time.monotonic()
-        w, h = self.width(), self.height()
         if w < 20 or h < 12:
             return
         v = self._v
@@ -3218,13 +3227,14 @@ class Bubble(QWidget):
         self._press: QPoint | None = None
         self._origin: QPoint | None = None
         self._dragged = False
+        self._settling = True      # first show eases the ring awake
         self._beat_timer = QTimer(self)
         self._beat_timer.timeout.connect(self._beat)
-        # v7 (his ask 2026-09-30: "same sphere as the bubble"): the dot is
-        # the Chat page's voice orb in miniature, moving with the same live
-        # level. Never shown as a widget — it only paints into the disc.
-        self._orb = VoiceOrb(n=220)
-        self._orb.set_theme(_complete_theme(self._t))
+        # v8 polish (design.md): the dot wears the presence ring, the same
+        # form as Home and the rail, threaded on a short string inside the
+        # disc. Never shown as a widget; it only paints into the disc.
+        self._pres = Presence()
+        self._pres.set_theme(_complete_theme(self._t))
         self._level = 0.0
         self.set_scale(scale)
 
@@ -3239,7 +3249,7 @@ class Bubble(QWidget):
 
     def set_theme(self, t: dict):
         self._t = dict(t)
-        self._orb.set_theme(_complete_theme(self._t))
+        self._pres.set_theme(_complete_theme(self._t))
         self.update()
 
     def set_level(self, level: float):
@@ -3250,6 +3260,7 @@ class Bubble(QWidget):
         if state == self._state:
             return
         self._state = state or "idle"
+        self._settling = True        # let the ring ease into the new state
         self._sync_beat()
         self.update()
 
@@ -3266,19 +3277,22 @@ class Bubble(QWidget):
         A timer ticking behind a dot nobody is looking at is pure battery
         burn, and this machine already has a worn battery.
         """
-        want = self.isVisible() and (self._state in self.BUSY or self._unread)
+        want = self.isVisible() and (self._state in self.BUSY or self._unread
+                                     or self._settling)
         if want and not self._beat_timer.isActive():
-            self._beat_timer.start(50)
+            self._beat_timer.start(40)
         elif not want and self._beat_timer.isActive():
             self._beat_timer.stop()
             self._phase = 0.0
             self.update()
 
     def _beat(self):
-        self._phase = (self._phase + 0.055) % 1.0
-        # 50ms beat, orb advances at its 33ms step x1.5 to keep real speed.
-        self._orb.tick(self._level, self._state)
-        self._orb._t += 0.0165
+        self._phase = (self._phase + 0.045) % 1.0
+        moving = self._pres.tick(self._level, self._state,
+                                 work=self._state == "working")
+        if not moving and self._state not in self.BUSY:
+            self._settling = False   # eased home: the clock can stop
+            self._sync_beat()
         self.update()
 
     def paintEvent(self, _ev):
@@ -3310,21 +3324,21 @@ class Bubble(QWidget):
         p.setBrush(g)
         p.drawEllipse(disc)
 
-        # The sphere, clipped to the disc — the same orb as the Chat page.
+        # The presence ring on its string, clipped to the disc (v8).
         p.save()
         clip = QPainterPath()
         clip.addEllipse(QRectF(disc))
         p.setClipPath(clip)
-        box = QRectF(disc).adjusted(-disc.width() * 0.03, -disc.height() * 0.03,
-                                    disc.width() * 0.03, disc.height() * 0.03)
-        self._orb.paint_orb(p, box, dot_k=max(0.5, self._d / 130))
+        p.translate(disc.left(), disc.top())
+        self._pres.paint_into(p, disc.width(), disc.height())
         p.restore()
 
+        # A hairline keeper so the disc holds an edge on any wallpaper.
         rim = QColor(accent)
-        rim.setAlpha(int(90 + 165 * glow))
-        p.setPen(QPen(rim, max(2, self._d // 22)))
+        rim.setAlpha(int(40 + 70 * glow))
+        p.setPen(QPen(rim, 1))
         p.setBrush(Qt.NoBrush)
-        p.drawEllipse(disc)
+        p.drawEllipse(QRectF(disc).adjusted(0.5, 0.5, -0.5, -0.5))
 
         if self._unread:
             # One dot, the accent, ringed in the page colour so it reads
@@ -4448,7 +4462,15 @@ class GoatWindow(QWidget):
             dl.addLayout(col, 1)
             self.desk_cols[key] = box
             self.desk_heads[key] = h
-        lay.addWidget(desk)
+        desk.setMaximumWidth(DESK_MAX_W)
+        # Centred and capped: the desk grows to DESK_MAX_W, the side
+        # stretches take any extra (AlignHCenter would shrink it to its hint).
+        dwrap = QHBoxLayout()
+        dwrap.setContentsMargins(0, 0, 0, 0)
+        dwrap.addStretch(1)
+        dwrap.addWidget(desk, 1000)
+        dwrap.addStretch(1)
+        lay.addLayout(dwrap)
 
         # ---- search results (the old Recent card), only while searching ----
         rc = self.recent_card = QFrame()
@@ -4582,6 +4604,8 @@ class GoatWindow(QWidget):
         text = ("&nbsp;" * 10).join(bits)
         if text != self.brains_line.text():
             self.brains_line.setText(text)
+        if hasattr(self, "chat_brains") and text != self.chat_brains.text():
+            self.chat_brains.setText(text)
         self._brains_sig = (busy, self._claude_out)
 
     def _refresh_ambient(self):
@@ -4640,6 +4664,13 @@ class GoatWindow(QWidget):
         self.presence_caption.setObjectName("orbCaption")
         self.presence_caption.setAlignment(Qt.AlignHCenter)
         lay.addWidget(self.presence_caption)
+        self.chat_brains = ClickLabel("")
+        self.chat_brains.setToolTip("Claude's work column — ctrl+j")
+        self.chat_brains.clicked.connect(self.toggle_column)
+        self.chat_brains.setObjectName("brainsLine")
+        self.chat_brains.setTextFormat(Qt.RichText)
+        self.chat_brains.setAlignment(Qt.AlignHCenter)
+        lay.addWidget(self.chat_brains)
 
         # ---- the page: the conversation ----
         self.col = QVBoxLayout()
@@ -5995,6 +6026,7 @@ class GoatWindow(QWidget):
         self.home_presence.setFixedHeight(
             round(min(166 * k, max(110 * k, self.height() * 0.185))))
         self._desk_lay.setSpacing(round(40 * k))
+        self.desk.setMaximumWidth(round(DESK_MAX_W * k))
         self._hero_gap.setFixedHeight(round(max(8, min(48, self.height() * 0.035)) * k))
         self._titlebar_h = round(TITLEBAR_H * k)
         self._fit_chips(self._center_avail())
@@ -6007,7 +6039,8 @@ class GoatWindow(QWidget):
         left, top, right, bottom = (round(v * k) for v in READ_MARGIN)
         avail = self.scroll.viewport().width() - left - right
         if avail > 0:
-            cap = round(TEXT_SIZES[self.cfg["text"]] * k * 0.52 * READ_MEASURE_CH)
+            cap = min(round(TEXT_SIZES[self.cfg["text"]] * k * 0.52 * READ_MEASURE_CH),
+                      round((COMPOSER_MAX_W - 40) * k))
             if avail > cap:
                 extra = avail - cap
                 left += extra // 2

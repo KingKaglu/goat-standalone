@@ -93,6 +93,11 @@ def test_widget(app) -> None:
     b.set_state("speaking")
     check("a busy state animates", b._beat_timer.isActive())
     b.set_state("idle")
+    # v8: the ring eases home (~0.4 s, design.md motion rules), then stops.
+    import time as _t
+    _end = _t.monotonic() + 1.5
+    while _t.monotonic() < _end and b._beat_timer.isActive():
+        QApplication.processEvents(); _t.sleep(0.02)
     check("the animation stops when idle again", not b._beat_timer.isActive())
     b.set_unread(True)
     check("an unseen reply animates", b._beat_timer.isActive())
