@@ -374,10 +374,18 @@ p.on_filler_audio = lambda: fired.append("filler")
 p.synth = lambda text: np.zeros(160, dtype=np.float32)
 # A real backchannel line — hum-words ("Mm-hm.") are stripped by HUM_RE
 # since 2026-09-26 and never reach the worker at all.
+# The pipeline is a producer (_worker: starts each synthesis) and a consumer
+# (_player: plays in order) since the parallel-synthesis change; the test
+# used to start only the producer, so nothing ever played.
+import concurrent.futures as _cf
+p._ordered = __import__("queue").Queue()
+p._synth_pool = _cf.ThreadPoolExecutor(2)
+p._tap = lambda *a_: None
 p.say("Okay.", filler=True)
 p.say("It is ten past nine.")
 import threading as _th
 _th.Thread(target=p._worker, daemon=True).start()
+_th.Thread(target=p._player, daemon=True).start()
 for _ in range(100):
     if len(fired) >= 2:
         break

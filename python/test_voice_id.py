@@ -87,13 +87,29 @@ def t_real():
     sandbox()
     vid = V.VoiceID()
     vid._ready()
-    E = [vid.embed(load(f))[0] for f in MINE]
-    held, train = E[-5:], E[:-5]
-    for e in train:
+    # stt-debug is GOAT's rolling last-20 utterances, junk-dropped ones
+    # included: a clip with too little speech has no print (embed -> None)
+    # and used to crash _add. Only clips with his voice in them count.
+    # Clips GOAT itself dropped as junk may be noise or someone else: only
+    # the ones the hearing log marks "ok:" are known to be him talking.
+    ok = set()
+    try:
+        with open(os.path.join(HERE, "stt-debug", "stt-debug.log"), encoding="utf-8") as fh:
+            ok = {ln.split()[0] for ln in fh if "[ok:" in ln}
+    except OSError:
+        pass
+    mine = [f for f in MINE if os.path.basename(f)[:-4] in ok] if ok else MINE
+    pairs = [(f, vid.embed(load(f))[0]) for f in mine]
+    pairs = [(f, e) for f, e in pairs if e is not None]
+    if len(pairs) < 10:
+        print(f"skip real voices (only {len(pairs)} clips with speech)")
+        return
+    held_files = [f for f, _ in pairs[-5:]]
+    for _, e in pairs[:-5]:
         vid._add("laptop", "anchors", e, V.MAX_ANCHORS)
     vid._save_prints()
     vid.set_lock(True)
-    vs = [vid.check(load(f)) for f in MINE[-5:]]
+    vs = [vid.check(load(f)) for f in held_files]
     check("his held-out clips: none rejected",
           all(v.decision != "not_me" for v in vs),
           ", ".join(f"{v.decision}:{v.score:.1f}" for v in vs if v.score is not None))
