@@ -319,6 +319,40 @@ def _phone_call(cmd: dict, timeout: float = 25.0) -> dict:
     return json.load(urllib.request.urlopen(req, context=ctx, timeout=timeout))
 
 
+SEND_LABELS = {"send", "send message", "send a message", "გაგზავნა", "senden", "отправить"}
+
+
+def _press_send(text: str) -> str:
+    """After typing a message: press the app's own Send button and check.
+
+    2026-10-25: "text my girlfriend that I love her" failed three times in
+    Messenger. type(submit) presses the keyboard's Enter, which Messenger
+    ignores — the text sat unsent in the box while the voice went home and
+    said it was sent. So: find the Send button on screen, tap it, and look
+    again: sent = the text is no longer in an input field."""
+    try:
+        scr = _phone_call({"op": "screen"})
+        items = scr.get("items") or []
+        btn = next((it for it in items
+                    if (it.get("t") or "").strip().lower() in SEND_LABELS), None)
+        if btn is not None and "x" in btn:
+            _phone_call({"op": "tap", "x": btn["x"], "y": btn["y"]})
+        else:
+            r = _phone_call({"op": "tap_text", "text": "Send"})
+            if not r.get("ok", True):
+                return ("typed, but NOT sent: no Send button on screen — read the "
+                        "screen and tap the app's send button yourself")
+        time.sleep(0.6)
+        after = _phone_call({"op": "screen"}).get("items") or []
+    except Exception as e:  # noqa: BLE001
+        return f"typed; pressing Send failed: {e}"
+    still = any(it.get("edit") and text[:20] and text[:20] in (it.get("t") or "")
+                for it in after)
+    if still:
+        return "typed, but NOT sent: the text is still in the box — tap the send button"
+    return "sent (pressed the app's Send button; the box is empty now)"
+
+
 def phone(args: dict) -> str:
     op = str(args.get("op") or "").strip().lower()
     a = str(args.get("arg") or "").strip()
@@ -361,7 +395,15 @@ def phone(args: dict) -> str:
         elif op == "url":
             cmd = _intent("android.intent.action.VIEW", a)
         elif op == "maps":
-            cmd = _intent("android.intent.action.VIEW", "geo:0,0?q=" + q(a))
+            # A ready link (google.navigation:, geo:, a maps URL) goes as it
+            # is — the voice sent those and they were wrapped a second time.
+            # Words are a Maps search, which Maps runs around HIS phone's GPS:
+            # "car wash open now" lists the open ones near him (his 2026-10-25
+            # "you are not searching anything well on the map").
+            if re.match(r"^(google\.navigation:|geo:|https?://)", a, re.I):
+                cmd = _intent("android.intent.action.VIEW", a)
+            else:
+                cmd = _intent("android.intent.action.VIEW", "geo:0,0?q=" + q(a))
         elif op == "search":
             cmd = _intent("android.intent.action.VIEW",
                           "https://www.google.com/search?q=" + q(a))
@@ -379,6 +421,8 @@ def phone(args: dict) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
     if not res.get("ok", True) and res.get("error"):
         return f"ERROR: {res['error']}"
+    if op == "type" and cmd.get("submit") and res.get("ok", True):
+        return _press_send(a)
     if op == "screen" and res.get("items") is not None:
         lines = [f"phone screen, app {res.get('app')}:"]
         for it in res["items"][:80]:
@@ -578,7 +622,8 @@ DECLS = [
     {"name": "phone",
      "description": "His Android phone, directly (the same hands Claude uses). ops: "
                     "screen (read what's on it), open (arg=app name), tap_text "
-                    "(arg=visible text), type (arg=text, arg2='submit'), scroll "
+                    "(arg=visible text), type (arg=text, arg2='submit' also presses the app's Send "
+                    "button and says whether it really went), scroll "
                     "(arg='up'|'down'), back, home, notifications, volume "
                     "(arg=up|down|mute|set, arg2=percent), media (arg=play_pause|next|"
                     "previous), torch (arg=on|off), alarm (arg='HH:MM', arg2=label), "
@@ -586,7 +631,11 @@ DECLS = [
                     "arg2=text — opens the message, he presses send), url, maps, "
                     "search, settings (arg=wifi|bluetooth|mobile|sim|network|battery|"
                     "display|sound|location|apps). To check or change a phone "
-                    "setting: settings, then screen, then tap_text — step by step.",
+                    "setting: settings, then screen, then tap_text — step by step. "
+                    "To text someone: open the app, tap_text their name, tap_text "
+                    "the message box, type with arg2='submit'. Say it's sent only "
+                    "when type answers 'sent'. maps arg = what to search ('car wash "
+                    "open now') to show him the places on the map himself.",
      "parameters": {"type": "object", "properties": {
          "op": {"type": "string"}, "arg": {"type": "string"},
          "arg2": {"type": "string"}}, "required": ["op"]}},

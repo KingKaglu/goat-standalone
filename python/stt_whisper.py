@@ -357,8 +357,29 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
     return text, lang
 
 
+_ka_at = 0.0         # when he last spoke Georgian
+KA_WARM_S = 300.0    # he spoke Georgian this recently: dial Live as he starts
+
+
 def _georgian(audio: np.ndarray, sample_rate: int):
-    """Georgian text from the cloud ear, or None when it can't be had."""
+    """Georgian text from the cloud ear, or None when it can't be had.
+
+    Gemini Live's own transcription first (stt_live): on his 2026-10-25
+    clips it wrote "როგორ ხარ, რას შვები?" and "გთხოვ, მითხარი რომელი საათია
+    ახლა?" in 2.2-4.5 s, where Gladia wrote "რომ ხარობრაშ შვიმი" and
+    "გოტმით ხარი რომ ელი საათი ახლა" in 5-9 s. Gladia stays the fallback."""
+    try:
+        import stt_live
+        t0 = time.monotonic()
+        text = stt_live.transcribe(audio, sample_rate)
+        if text:
+            global _ka_at
+            _ka_at = time.monotonic()
+            print(f"[stt] Georgian via Live in {time.monotonic() - t0:.1f}s: "
+                  f"{text[:60]!r}", flush=True)
+            return clean_transcript(text, True)
+    except Exception as e:  # noqa: BLE001 — Gladia below
+        print(f"[stt] Live Georgian ear failed: {e!r}", flush=True)
     try:
         import stt_gladia
         if not stt_gladia.available():
@@ -440,6 +461,14 @@ class Stream:
         self._closed = False
         self.t_commit_sent = 0.0
         self.heard = lang             # the language the newest partial was in
+        if time.monotonic() - _ka_at < KA_WARM_S:
+            # he's talking Georgian lately: have the Live ear's session
+            # dialled while he speaks (saves ~1.4 s, measured 3.2 -> 1.75 s)
+            try:
+                import stt_live
+                stt_live.prime()
+            except Exception:  # noqa: BLE001 — the turn dials its own
+                pass
 
     @property
     def pending(self) -> bool:

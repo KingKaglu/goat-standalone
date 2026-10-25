@@ -262,7 +262,9 @@ Write plain Mkhedruli: never MTAVRULI/capitalized letters (Georgian has
 no capitals in running text — "კარგად", never "Კარგად"). His words reach
 you through cloud transcription that garbles casual speech; read through
 it, answer what he MEANT, and never comment on the garble or repeat it
-back. Keep code, paths and identifiers as they are.]
+back. Keep code, paths and identifiers as they are. Address him "ბატონო",
+never the English "Sir" (his order 2026-10-25: "Sir still is saying in
+english").]
 """
 
 LANG_NOTE_AUTO = """

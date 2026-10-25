@@ -92,6 +92,52 @@ vh.phone({"op": "tap_text", "arg": "Roaming"})
 check("tap a button by its text", sent[-1] == {"op": "tap_text", "text": "Roaming"}, sent[-1])
 check("unknown op names the ones that exist", "screen" in vh.phone({"op": "fly"}))
 
+# texting: the app's Send button is pressed, and "sent" is checked
+box = {"text": ""}
+
+
+def messenger(cmd, timeout=25.0):
+    sent.append(cmd)
+    op = cmd.get("op")
+    if op == "type":
+        box["text"] = cmd["text"]
+        return {"ok": True}
+    if op == "screen":
+        return {"ok": True, "app": "com.facebook.orca", "items": [
+            {"t": "Mariam", "c": 1, "x": 200, "y": 100},
+            {"t": box["text"], "edit": 1, "x": 300, "y": 1800},
+            {"t": "Send", "c": 1, "x": 1000, "y": 1800}]}
+    if op == "tap" and cmd.get("x") == 1000:
+        box["text"] = ""          # Messenger sends and clears the box
+    return {"ok": True}
+
+
+vh._phone_call = messenger
+r = vh.phone({"op": "type", "arg": "I love you", "arg2": "submit"})
+check("typing a message presses the app's Send button", any(
+    c.get("op") == "tap" and c.get("x") == 1000 for c in sent), sent[-3:])
+check("...and says sent only when the box emptied", r.startswith("sent"), r)
+
+
+def stuck(cmd, timeout=25.0):
+    if cmd.get("op") == "screen":
+        return {"ok": True, "items": [{"t": "I love you", "edit": 1}]}
+    if cmd.get("op") == "tap_text":
+        return {"ok": False, "error": "no match"}
+    return {"ok": True}
+
+
+vh._phone_call = stuck
+r = vh.phone({"op": "type", "arg": "I love you", "arg2": "submit"})
+check("no Send button: it says NOT sent (never a false 'sent')", "NOT sent" in r, r)
+
+vh._phone_call = fake_phone
+vh.phone({"op": "maps", "arg": "google.navigation:q=Hans-Böckler-Straße 23 Essen"})
+check("a navigation link opens as it is", sent[-1]["data"].startswith("google.navigation:"), sent[-1])
+vh.phone({"op": "maps", "arg": "car wash open now"})
+check("words become a Maps search around his phone", sent[-1]["data"] == "geo:0,0?q=car%20wash%20open%20now",
+      sent[-1])
+
 # ---- the terminal's Claude --------------------------------------------------
 vh._sessions = lambda: [{"id": "ab12", "kind": "background", "cwd": "C:\\Windows\\System32",
                          "name": "Continue previous work", "status": "busy",
@@ -119,6 +165,9 @@ names = {d["name"] for d in talk_brain.TOOLS[0]["functionDeclarations"]}
 check("every hand is declared to the voice", vh.NAMES <= names, vh.NAMES - names)
 check("the voice is told to use its own hands", "YOUR OWN HANDS" in talk_brain.TALK_SYSTEM
       and "terminal_claude" in talk_brain.TALK_SYSTEM)
+import goat_app
+check("Georgian replies say ბატონო, not Sir", "ბატონო" in goat_app.KA_TALK_NOTE
+      and "ბატონო" not in talk_brain.TALK_SYSTEM)
 
 # ---- the ear's German guard -------------------------------------------------
 de = {"language_probabilities": {"de": 1.0, "en": 0.0}}
@@ -129,6 +178,11 @@ check("German nearby is someone else", stt_whisper._foreign(de) == "de")
 check("his English is never foreign", stt_whisper._foreign(en) is None)
 check("his Georgian is never foreign", stt_whisper._foreign(ka) is None)
 check("a one-word English guess is never foreign", stt_whisper._foreign(opus) is None)
+
+import stt_live
+check("Latin letters inside a Georgian word are mended",
+      stt_live._one_script("მითხari რომელი Opus") == "მითხარი რომელი Opus",
+      stt_live._one_script("მითხari რომელი Opus"))
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
