@@ -3190,7 +3190,13 @@ class GoatApp:
                     and time.monotonic() >= getattr(self, "_side_until", 0.0)
                     and not side_talk.looks_aside(text, WAKE_RE)):
                 asyncio.create_task(self._front_filler(my))
+            t_parts = time.monotonic()
             parts = await self._front_parts(text, kind, event, probe)
+            th = getattr(self, "_t_heard", 0.0)
+            if kind == "user" and th and t_parts - th < 60:
+                # where the time between his words and the voice goes
+                print(f"[prep] heard->turn {(t_parts - th) * 1000:.0f}ms, notes "
+                      f"{(time.monotonic() - t_parts) * 1000:.0f}ms", flush=True)
             res = {"ok": False, "model": "", "ttft": None, "error": ""}
             # Live first. Side-talk probes stay on the REST voice: their
             # [[quiet]] token would be SPOKEN by a voice that speaks itself.
