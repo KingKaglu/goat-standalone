@@ -425,6 +425,26 @@ def _job_state(short: str) -> dict:
         return {}
 
 
+def _recent_steps(short: str, n: int = 5) -> list:
+    """The session's last few distinct step lines (newest last)."""
+    try:
+        with open(os.path.join(JOBS_DIR, short, "timeline.jsonl"), "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 20000))
+            tail = f.read().decode("utf-8", "replace").splitlines()[1:]
+    except OSError:
+        return []
+    steps = []
+    for ln in tail:
+        try:
+            d = (json.loads(ln).get("detail") or "").strip()
+        except ValueError:
+            continue
+        if d and (not steps or steps[-1] != d):
+            steps.append(d)
+    return steps[-n:]
+
+
 def terminal_claude(args: dict) -> str:
     action = str(args.get("action") or "status").lower()
     rows = _sessions()
@@ -441,12 +461,17 @@ def terminal_claude(args: dict) -> str:
                 line += f" — right now: {st['detail']}"
             if st.get("updatedAt"):
                 try:
-                    t = time.mktime(time.strptime(st["updatedAt"][:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+                    import calendar
+                    t = calendar.timegm(time.strptime(st["updatedAt"][:19], "%Y-%m-%dT%H:%M:%S"))
                     line += f" (updated {_ago(t)})"
                 except Exception:  # noqa: BLE001
                     pass
-            if st.get("intent"):
-                line += f"; started for: {st['intent'][:160]}"
+            # Its last few steps say what it's on. (The job's first request
+            # is NOT that: a session runs for days — on 2026-10-25 the voice
+            # read yesterday's "small tasks like open, close, email" as now.)
+            steps = _recent_steps(str(r.get("id") or ""))
+            if steps:
+                line += "; its last steps: " + " / ".join(steps)
             out.append(line)
         return "Claude Code sessions in his terminal:\n" + "\n".join(out)
     if action == "continue":
