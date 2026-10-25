@@ -1084,7 +1084,7 @@ gestures($("scrwrap"), $("rscr"), false);
 gestures($("fsv"), $("fsimg"), true);
 $("scrbtn").onclick = loadScreen; $("scr").onclick = loadScreen;
 $("shot").onclick = () => window.open($("shot").src, "_blank");
-$("stopbtn").onclick = () => { cutMe(); setStatus("stopping"); };
+$("stopbtn").onclick = () => { cutMe("job"); setStatus("stopping"); };
 
 let pageVer = "";
 function onSnapshot(m) {
@@ -1335,8 +1335,9 @@ window.goatBargeEnd = sent => { if (!paused) return; if (sent) waitVerdict(); el
 // what he was saying (bug 2026-10-18: "you stop, but you don't hear me").
 // Drop late audio until his next turn ("you") or the wire goes quiet.
 let cutAt = 0, cutLast = 0;
-function cutMe() {
-  stopPlayback(); send({type: "cut"});
+// what: "voice" (orb tap: hush me) or "job" (Stop button: Claude's job too).
+function cutMe(what) {
+  stopPlayback(); send({type: "cut", what: what || "voice"});
   cutAt = cutLast = performance.now();
 }
 function staleAudio() {

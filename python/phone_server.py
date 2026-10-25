@@ -1591,14 +1591,28 @@ class PhoneServer:
                   flush=True)
             asyncio.create_task(self._barge_watch(self._barge))
         elif kind == "cut":
-            # The phone's Stop button: end the running turn, like talking
-            # over it on the laptop.
+            # The phone's orb tap ("voice") or Stop button ("job"). The voice
+            # always stops. With two brains, busy means Claude's job, and only
+            # the Stop button may end it: an orb tap to talk over the voice
+            # used to cut the job silently, and the voice then told him "you
+            # stopped it" (2026-10-25 22:1x-22:2x, three jobs lost that way).
+            what = str(m.get("what", "") or "voice")[:10]
+            busy = bool(getattr(self.app, "busy", False))
+            print(f"[phone] cut ({what}{', Claude busy' if busy else ''})", flush=True)
             self._voice_end = 0.0
             self.app.tts.cancel()
             self.app._say_buf = ""
-            cut = getattr(self.app, "_cut_turn", None)
-            if cut is not None and getattr(self.app, "busy", False):
-                asyncio.create_task(cut(None))
+            if getattr(self.app, "two_brains", False):
+                front = getattr(self.app, "_front_cancel", None)
+                if front is not None:
+                    front()
+                stop = getattr(self.app, "_stop_worker", None)
+                if what == "job" and busy and stop is not None:
+                    asyncio.create_task(stop())
+            else:
+                cut = getattr(self.app, "_cut_turn", None)
+                if cut is not None and busy:
+                    asyncio.create_task(cut(None))
 
     def _sync_live(self):
         """While the phone's mic is live the laptop stops listening and goes
