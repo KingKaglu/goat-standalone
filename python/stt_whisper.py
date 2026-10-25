@@ -18,11 +18,14 @@ at any beam size (model compute dominates) for no observed accuracy gain
 once the vocab prompt is in play. Conversation needs the 1.2s. small.en
 stays on disk — set GOAT_STT_MODEL=small to trade latency for accuracy.
 """
+import asyncio
+import concurrent.futures
 import io
 import json
 import os
 import re
 import subprocess
+import threading
 import time
 
 import httpx
@@ -100,6 +103,12 @@ JUNK = re.compile(
 
 _server_proc = None
 
+# One client for the life of the process (2026-10-25). httpx.post() builds a
+# fresh Client per call, and on this laptop that alone took 0.25-0.8 s (SSL
+# context + Windows proxy lookup) — the server answers his 3 s sentence in
+# 0.3 s, so the ear's "1.1-1.5 s" was mostly that. Local server: no proxy.
+_http = httpx.Client(trust_env=False, timeout=30.0)
+
 
 def ensure_server() -> bool:
     """Spawn GOAT's own whisper-server (port 3781) if it isn't up yet.
@@ -107,7 +116,7 @@ def ensure_server() -> bool:
     the caller must SAY so, not just log it (a deaf GOAT looks alive)."""
     global _server_proc
     try:
-        httpx.get(f"http://127.0.0.1:{STT_PORT}/", timeout=1.0)
+        _http.get(f"http://127.0.0.1:{STT_PORT}/", timeout=1.0)
         return True  # something is listening — good enough
     except (httpx.ConnectError, httpx.TimeoutException):
         pass  # dead or unresponsive — spawn our own
@@ -160,7 +169,7 @@ def _wait_up(seconds: float) -> bool:
         if _server_proc is not None and _server_proc.poll() is not None:
             break                  # it died on start (bad model, no CUDA)
         try:
-            httpx.get(f"http://127.0.0.1:{STT_PORT}/", timeout=1.0)
+            _http.get(f"http://127.0.0.1:{STT_PORT}/", timeout=1.0)
             return True
         except httpx.ConnectError:
             time.sleep(0.5)
@@ -306,7 +315,7 @@ def _post(audio: np.ndarray, sample_rate: int, data: dict):
     dsp.write_wav16(buf, sample_rate, pcm)
     for attempt in (1, 2):
         try:
-            r = httpx.post(
+            r = _http.post(
                 STT_URL,
                 files={"file": ("audio.wav", buf.getvalue(), "audio/wav")},
                 data=data,
@@ -325,3 +334,112 @@ def _post(audio: np.ndarray, sample_rate: int, data: dict):
             print("[stt] request failed:", e)
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Listening while he talks (2026-10-25, his order: "the other one listens and
+# thinks at the same time ... when I am done giving the task I have the
+# answer immediately"). The GPU ear transcribes the utterance the moment he
+# pauses (GOAT's soft end, 200 ms into a silence) instead of after the turn
+# is called (500 ms) — so the text is usually ready the instant the turn
+# ends, and the partial tells the endpointer whether the sentence sounds
+# finished ("...and I want to" waits the long hangover). Same interface as
+# stt_realtime.Session, so goat_app drives it the same way.
+# ---------------------------------------------------------------------------
+
+_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper-live")
+STREAM_RESULT_S = 8.0       # the final transcript never waits longer than this
+
+
+class Stream:
+    """One utterance on the GPU ear. feed/soft_commit/end are called from the
+    audio thread and only append or hand off; the work runs on _POOL."""
+
+    local = True
+
+    def __init__(self, loop, lang: str = "en"):
+        self.loop = loop
+        self.lang = lang
+        self.last_partial = ""
+        self.error: str | None = None
+        self._chunks: list = []
+        self._lock = threading.Lock()
+        self._latest = None          # (n_chunks, Future) of the newest job
+        self._closed = False
+        self.t_commit_sent = 0.0
+
+    @property
+    def pending(self) -> bool:
+        j = self._latest
+        return j is not None and not j[1].done()
+
+    # ---- audio thread ----
+    def feed(self, chunk):
+        if not self._closed:
+            self._chunks.append(chunk)
+
+    def soft_commit(self):
+        if not self._closed:
+            self._submit()
+
+    def end(self):
+        if self._closed:
+            return
+        self._closed = True
+        # The newest soft commit already holds every voiced block: GOAT only
+        # calls the turn after a silence the soft commit fires inside of. A
+        # turn without one (the 30 s cap) is transcribed whole.
+        if self._latest is None:
+            self._submit()
+
+    def drop(self):
+        """A cough, not a turn: nothing to transcribe."""
+        self._closed = True
+
+    # ---- worker ----
+    def _submit(self):
+        n = len(self._chunks)
+        if n == 0:
+            return
+        self.t_commit_sent = time.monotonic()
+        fut = _POOL.submit(self._run, n)
+        with self._lock:
+            self._latest = (n, fut)
+
+    def _run(self, n: int):
+        with self._lock:
+            latest = self._latest
+        if latest is not None and latest[0] != n:
+            return None              # superseded before it started: skip
+        audio = np.concatenate(self._chunks[:n])
+        try:
+            text, _ = transcribe_lang(audio, 16000, self.lang)
+        except Exception as e:  # noqa: BLE001 — the batch ear still has the audio
+            self.error = f"{type(e).__name__}: {e}"
+            return None
+        if text is None:
+            self.error = "whisper server failed"
+            return None
+        with self._lock:
+            if self._latest is not None and self._latest[0] == n:
+                self.last_partial = text
+        return text
+
+    async def result(self):
+        """The transcript, or None to mean 'use the batch ear'."""
+        j = self._latest
+        if j is None:
+            return None
+        try:
+            text = await asyncio.wait_for(asyncio.wrap_future(j[1]), STREAM_RESULT_S)
+        except (asyncio.TimeoutError, concurrent.futures.CancelledError):
+            self.error = self.error or f"no answer in {STREAM_RESULT_S:.0f}s"
+            return None
+        if text is None:
+            return None
+        ms = (time.monotonic() - self.t_commit_sent) * 1000
+        print(f"[stt-live] heard {ms:.0f}ms after his pause: {text[:60]!r}")
+        return text
+
+    def why(self) -> str:
+        return f"{self.lang}: {self.error or 'nothing heard'}"

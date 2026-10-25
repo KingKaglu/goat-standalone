@@ -36,7 +36,15 @@ QUIET_WINDOW = 4             # ~128ms window for plain speech detection when
                              # nothing is playing
 QUIET_NEEDED = 3
 PREROLL_MS = 300
-DUCK_GAIN = 0.5
+# Duck harder when he may be cutting in (0.5 -> 0.3, 2026-10-25). His room,
+# recorded: GOAT's echo reaches the laptop mic ~12 dB LOUDER than his own
+# voice, and in double-talk the canceller suppresses him with it. -10 dB
+# brings the two level, so his words get through to the vote — and GOAT
+# audibly backs off the way a person does when someone starts talking.
+DUCK_GAIN = 0.3
+DUCK_NEEDED = 2              # voiced chunks of the last 3 before ducking: one
+                             # stray chunk (22 ducks / 10 min in his room)
+                             # shouldn't dip the voice
 VETO_NO_DUCK_S = 1.0         # after the voice lock vetoes a barge-in, someone
                              # else's chatter doesn't keep halving GOAT's voice
 VAD_THRESHOLD = 0.35   # 2026-10-18: lowered from 0.5, he talks quietly
@@ -99,6 +107,19 @@ NOISE_FLOOR_MARGIN = 3.0    # cleaned-block RMS must clear floor*margin to count
                              # real speech — Silero alone judges speech SHAPE, not
                              # loudness, so quiet but speech-shaped residual echo
                              # (imperfect AEC cancellation) still scores as "voiced"
+# While GOAT talks the bar is lower (2026-10-25, his report "I couldn't
+# interrupt"). The canceller ducks HIS voice too when both talk at once: his
+# barge-ins reached the VAD at rms 0.0009-0.0017 against a room-floor gate of
+# 0.0014-0.0021, so most of his voiced chunks were thrown out as "residual
+# echo" and the 16-of-20 vote never filled. 10 min of his real room recorded
+# (mic + speaker) and replayed through this same canceller: residual echo sits
+# at ~0.0001 rms; its speech-shaped bursts reach 0.01, his ducked voice
+# 0.001 — loudness can't tell them apart, the VAD and the half-second vote
+# do. Replayed through GOAT's own path (test_barge_room.py), 2x the floor
+# with a 0.0008 minimum added no self-interrupt over the old 3x gate; 1.5x /
+# 0.0005 added one. So: 2x.
+PLAY_FLOOR_MARGIN = 2.0
+PLAY_GATE_MIN = 0.0008
 
 
 def _wasapi_devices():
@@ -557,12 +578,20 @@ class DuplexAudio:
                     else self._noise_floor * 0.97 + rms * 0.03
                 )
 
-            gate = self._noise_floor * NOISE_FLOOR_MARGIN
+            talking = was_playing or (
+                self._play_last_t
+                and time.monotonic() - self._play_last_t < SPEAKING_HOLD_S)
+            if talking:
+                margin = PLAY_FLOOR_MARGIN
+                gate = max(self._noise_floor * margin, PLAY_GATE_MIN)
+            else:
+                margin = NOISE_FLOOR_MARGIN
+                gate = self._noise_floor * margin
             loud_enough = rms > gate
             voiced = prob >= VAD_THRESHOLD and loud_enough
             if prob >= VAD_THRESHOLD and not loud_enough:
                 self._status(f"vad said speech (p={prob:.2f}) but rms={rms:.4f} <= "
-                              f"floor*{NOISE_FLOOR_MARGIN}={gate:.4f} — "
+                              f"floor*{margin}={gate:.4f} — "
                               f"treating as residual echo, not you")
 
             # Live meter — throttled so it's watchable, not a firehose. Talk
@@ -614,6 +643,7 @@ class DuplexAudio:
 
         if was_playing:
             if (voiced and not self._duck_active
+                    and sum(list(self._vote_hist)[-3:]) >= DUCK_NEEDED
                     and time.monotonic() >= self._veto_quiet_until):
                 self._duck_active = True
                 self.duck_gain = DUCK_GAIN

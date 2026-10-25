@@ -1865,6 +1865,14 @@ class GoatApp:
         """Audio thread, every quiet block: does what the streaming ear has
         heard so far sound like a finished sentence? None = nothing yet."""
         rt = self._rt
+        if getattr(rt, "local", False):
+            # The GPU ear: its transcript of this pause is ~0.3 s out. Wait
+            # for it rather than guess, then judge the words — without
+            # Whisper's habit of ending every fragment on a full stop
+            # ("I want to." is not a finished sentence).
+            if rt.pending:
+                return False
+            return endpoint.sounds_finished(rt.last_partial.rstrip(". "))
         state = (None if rt is None
                  else endpoint.sounds_finished(getattr(rt, "last_partial", "")))
         if state is None and self.language != "en":
@@ -1887,10 +1895,16 @@ class GoatApp:
         # Dial (or re-dial) the voice socket while he is still talking, so
         # the answer's first clause doesn't pay the connection. Non-blocking.
         tts_edge.prime()
+        if getattr(self, "talker", None) is not None:
+            talk_brain.prime()      # and Gemini's socket, same reason
         if self._gpu_ear():
             # OpenAI's Whisper on his GPU is the English ear (his choice,
-            # 2026-10-24): no ElevenLabs stream to open, nor pay for.
-            self._rt = None
+            # 2026-10-24): no ElevenLabs stream to open, nor pay for. It
+            # listens live: each pause is transcribed on the spot, so the
+            # text is ready when he finishes (stt_whisper.Stream).
+            self._rt = stt_whisper.Stream(self.loop, "en")
+            if preroll is not None and len(preroll):
+                self._rt.feed(preroll)
             return
         self._rt = stt_realtime.start_threadsafe(self._rt_lang(), self.loop)
         if self._rt is not None and preroll is not None and len(preroll):
@@ -1910,7 +1924,7 @@ class GoatApp:
         self._utt_live = False
         rt, self._rt = self._rt, None
         if rt is not None:
-            rt.end()
+            getattr(rt, "drop", rt.end)()
 
     def _on_utterance(self, audio_np: np.ndarray):
         self._utt_live = False
@@ -2220,7 +2234,9 @@ class GoatApp:
         # it fails — the full utterance is still in hand for the batch path.
         if rt is not None:
             text = await rt.result()
-            if text:
+            # The local ear's "" is a real verdict (silence/junk), not a miss:
+            # running the same Whisper again on the same audio says the same.
+            if text or (text == "" and getattr(rt, "local", False)):
                 self._lat_heard("streaming")
                 # In auto mode the ear that answered IS the language of the
                 # turn — that is the whole point of running both.

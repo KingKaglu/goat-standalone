@@ -37,6 +37,11 @@ import dsp
 import stt_whisper  # shares FIXES_FILE + _apply_fixes so both ears learn together
 from goat_paths import GOAT_ROOT
 
+# Shared, kept-alive client (2026-10-25): a fresh one per call cost 0.25-0.8 s
+# to build plus a new TLS handshake, and a Gladia turn makes 3-10 calls
+# (upload, job, polls) — seconds of his 5-9 s Georgian wait.
+_http = httpx.Client(timeout=30.0)
+
 SECRETS_FILE = os.path.join(GOAT_ROOT, ".goat-secrets.json")
 SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 GLADIA_BASE = "https://api.gladia.io/v2"
@@ -132,7 +137,7 @@ def _scribe(key: str, wav: bytes, language: str | None):
                 "keyterms": _keyterms()}
         if language:
             data["language_code"] = language
-        r = httpx.post(SCRIBE_URL, headers={"xi-api-key": key}, data=data,
+        r = _http.post(SCRIBE_URL, headers={"xi-api-key": key}, data=data,
                        files={"file": ("u.wav", wav, "audio/wav")},
                        timeout=30.0)
         r.raise_for_status()
@@ -162,11 +167,11 @@ def _gladia_langs(language: str | None) -> dict:
 def _gladia(key: str, wav: bytes, language: str | None) -> str | None:
     """upload -> job -> poll; returns raw transcript or None on failure."""
     try:
-        up = httpx.post(f"{GLADIA_BASE}/upload", headers={"x-gladia-key": key},
+        up = _http.post(f"{GLADIA_BASE}/upload", headers={"x-gladia-key": key},
                         files={"audio": ("u.wav", wav, "audio/wav")},
                         timeout=20.0)
         up.raise_for_status()
-        job = httpx.post(f"{GLADIA_BASE}/pre-recorded",
+        job = _http.post(f"{GLADIA_BASE}/pre-recorded",
                          headers={"x-gladia-key": key},
                          json={"audio_url": up.json()["audio_url"],
                                "language_config": _gladia_langs(language)},
@@ -175,7 +180,7 @@ def _gladia(key: str, wav: bytes, language: str | None) -> str | None:
         result_url = job.json()["result_url"]
         deadline = time.time() + 25
         while time.time() < deadline:
-            r = httpx.get(result_url, headers={"x-gladia-key": key},
+            r = _http.get(result_url, headers={"x-gladia-key": key},
                           timeout=15.0)
             d = r.json()
             if d.get("status") == "done":

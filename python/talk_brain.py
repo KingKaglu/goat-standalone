@@ -50,6 +50,7 @@ import io
 import json
 import os
 import re
+import ssl
 import subprocess
 import threading
 import time
@@ -249,6 +250,59 @@ def _cooldown(status: int, raw: str):
 # One streaming request on its own thread
 # ---------------------------------------------------------------------------
 
+# A warm socket to Google (2026-10-25). Each call used to build its own SSL
+# context and do a fresh TCP+TLS handshake: 0.30-0.36 s measured, every turn,
+# before Gemini saw a word. The context is built once, and prime() dials the
+# connection while he is still talking, so the turn's request goes out on a
+# socket that is already open.
+_SSL = None
+_WARM: list = []           # [(monotonic time dialled, HTTPSConnection)]
+_WARM_LOCK = threading.Lock()
+WARM_MAX_S = 25.0          # Google drops idle sockets; older ones aren't trusted
+
+
+def _ssl_ctx():
+    global _SSL
+    if _SSL is None:
+        _SSL = ssl.create_default_context()
+    return _SSL
+
+
+def _dial() -> http.client.HTTPSConnection:
+    return http.client.HTTPSConnection(HOST, timeout=STREAM_IDLE_S, context=_ssl_ctx())
+
+
+def prime():
+    """Open one connection to Gemini in the background (non-blocking)."""
+    def run():
+        try:
+            with _WARM_LOCK:
+                now = time.monotonic()
+                if any(now - t < WARM_MAX_S for t, _ in _WARM):
+                    return
+            c = _dial()
+            c.connect()
+            with _WARM_LOCK:
+                _WARM.append((time.monotonic(), c))
+        except Exception:  # noqa: BLE001 — the call dials its own then
+            pass
+    threading.Thread(target=run, daemon=True, name="gemini-prime").start()
+
+
+def _take_conn() -> http.client.HTTPSConnection:
+    with _WARM_LOCK:
+        now = time.monotonic()
+        while _WARM:
+            t, c = _WARM.pop()
+            if now - t < WARM_MAX_S and c.sock is not None:
+                return c
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return _dial()
+
+
 class _Call:
     """streamGenerateContent on a daemon thread. Events go to an asyncio
     queue as (call, kind, data): kind = text | call | end | error."""
@@ -281,14 +335,25 @@ class _Call:
     def _run(self):
         conn = None
         try:
-            conn = http.client.HTTPSConnection(HOST, timeout=STREAM_IDLE_S)
-            self._conn = conn
-            conn.request("POST",
-                         f"/v1beta/models/{self.model}:streamGenerateContent?alt=sse",
-                         body=self._payload,
-                         headers={"Content-Type": "application/json",
-                                  "x-goog-api-key": self._key})
-            r = conn.getresponse()
+            for attempt in (1, 2):
+                conn = _take_conn() if attempt == 1 else _dial()
+                self._conn = conn
+                try:
+                    conn.request("POST",
+                                 f"/v1beta/models/{self.model}:streamGenerateContent?alt=sse",
+                                 body=self._payload,
+                                 headers={"Content-Type": "application/json",
+                                          "x-goog-api-key": self._key})
+                    r = conn.getresponse()
+                    break
+                except (OSError, http.client.HTTPException):
+                    # a warm socket Google had already closed: dial fresh once
+                    if attempt == 2 or self.cancelled:
+                        raise
+                    try:
+                        conn.close()
+                    except Exception:  # noqa: BLE001
+                        pass
             self.status = r.status
             if r.status != 200:
                 raw = r.read(6000).decode("utf-8", "replace")
