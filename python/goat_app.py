@@ -1406,6 +1406,9 @@ class TtsPipeline:
 SOFT_VOICE = os.environ.get("GOAT_SOFT_VOICE", "on").strip().lower() not in ("off", "0", "no")
 SOFT_VOICE_REJECT = 0.0
 SOFT_VOICE_WAIT_S = 0.3        # the most the soft filter may hold a turn
+SOFT_VOICE_MIN_S = 1.5         # less speech than this scores too unreliably
+                               # to drop on (a 0.7 s "Nice, I don't have..."
+                               # was dropped at -1.10, 2026-10-25 evening)
 
 
 class GoatApp:
@@ -2287,7 +2290,8 @@ class GoatApp:
                 self._lat_heard("streaming")
                 # In auto mode the ear that answered IS the language of the
                 # turn — that is the whole point of running both.
-                heard = getattr(rt, "lang", "") or self._rt_lang()
+                heard = (getattr(rt, "heard", "") or getattr(rt, "lang", "")
+                         or self._rt_lang())
                 self._set_turn_lang(heard if heard in ("en", "ka")
                                     else self.turn_lang)
                 await self._heard(text, gap, vcheck, source)
@@ -2305,9 +2309,9 @@ class GoatApp:
             # OpenAI's Whisper large-v3-turbo on his GPU (2026-10-24): the
             # English ear — local, no credits. Georgian is beyond it (see
             # stt_whisper), so Georgian and bilingual modes keep the cloud.
-            text, _ = await asyncio.to_thread(
+            text, heard = await asyncio.to_thread(
                 stt_whisper.transcribe_lang, audio_np, 16000, "en")
-            self._set_turn_lang("en")
+            self._set_turn_lang("ka" if heard == "ka" else "en")
         elif (self.language == "auto" and getattr(stt_whisper, "GPU", False)
               and stt_gladia.available()):
             # Bilingual with the GPU ear: Whisper tells English from
@@ -2418,7 +2422,8 @@ class GoatApp:
             # else and doesn't call GOAT by name is dropped; everything else
             # passes, and turns that are clearly him teach the mic his voice.
             if (v.decision == "not_me" and v.score is not None
-                    and v.score < SOFT_VOICE_REJECT and not addressed):
+                    and v.score < SOFT_VOICE_REJECT and not addressed
+                    and v.speech_s >= SOFT_VOICE_MIN_S):
                 print(f"[voice-id] someone else, not him: {text!r} ({v.line()})")
                 self.emit("status", "someone else talking — ignored")
                 return False

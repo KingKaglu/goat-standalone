@@ -319,6 +319,16 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
         if str(got.get("detected_language") or "").lower() == "english":
             return clean_transcript(got.get("text", ""),
                                     time.monotonic() < _chatting_until), "en"
+        p_en = float((got.get("language_probabilities") or {}).get("en", 0.0) or 0.0)
+        if p_en < EN_PROB_MIN:
+            # Not English at all: his Georgian (2026-10-25 evening: in English
+            # mode his spoken Georgian was pinned to English and came out as
+            # nonsense; Whisper scores it 0.05-0.07 English). The cloud ear,
+            # pinned to Georgian, writes it; English mode stays English for
+            # the rest.
+            ka = _georgian(audio, sample_rate)
+            if ka is not None:
+                return ka, "ka"
         return _pinned(audio, sample_rate, "en")
     if force:
         return _pinned(audio, sample_rate, force)
@@ -345,6 +355,19 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
         # ("Opus" -> "Obrigado."): once more, pinned to English.
         return _pinned(audio, sample_rate, "en")
     return text, lang
+
+
+def _georgian(audio: np.ndarray, sample_rate: int):
+    """Georgian text from the cloud ear, or None when it can't be had."""
+    try:
+        import stt_gladia
+        if not stt_gladia.available():
+            return None
+        text, _ = stt_gladia.transcribe_lang(audio, sample_rate, "ka")
+        return text
+    except Exception as e:  # noqa: BLE001 — English pinning is the fallback
+        print(f"[stt] Georgian ear failed: {e!r}", flush=True)
+        return None
 
 
 def _pinned(audio: np.ndarray, sample_rate: int, lang: str):
@@ -416,6 +439,7 @@ class Stream:
         self._latest = None          # (n_chunks, Future) of the newest job
         self._closed = False
         self.t_commit_sent = 0.0
+        self.heard = lang             # the language the newest partial was in
 
     @property
     def pending(self) -> bool:
@@ -462,7 +486,7 @@ class Stream:
             return None              # superseded before it started: skip
         audio = np.concatenate(self._chunks[:n])
         try:
-            text, _ = transcribe_lang(audio, 16000, self.lang)
+            text, heard = transcribe_lang(audio, 16000, self.lang)
         except Exception as e:  # noqa: BLE001 — the batch ear still has the audio
             self.error = f"{type(e).__name__}: {e}"
             return None
@@ -472,6 +496,8 @@ class Stream:
         with self._lock:
             if self._latest is not None and self._latest[0] == n:
                 self.last_partial = text
+                if heard in ("en", "ka"):
+                    self.heard = heard
         return text
 
     async def result(self):
