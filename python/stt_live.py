@@ -50,7 +50,7 @@ REUSE_N = int(os.environ.get("GOAT_STT_LIVE_REUSE", "30"))
 REUSE_S = 240.0      # a session idle longer than this is closed, not reused
 _REST_MIN, _REST_MAX = 60.0, 1800.0
 _rest = {"until": 0.0, "next": _REST_MIN}
-_reuse: list = []    # [[ws, uses, last used]] — the session kept between turns
+_reuse: list = []    # [[ws, uses, last used, clean]] — the session kept between turns
 
 
 def resting() -> float:
@@ -136,9 +136,10 @@ async def _take(key: str):
     one ahead of time, else a new one."""
     now = time.monotonic()
     while _reuse:
-        ws, uses, last = _reuse.pop()
+        ws, uses, last, clean = _reuse.pop()
         if (uses < REUSE_N and now - last < REUSE_S
-                and getattr(ws, "close_code", None) is None):
+                and getattr(ws, "close_code", None) is None
+                and (clean or await _drain(ws))):
             return ws, uses
         await _close(ws)
     while _warm:
@@ -180,19 +181,23 @@ async def _listen(ws, audio: np.ndarray):
         # the transcript is complete once the model starts its own turn
         if words and sc.get("modelTurn"):
             break
-    if not clean:
-        # its one-word reply is still coming: let it finish (≤ 1.5 s), or
-        # the session isn't kept
-        end = time.monotonic() + 1.5
-        try:
-            while time.monotonic() < end:
-                m = json.loads(await asyncio.wait_for(ws.recv(), end - time.monotonic()))
-                if (m.get("serverContent") or {}).get("turnComplete"):
-                    clean = True
-                    break
-        except Exception:  # noqa: BLE001 — timeout or closed: not reusable
-            pass
     return _one_script(words.strip()), clean
+
+
+async def _drain(ws, budget: float = 1.0) -> bool:
+    """The kept session's last reply, read off before the next utterance
+    (seconds later, it has long finished). Waiting for it at the end of a
+    turn instead held every Georgian transcript back up to 1.5 s and lost
+    the session half the time (2026-10-26: reuse ran 0,1,0,1). True = clean."""
+    end = time.monotonic() + budget
+    try:
+        while time.monotonic() < end:
+            m = json.loads(await asyncio.wait_for(ws.recv(), max(0.05, end - time.monotonic())))
+            if (m.get("serverContent") or {}).get("turnComplete"):
+                return True
+    except Exception:  # noqa: BLE001 — timeout or closed: not reusable
+        pass
+    return False
 
 
 async def _run(audio: np.ndarray, key: str) -> str | None:
@@ -209,8 +214,8 @@ async def _run(audio: np.ndarray, key: str) -> str | None:
         except Exception:
             await _close(ws)
             raise
-    if clean and REUSE_N > 1:
-        _reuse.append([ws, uses + 1, time.monotonic()])
+    if REUSE_N > 1:
+        _reuse.append([ws, uses + 1, time.monotonic(), clean])
     else:
         await _close(ws)
     return text
