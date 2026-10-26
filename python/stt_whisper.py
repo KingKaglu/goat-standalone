@@ -408,15 +408,40 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
         print(f"[stt] Live Georgian ear failed: {e!r}", flush=True)
     if script_only:
         return None
-    try:
+    # Live is resting or failed: REST Gemini and Gladia together. REST writes
+    # his Georgian far better but its time swings (4-29 s), so it gets
+    # REST_KA_WAIT_S; past that, Gladia's answer goes.
+    rest = None
+    if sample_rate == 16000:
+        try:
+            import stt_live
+            rest = _KA_POOL.submit(stt_live.transcribe_rest, audio, REST_KA_WAIT_S + 1)
+        except Exception:  # noqa: BLE001
+            rest = None
+
+    def gladia():
         import stt_gladia
         if not stt_gladia.available():
             return None
-        text, _ = stt_gladia.transcribe_lang(audio, sample_rate, "ka")
-        return text
+        return stt_gladia.transcribe_lang(audio, sample_rate, "ka")[0]
+    glad = _KA_POOL.submit(gladia)
+    if rest is not None:
+        try:
+            text = rest.result(timeout=REST_KA_WAIT_S)
+            if text and re.search(r"[Ⴀ-ჿ]", text):
+                print(f"[stt] Georgian via REST Gemini: {text[:60]!r}", flush=True)
+                return clean_transcript(text, True)
+        except Exception:  # noqa: BLE001 — too slow or failed: Gladia
+            pass
+    try:
+        return glad.result(timeout=30)
     except Exception as e:  # noqa: BLE001 — English pinning is the fallback
         print(f"[stt] Georgian ear failed: {e!r}", flush=True)
         return None
+
+
+REST_KA_WAIT_S = 4.0
+_KA_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="ka-ear")
 
 
 def _pinned(audio: np.ndarray, sample_rate: int, lang: str):

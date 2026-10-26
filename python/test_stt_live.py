@@ -104,5 +104,31 @@ sl.transcribe(audio)
 check("refused again: the rest doubles", sl._rest["next"] == min(sl._REST_MAX, first * 2),
       sl._rest)
 
+# ---- Live resting: REST Gemini beside Gladia -------------------------------
+import time
+import stt_whisper
+import stt_gladia
+
+sl.transcribe = lambda a, sr=16000: None                   # Live resting
+stt_gladia.available = lambda: True
+stt_gladia.transcribe_lang = lambda a, sr, lang: ("გარგიმა მლობამ?", "ka")
+sl.transcribe_rest = lambda a, timeout=6.0: "კარგი, მადლობა."
+check("Live resting: REST Gemini's Georgian beats Gladia's garbage",
+      stt_whisper._georgian(audio, 16000) == "კარგი, მადლობა.")
+
+
+def slow(a, timeout=6.0):
+    time.sleep(stt_whisper.REST_KA_WAIT_S + 0.5)
+    return "კარგი, მადლობა."
+sl.transcribe_rest = slow
+t = time.monotonic()
+r = stt_whisper._georgian(audio, 16000)
+check("REST too slow: Gladia's answer goes, he isn't kept waiting",
+      r == "გარგიმა მლობამ?" and time.monotonic() - t < stt_whisper.REST_KA_WAIT_S + 0.4,
+      (r, time.monotonic() - t))
+sl.transcribe_rest = lambda a, timeout=6.0: "okay thank you"
+check("REST gives no Georgian: Gladia's answer goes",
+      stt_whisper._georgian(audio, 16000) == "გარგიმა მლობამ?")
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

@@ -240,6 +240,49 @@ def _one_script(text: str) -> str:
     return re.sub(r"[\wჀ-ჿ]+", fix, text)
 
 
+REST_MODEL = os.environ.get("GOAT_STT_REST_MODEL", "gemini-3.1-flash-lite")
+REST_PROMPT = ("Transcribe this speech exactly, word for word, in the language spoken. "
+               "Georgian must be written in Georgian script (Mkhedruli); English in "
+               "English. Output only the transcript. If there is no speech, output nothing.")
+
+
+def transcribe_rest(audio: np.ndarray, timeout: float = 6.0) -> str | None:
+    """His Georgian through REST Gemini — a separate quota from Live, for
+    when Live is resting. It wrote "კარგია, ხომ მომისმინე და მოგეხმარები,
+    გთხოვ, დაეცი კლოდს…" where Gladia wrote "გარგია ხამომისმია…", but it took
+    4-29 s at 03:00 (2026-10-26), so the caller only waits a few seconds."""
+    key = talk_brain.api_key()
+    if not key or len(audio) < 16000 * 0.3:
+        return None
+    import io
+    import wave
+
+    import httpx
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+    body = {"contents": [{"role": "user", "parts": [
+        {"inlineData": {"mimeType": "audio/wav",
+                        "data": base64.b64encode(buf.getvalue()).decode()}},
+        {"text": REST_PROMPT}]}],
+        "generationConfig": {"temperature": 0, "thinkingConfig": {"thinkingBudget": 0}}}
+    try:
+        r = httpx.post(f"https://generativelanguage.googleapis.com/v1beta/models/"
+                       f"{REST_MODEL}:generateContent", params={"key": key},
+                       json=body, timeout=timeout)
+        if r.status_code != 200:
+            print(f"[stt-rest-ka] HTTP {r.status_code}", flush=True)
+            return None
+        parts = r.json()["candidates"][0]["content"].get("parts") or []
+        return _one_script("".join(p.get("text", "") for p in parts).strip())
+    except Exception as e:  # noqa: BLE001 — Gladia's answer stands
+        print(f"[stt-rest-ka] {type(e).__name__}", flush=True)
+        return None
+
+
 def transcribe(audio: np.ndarray, sample_rate: int = 16000) -> str | None:
     """His words, or None when Live couldn't be reached (caller falls back)."""
     key = talk_brain.api_key()
