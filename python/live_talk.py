@@ -44,6 +44,7 @@ URL = ("wss://generativelanguage.googleapis.com/ws/"
        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")
 CONNECT_S = 6.0            # socket + setupComplete
 FIRST_S = 6.0              # nothing at all by now: Live is down this turn
+STALE_S = 300.0            # silent this long: redial (resuming) before his turn
 IDLE_S = 8.0               # a started answer silent this long is over
 # After a function call Google closes the turn (turnComplete) and THEN
 # speaks a follow-up as a generation of its own ("Sir, opening the demo page
@@ -185,6 +186,8 @@ class LiveTalk:
             raise RuntimeError(f"setup refused: {str(first)[:160]}")
         self.ws = ws
         self._q.clear()
+        self._goaway = False
+        self._rx_t = time.monotonic()
         self._reader = asyncio.create_task(self._read(ws))
         if not resumed:
             await self._seed()
@@ -201,8 +204,25 @@ class LiveTalk:
             await self.ws.send(json.dumps({"clientContent": {
                 "turns": turns, "turnComplete": False}}))
 
+    def _stale(self) -> bool:
+        """The open session can't be trusted with his next turn: Google said
+        goAway, or it has been silent so long it may be gone on Google's side
+        (2026-10-26 08:22: the first turn after ~37 min idle got "no answer
+        in 6s", 10.3 s to his first word on the REST voice)."""
+        return (getattr(self, "_goaway", False)
+                or time.monotonic() - getattr(self, "_rx_t", time.monotonic()) > STALE_S)
+
     async def _ensure(self):
         ws = self.ws
+        if ws is not None and getattr(ws, "close_code", None) is None and self._stale():
+            # resume on a fresh socket (the handle keeps the conversation)
+            print("[live] session idle/closing — redialling before his turn", flush=True)
+            self.ws = None
+            try:
+                await ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+            ws = None
         if ws is not None and getattr(ws, "close_code", None) is None:
             if self._voice == self._wanted_voice():
                 return
@@ -229,12 +249,15 @@ class LiveTalk:
                     m = json.loads(raw)
                 except ValueError:
                     continue
+                self._rx_t = time.monotonic()
                 upd = m.get("sessionResumptionUpdate")
                 if upd and upd.get("resumable") and upd.get("newHandle"):
                     self._handle = upd["newHandle"]
                 if "goAway" in m:
                     print("[live] Google is closing the session soon - will resume",
                           flush=True)
+                    if ws is self.ws:
+                        self._goaway = True
                 entry = self._q[0] if self._q else None
                 sink = entry[0] if entry else None
                 if "toolCall" in m:
@@ -314,7 +337,7 @@ class LiveTalk:
         if not self.usable() or self._lock.locked():
             return
         ws = self.ws
-        if ws is not None and getattr(ws, "close_code", None) is None:
+        if ws is not None and getattr(ws, "close_code", None) is None and not self._stale():
             return
         async with self._lock:
             try:

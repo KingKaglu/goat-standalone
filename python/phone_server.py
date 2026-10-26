@@ -1132,10 +1132,15 @@ class PhoneServer:
                 if now - old["t"] > STREAM_TTL_S:
                     self._streams.pop(k, None)
                     self._end_rt(old.get("rt"))
-            # He just started talking: dial the voice socket under his words.
+            # He just started talking: dial the voice socket under his words,
+            # and have the Live voice's session fresh (an idle or goAway'd
+            # one is redialled now, not when his turn is sent into it).
             try:
                 import tts_edge
                 tts_edge.prime()
+                live, loop = getattr(self.app, "live", None), getattr(self.app, "loop", None)
+                if live is not None and loop is not None:
+                    asyncio.run_coroutine_threadsafe(live.warm(), loop)
             except Exception:  # noqa: BLE001 — a cold socket only costs time
                 pass
             rt = None
@@ -1534,6 +1539,7 @@ class PhoneServer:
         if not overlap:
             print(f"[phone] heard over other audio: {text!r}", flush=True)
             self._from_phone()
+            self._clock_heard()
             await self.app._heard(text, None, None, "phone")
             return
         ga = sys.modules.get(type(self.app).__module__)
@@ -1551,7 +1557,18 @@ class PhoneServer:
         self.app.tts.cancel()
         self.app._say_buf = ""
         self._from_phone()
+        self._clock_heard()
         await self.app._heard(text, None, None, "phone")
+
+    def _clock_heard(self):
+        """A clip over my voice that turned out to be him: start his turn's
+        latency clock now (its words are already in hand). Without it the
+        turn was timed from an older turn's clock."""
+        try:
+            self.app._lat_start()
+            self.app._lat_heard("overlap")
+        except Exception:  # noqa: BLE001 — the ledger is optional
+            pass
 
     def _command(self, st, raw: str):
         try:

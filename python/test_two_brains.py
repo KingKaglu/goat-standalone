@@ -874,6 +874,15 @@ async def main():
                                             "gemini-3.1-flash-lite", "Opus 5.5")]
           == ["Gemini 3.6 Flash", "Gemini 3 Flash", "Gemini 3.1 Flash-Lite", "Opus 5.5"])
 
+    # 2026-10-26 11:09: a typed / over-my-voice turn timed from 11:08:37's
+    # heard ("heard->turn 28353ms"): a spoken turn's clock is spent
+    app = make_app(FakeTalker(lambda t: ([], [])))
+    app._lat_start()
+    app._lat_heard("batch")
+    app._lat_sounded()
+    check("a spoken turn's latency clock is spent, the next turn can't reuse it",
+          app._t_heard == 0.0, app._t_heard)
+
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 

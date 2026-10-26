@@ -130,5 +130,11 @@ sl.transcribe_rest = lambda a, timeout=6.0: "okay thank you"
 check("REST gives no Georgian: Gladia's answer goes",
       stt_whisper._georgian(audio, 16000) == "გარგიმა მლობამ?")
 
+check("a one-word Georgian reply is kept, not dropped as junk",
+      stt_whisper.clean_transcript("ბოლოში", True) == "ბოლოში"
+      and stt_whisper.clean_transcript("კი.", True) == "კი."     # his "yes"
+      and stt_whisper.clean_transcript("არა", False) == "არა"
+      and stt_whisper.clean_transcript("Thank you.") == "")
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

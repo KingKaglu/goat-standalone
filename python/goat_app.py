@@ -1999,6 +1999,10 @@ class GoatApp:
               + (f" [first text at {tok:.0f}ms, text->audio {total - tok:.0f}ms]"
                  if tok >= 0 else ""))
         self.emit("latency", f"{total:.0f}")
+        # This turn's clock is spent: a later turn that starts no clock of
+        # its own (typed, or a clip over my voice) must not measure from it
+        # (2026-10-26 11:09: "heard->turn 28353ms" was 11:08:37's heard).
+        self._t_heard = 0.0
 
     # ---- streaming ear (audio callback thread — queue only, never block) ----
     def _rt_lang(self) -> str:

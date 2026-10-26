@@ -183,6 +183,38 @@ async def main():
     await lt2.reply([{"text": "Giorgi: hi"}], on_t, on_c, on_a)
     check("two failures in a row rest Live for a while", not lt2.usable())
 
+    # 2026-10-26 08:22: the first turn after ~37 min idle went into a dead
+    # session ("no answer in 6s"). Idle or told goAway -> redialled when he
+    # starts talking, before his turn.
+    lt3 = live_talk.LiveTalk(talker)
+    dials = []
+    socks = []
+
+    async def counting_connect():
+        w = FakeWS([[text_msg("Hi."), audio_msg(), GEN, 0.1, END]] * 3)
+        socks.append(w)
+        dials.append(1)
+        lt3.ws = w
+        lt3._voice = lt3._wanted_voice()
+        lt3._goaway = False
+        lt3._rx_t = _t.monotonic()
+        lt3._reader = asyncio.create_task(lt3._read(w))
+    lt3._connect = counting_connect
+    await lt3.warm()
+    await lt3.warm()
+    check("a fresh session is not redialled", len(dials) == 1, len(dials))
+    lt3._rx_t -= live_talk.STALE_S + 1
+    await lt3.warm()
+    check("silent past STALE_S: redialled as he starts talking",
+          len(dials) == 2 and socks[0].close_code is not None, len(dials))
+    await socks[1].q.put({"goAway": {"timeLeft": "10s"}})
+    await asyncio.sleep(0.05)
+    await lt3.warm()
+    check("Google's goAway: the next turn gets a fresh session", len(dials) == 3, len(dials))
+    got = {"text": [], "audio": [], "calls": []}
+    res = await lt3.reply([{"text": "Giorgi: hi"}], on_t, on_c, on_a)
+    check("...which answers", res["ok"] and "".join(got["text"]) == "Hi.", (res, got))
+
     if "--live" in sys.argv:
         import talk_brain
         real = live_talk.LiveTalk(talk_brain.GeminiTalk())

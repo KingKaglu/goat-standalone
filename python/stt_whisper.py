@@ -225,7 +225,9 @@ SHORT_OK = re.compile(
     r"^\W*(yes|yep|yeah|no|nope|stop|wait|cancel|pause|play|next|back|go|"
     r"continue|resume|repeat|louder|quieter|mute|unmute|hello|hi|hey|goat|"
     r"sir|sure|right|really|why|how|what|who|when|where|again|more|done|"
-    r"help|thanks?|thank you|okay|ok)\W*$", re.IGNORECASE)
+    r"help|thanks?|thank you|okay|ok|"
+    # his Georgian yes / no / stop / wait / ok / thanks
+    r"კი|ხო|ჰო|დიახ|არა|არ|გაჩერდი|მოიცა|კარგი|მადლობა|გამარჯობა)\W*$", re.IGNORECASE)
 # Whisper's favourite inventions over noise. Still dropped, unless he is
 # mid-conversation (see clean_transcript(chatting=...)).
 _HALLUCINATED = re.compile(r"^\W*(thanks?( for watching)?|thank you|you|okay|ok|yeah|"
@@ -244,8 +246,12 @@ def clean_transcript(raw: str, chatting: bool = False) -> str:
     words = [w for w in text.split(" ") if w]
     if text and SHORT_OK.match(text) and (chatting or not _HALLUCINATED.match(text)):
         return _apply_fixes(text)
+    # A one-word Georgian reply is a reply: "ბოლოში" (from the Live ear,
+    # 2026-10-26) was dropped by the short-junk rule, which is about
+    # Whisper's English inventions over noise.
     if JUNK.match(text) or (len(words) < 2 and len(text) < 8
-                            and not SHORT_OK.match(text)):
+                            and not SHORT_OK.match(text)
+                            and not re.search(r"[Ⴀ-ჿ]{3}", text)):
         if text:
             print("[stt] dropped junk:", json.dumps(text))
         return ""
@@ -307,11 +313,14 @@ def _foreign(got: dict) -> str | None:
 
 
 def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
-                    force: str | None = None):
+                    force: str | None = None, cloud: bool = True):
     """GPU ear, any language: (text, "en"|"ka"|other) — text '' for silence,
     None when the server is broken. force pins the language ("en"/"ka");
     None lets Whisper detect it (bilingual mode). Speech in a FOREIGN
-    language comes back as ("", code): someone near him, not him."""
+    language comes back as ("", code): someone near him, not him.
+    cloud=False (the stream's partials): a clip that may be his Georgian is
+    NOT sent to the Georgian ear; it comes back pinned English with "ka?"
+    (or "ka?script", the noisy band) for the caller to settle once."""
     if force == "en":
         # Listen first, pin second: one request when it IS English (most
         # turns), a second pinned one only when Whisper guessed otherwise.
@@ -328,27 +337,20 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
             return clean_transcript(got.get("text", ""),
                                     time.monotonic() < _chatting_until), "en"
         p_en = float((got.get("language_probabilities") or {}).get("en", 0.0) or 0.0)
-        if p_en < EN_PROB_MIN:
-            # Not English at all: his Georgian (2026-10-25 evening: in English
-            # mode his spoken Georgian was pinned to English and came out as
-            # nonsense; Whisper scores it 0.05-0.07 English). Cloud Georgian
-            # recognition is opt-in in English mode to preserve local-only
-            # speech by default.
-            if EN_KA_CLOUD:
-                ka = _georgian(audio, sample_rate)
-                if ka is not None:
-                    return ka, "ka"
-        elif p_en < NOISY_EN_MAX:
-            # Not called English, but with talk around him the English score
-            # climbs: his Georgian mixed with GOAT's own voice or the room's
-            # read 0.13-0.33 English (detected russian/turkish) and came out
-            # as "Kamarjova Giyogi" (2026-10-25, his clips + the room
-            # recording). The Live ear decides: Georgian letters = Georgian;
-            # anything else is English after all.
-            if EN_KA_CLOUD:
-                ka = _georgian(audio, sample_rate, script_only=True)
-                if ka is not None:
-                    return ka, "ka"
+        # Below EN_PROB_MIN: not English at all — his Georgian (2026-10-25
+        # evening: pinned to English it came out as nonsense; Whisper scores
+        # it 0.05-0.07 English). Up to NOISY_EN_MAX: not called English, but
+        # with talk around him the English score climbs (his Georgian over
+        # GOAT's voice read 0.13-0.33 and came out "Kamarjova Giyogi"), so the
+        # Live ear decides: Georgian letters = Georgian, else English after all.
+        if p_en < NOISY_EN_MAX and EN_KA_CLOUD:
+            noisy = p_en >= EN_PROB_MIN
+            if not cloud:
+                text, _ = _pinned(audio, sample_rate, "en")
+                return text, ("ka?script" if noisy else "ka?")
+            ka = _georgian(audio, sample_rate, script_only=noisy)
+            if ka is not None:
+                return ka, "ka"
         return _pinned(audio, sample_rate, "en")
     if force:
         return _pinned(audio, sample_rate, force)
@@ -514,6 +516,7 @@ class Stream:
         self._closed = False
         self.t_commit_sent = 0.0
         self.heard = lang             # the language the newest partial was in
+        self._maybe_ka: dict = {}     # n_chunks -> "ka?" / "ka?script" / None
         if EN_KA_CLOUD and time.monotonic() - _ka_at < KA_WARM_S:
             # he's talking Georgian lately: have the Live ear's session
             # dialled while he speaks (saves ~1.4 s, measured 3.2 -> 1.75 s)
@@ -568,7 +571,12 @@ class Stream:
             return None              # superseded before it started: skip
         audio = np.concatenate(self._chunks[:n])
         try:
-            text, heard = transcribe_lang(audio, 16000, self.lang)
+            # Local only: a partial that may be Georgian is flagged, not sent
+            # to the Georgian ear. Each partial used to take that detour, one
+            # after another on this single worker, and the final transcript
+            # came after "no answer in 8s" + a batch redo: 9.3 s of ear
+            # (2026-10-26 04:20). result() asks the Georgian ear ONCE.
+            text, heard = transcribe_lang(audio, 16000, self.lang, cloud=False)
         except Exception as e:  # noqa: BLE001 — the batch ear still has the audio
             self.error = f"{type(e).__name__}: {e}"
             return None
@@ -583,6 +591,7 @@ class Stream:
                 self.last_partial = text
                 if heard in ("en", "ka"):
                     self.heard = heard
+            self._maybe_ka[n] = heard if str(heard).startswith("ka?") else None
         return text
 
     async def result(self):
@@ -597,6 +606,15 @@ class Stream:
             return None
         if text is None:
             return None
+        mode = self._maybe_ka.get(j[0])
+        if mode:
+            # the final words may be his Georgian: the Georgian ear, once
+            audio = np.concatenate(self._chunks[:j[0]])
+            ka = await asyncio.to_thread(_georgian, audio, 16000,
+                                         mode == "ka?script")
+            if ka is not None:
+                text = ka
+                self.heard = "ka"
         ms = (time.monotonic() - self.t_commit_sent) * 1000
         print(f"[stt-local] heard {ms:.0f}ms after his pause: {text[:60]!r}")
         return text
