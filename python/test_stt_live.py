@@ -130,6 +130,34 @@ sl.transcribe_rest = lambda a, timeout=6.0: "okay thank you"
 check("REST gives no Georgian: Gladia's answer goes",
       stt_whisper._georgian(audio, 16000) == "გარგიმა მლობამ?")
 
+
+class _Resp:
+    def __init__(self, code, text=""):
+        self.status_code = code
+        self._text = text
+
+    def json(self):
+        return {"candidates": [{"content": {"parts": [{"text": self._text}]}}]}
+
+
+import httpx
+asked = []
+
+
+def busy_first(url, **kw):
+    asked.append(url.split("/models/")[1].split(":")[0])
+    return _Resp(503) if len(asked) == 1 else _Resp(200, "კარგი, მადლობა.")
+
+real_post, httpx.post = httpx.post, busy_first
+import importlib
+importlib.reload(sl)                                       # the real transcribe_rest
+sl.talk_brain.api_key = lambda: "k"
+r = sl.transcribe_rest(audio)
+check("REST model busy (503): the next model, its own quota, answers",
+      r == "კარგი, მადლობა." and asked == sl.REST_MODELS[:2]
+      and asked[0] == "gemini-3.5-flash-lite", (r, asked))
+httpx.post = real_post
+
 check("a one-word Georgian reply is kept, not dropped as junk",
       stt_whisper.clean_transcript("ბოლოში", True) == "ბოლოში"
       and stt_whisper.clean_transcript("კი.", True) == "კი."     # his "yes"

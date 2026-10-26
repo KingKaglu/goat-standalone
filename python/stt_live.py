@@ -240,7 +240,12 @@ def _one_script(text: str) -> str:
     return re.sub(r"[\wჀ-ჿ]+", fix, text)
 
 
-REST_MODEL = os.environ.get("GOAT_STT_REST_MODEL", "gemini-3.1-flash-lite")
+# 3.5-flash-lite: 6/6 of his Georgian clips right in 1.8-2.8 s (2026-10-26
+# 21:4x); 3.1-flash-lite took 2.5-29 s and 503s, so it is only the retry —
+# each model has its own quota.
+REST_MODEL = os.environ.get("GOAT_STT_REST_MODEL", "gemini-3.5-flash-lite")
+REST_MODELS = [REST_MODEL] + [m for m in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+                              if m != REST_MODEL]
 REST_PROMPT = ("Transcribe this speech exactly, word for word, in the language spoken. "
                "Georgian must be written in Georgian script (Mkhedruli); English in "
                "English. Output only the transcript. If there is no speech, output nothing.")
@@ -267,20 +272,30 @@ def transcribe_rest(audio: np.ndarray, timeout: float = 6.0) -> str | None:
     body = {"contents": [{"role": "user", "parts": [
         {"inlineData": {"mimeType": "audio/wav",
                         "data": base64.b64encode(buf.getvalue()).decode()}},
-        {"text": REST_PROMPT}]}],
-        "generationConfig": {"temperature": 0, "thinkingConfig": {"thinkingBudget": 0}}}
-    try:
-        r = httpx.post(f"https://generativelanguage.googleapis.com/v1beta/models/"
-                       f"{REST_MODEL}:generateContent", params={"key": key},
-                       json=body, timeout=timeout)
-        if r.status_code != 200:
-            print(f"[stt-rest-ka] HTTP {r.status_code}", flush=True)
+        {"text": REST_PROMPT}]}]}
+    deadline = time.monotonic() + timeout
+    for model in REST_MODELS:
+        left = deadline - time.monotonic()
+        if left < 1.0:
             return None
-        parts = r.json()["candidates"][0]["content"].get("parts") or []
-        return _one_script("".join(p.get("text", "") for p in parts).strip())
-    except Exception as e:  # noqa: BLE001 — Gladia's answer stands
-        print(f"[stt-rest-ka] {type(e).__name__}", flush=True)
-        return None
+        # 3.5 refuses thinkingBudget (HTTP 400); 3.1 thinks without it
+        body["generationConfig"] = ({"temperature": 0} if "3.5" in model else
+                                    {"temperature": 0, "thinkingConfig": {"thinkingBudget": 0}})
+        try:
+            r = httpx.post(f"https://generativelanguage.googleapis.com/v1beta/models/"
+                           f"{model}:generateContent", params={"key": key},
+                           json=body, timeout=left)
+            if r.status_code != 200:
+                print(f"[stt-rest-ka] {model} HTTP {r.status_code}", flush=True)
+                continue                    # busy or out of quota: the next model
+            parts = r.json()["candidates"][0]["content"].get("parts") or []
+            return _one_script("".join(p.get("text", "") for p in parts
+                                       if not p.get("thought")).strip())
+        except Exception as e:  # noqa: BLE001 — Gladia's answer stands
+            print(f"[stt-rest-ka] {model} {type(e).__name__}", flush=True)
+            if isinstance(e, httpx.TimeoutException):
+                return None
+    return None
 
 
 def transcribe(audio: np.ndarray, sample_rate: int = 16000) -> str | None:
