@@ -1145,13 +1145,16 @@ class PhoneServer:
                 # to English, his "გაჩერდი" came back as "Picture." and could
                 # never stop me (2026-10-19 21:2x).
                 lang = self.app._rt_lang()
-                if time.time() < self._voice_end + ECHO_TAIL_S and lang == "en":
+                if (time.time() < self._voice_end + ECHO_TAIL_S and lang == "en"
+                        and stt_realtime.ENGLISH_REALTIME):
                     lang = "auto"
                 gpu = getattr(self.app, "_gpu_ear", None)
-                if lang == "en" and gpu is not None and gpu():
-                    # English on the GPU Whisper, as on the laptop: no cloud
-                    # ear to open (or wait on when it's out of credits).
-                    rt = None
+                if lang == "en" and not stt_realtime.ENGLISH_REALTIME:
+                    # CPU Whisper can stream locally while the phone sends the
+                    # clip. Keep the existing GPU batch path for echo handling.
+                    if gpu is None or not gpu():
+                        import stt_whisper
+                        rt = stt_whisper.Stream(self.loop, "en")
                 else:
                     rt = stt_realtime.start_threadsafe(lang, self.loop)
             except Exception as e:  # noqa: BLE001 — batch ear still has the clip

@@ -51,11 +51,11 @@ RISKY_WINDOWS = [
     "internet banking", "გადახდა", "საბანკო",
 ]
 
-# Chords that destroy or escape in one press.
+# Chords that destroy data or lock the session. Ordinary Alt+F4 closes are
+# checked by close_guard at the hand layer, where the target window is known.
 RISKY_KEYS = {
     "ctrl+shift+delete", "ctrl+shift+del",  # clear browsing data
     "shift+delete", "shift+del",            # permanent delete, no recycle bin
-    "alt+f4",                               # closes whatever has focus
     "win+l",                                # locks him out mid-task
     "ctrl+alt+delete",
 }

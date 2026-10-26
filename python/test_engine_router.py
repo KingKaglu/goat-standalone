@@ -92,6 +92,7 @@ def make_app(client):
     app.events = []
     app.client = client
     app.tts = MockTTS()
+    app._stt_notice = ""
     # work lane
     app.work_model = g.DEFAULT_WORK
     app.hard_model = g.DEFAULT_WORK

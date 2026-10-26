@@ -295,7 +295,10 @@ class LiveTalk:
                 # an action GOAT runs itself and reports on in its own lines
                 resp = {"result": "started", "scheduling": "SILENT"}
             else:
-                resp = {"result": str(result)[:8000]}
+                # 2026-10-25 night it opened its follow-up by saying its
+                # pre-tool sentence again ("Sir, checking…. Sir, checking…")
+                resp = {"result": str(result)[:8000],
+                        "note": "Go on from this result. Don't repeat what you already said."}
             return {"id": fc.get("id"), "name": name, "response": resp}
         responses = await asyncio.gather(*(one(fc) for fc in calls))
         try:

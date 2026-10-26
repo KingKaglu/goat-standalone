@@ -43,6 +43,7 @@ open(os.path.join(desk, "setup.exe"), "wb").write(b"MZ")
 with zipfile.ZipFile(os.path.join(desk, "cv.docx"), "w") as z:
     z.writestr("word/document.xml", "<w:document><w:p><w:t>Giorgi CV</w:t></w:p>"
                                     "<w:p><w:t>Python, voice AI</w:t></w:p></w:document>")
+open(os.path.join(desk, "chunk-SNB7PWCV.js"), "w").write("x")   # a bundle, not his CV
 page = os.path.join(desk, "page.html")
 open(page, "w", encoding="utf-8").write("<html><script>x=1</script><h1>Hello &amp; welcome</h1></html>")
 
@@ -62,6 +63,9 @@ check("finds a document by what is written INSIDE it",
       "business-plan.md" in r and "Mentioned inside" in r, r)
 check("dependency folders are never searched", "node_modules" not in r, r)
 check("nothing found says so plainly", vh.find_files("zebra quantum").startswith("nothing found"))
+r = vh.find_files("my cv")
+check("a short word is a whole word: his CV, not a bundle with CV in its name",
+      "cv.docx" in r and "PWCV" not in r, r)
 check("reads a docx", "Giorgi CV" in vh.read_file(os.path.join(desk, "cv.docx")))
 h = vh.read_file(page)
 check("reads html as text", "Hello & welcome" in h and "x=1" not in h, h)
@@ -88,6 +92,23 @@ vh.phone({"op": "alarm", "arg": "7:30", "arg2": "gym"})
 ex = sent[-1]["extras"]
 check("alarm 7:30", ex["android.intent.extra.alarm.HOUR"] == 7
       and ex["android.intent.extra.alarm.MINUTES"] == 30, ex)
+vh.phone({"op": "volume", "arg": "all", "arg2": "100%"})
+check("'all the volumes up' asks the phone for every stream at full",
+      sent[-1]["action"] == "max" and sent[-1]["percent"] == 100, sent[-1])
+
+
+def old_app(cmd, timeout=25.0):
+    sent.append(cmd)
+    if cmd.get("action") == "max":
+        return {"ok": False, "error": "volume action? max"}
+    return {"ok": True, "volume": 100}
+
+
+vh._phone_call = old_app
+r = vh.phone({"op": "volume", "arg": "max"})
+check("an old phone app: media goes to full, and it says the alarm did NOT change",
+      sent[-1] == {"op": "volume", "action": "set", "percent": 100} and "did NOT" in r, r)
+vh._phone_call = fake_phone
 vh.phone({"op": "tap_text", "arg": "Roaming"})
 check("tap a button by its text", sent[-1] == {"op": "tap_text", "text": "Roaming"}, sent[-1])
 check("unknown op names the ones that exist", "screen" in vh.phone({"op": "fly"}))
@@ -148,6 +169,36 @@ r = vh.terminal_claude({"action": "status"})
 check("terminal Claude: WORKING and on what", "WORKING" in r and "Wiring the voice's hands" in r, r)
 r = vh.terminal_claude({"action": "continue"})
 check("a working session is not resumed twice", "still working" in r, r)
+r = vh.terminal_claude({"action": "send", "message": "continue", "at": "01:45"})
+check("'continue it when my usage resets': a timed send is set",
+      r.startswith("set: at 01:45") and vh._later and vh._later[-1][1] == "continue", r)
+check("a bad time is refused plainly",
+      vh.terminal_claude({"action": "send", "at": "25:99"}).startswith("ERROR"))
+
+# ---- his browser history ----------------------------------------------------
+import sqlite3
+hist = os.path.join(tmp, "Chrome", "Default", "History")
+os.makedirs(os.path.dirname(hist))
+con = sqlite3.connect(hist)
+con.execute("CREATE TABLE urls (url TEXT, title TEXT, visit_count INT, last_visit_time INT)")
+now_c = int((time.time() + 11644473600) * 1_000_000)
+con.executemany("INSERT INTO urls VALUES (?,?,?,?)", [
+    ("https://www.imdb.com/title/tt-vq/", "VisionQuest (TV Series 2026) - IMDb", 4, now_c - 3_600_000_000),
+    ("https://www.google.com/search?q=weather", "weather - Google Search", 1, now_c),
+    ("https://old.example/visionquest", "VisionQuest rumours", 1, now_c - 90 * 86400 * 1_000_000)])
+con.commit()
+con.close()
+vh._history_files = lambda: [hist]
+r = vh.browser_history({"query": "vision quest"})
+check("browser history finds the page he watched this week",
+      "VisionQuest (TV Series 2026)" in r and "visited 4x" in r and "weather" not in r, r)
+check("...and not one from three months ago", "rumours" not in r, r)
+check("no match says so plainly", vh.browser_history({"query": "zebra"}).startswith("nothing"))
+check("he can't-type refusals are recognised, plain talk isn't",
+      talk_brain.REFUSE_RE.search("Sir, I am unable to type commands directly into your terminal.")
+      and talk_brain.REFUSE_RE.search("Sir, my hands don't have direct access to your history.")
+      and talk_brain.REFUSE_RE.search("I do not have a feature to directly input your speech")
+      and not talk_brain.REFUSE_RE.search("Sir, I can open the terminal for you."))
 
 # ---- where he is -------------------------------------------------------------
 import io
@@ -175,6 +226,8 @@ en = {"language_probabilities": {"en": 0.98, "de": 0.0}}
 ka = {"language_probabilities": {"ru": 0.47, "en": 0.05, "de": 0.03}}
 opus = {"language_probabilities": {"pt": 0.21, "en": 0.13, "de": 0.02}}
 check("German nearby is someone else", stt_whisper._foreign(de) == "de")
+check("English mode sends his Georgian to the Georgian ear by default",
+      stt_whisper.EN_KA_CLOUD or os.environ.get("GOAT_STT_EN_KA_CLOUD"))
 check("his English is never foreign", stt_whisper._foreign(en) is None)
 check("his Georgian is never foreign", stt_whisper._foreign(ka) is None)
 check("a one-word English guess is never foreign", stt_whisper._foreign(opus) is None)

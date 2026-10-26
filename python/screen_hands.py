@@ -474,7 +474,9 @@ def _refuse_closing_self(combo: str) -> None:
         return
     pid = wt.DWORD()
     fg = _user32.GetForegroundWindow()
-    _user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+    if not fg or not _user32.GetWindowThreadProcessId(fg, ctypes.byref(pid)):
+        raise ValueError(
+            f"refused {hits[0]}: couldn't verify the foreground window")
     if pid.value == os.getpid():
         raise ValueError(
             f"refused {hits[0]}: GOAT's own window has focus, so it would close "
@@ -483,13 +485,19 @@ def _refuse_closing_self(combo: str) -> None:
             "foreground before pressing it.")
     # A terminal, a Claude session or unsaved work in front: his yes first
     # (2026-10-01, his live Claude Code terminal was closed on "close this").
+    import close_guard
+    key = close_guard.approval_key(
+        "screen-key", combo.strip().lower(),
+        {"hwnd": int(fg), "pid": int(pid.value)})
+    if close_guard.granted(key):
+        return
     try:
-        import close_guard
         reason = close_guard.window_reason(fg)
-    except Exception:  # noqa: BLE001 — the guard must never break a keypress
-        reason = None
-    if reason and not close_guard.granted():
-        close_guard.ask(reason)
+    except Exception:  # noqa: BLE001 — fail closed if the target is unknown
+        reason = "the foreground window could not be checked safely"
+    if reason:
+        close_guard.ask(reason, key=key, strict_yes=True,
+                        no_line="Sir, I won't close that window.")
         raise ValueError(f"refused {hits[0]}. " + close_guard.block_message(reason))
 
 

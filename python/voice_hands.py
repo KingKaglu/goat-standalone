@@ -16,8 +16,9 @@ with no Claude usage:
   list_folder
   open_path      a file or folder in its own app (never a program/script)
   phone          the same phone hands Claude uses (phone_hands.py ops)
-  terminal_claude  what the Claude Code sessions in his terminal are doing,
-                 and continue one that has stopped
+  terminal_claude  what the Claude Code sessions in his terminal are doing;
+                 send one his words (now, or at a time)
+  browser_history  pages he visited in Chrome/Edge
   web_search     current facts (Live's own Google Search is refused on his
                  free tier)
 
@@ -54,6 +55,13 @@ SKIP_DIRS = {
     "android-tools", "clipforge-chrome-profile", "fasmetri-chrome-profile",
     ".qtwebengineprocess", "stt-debug", "tool-results",
 }
+# Program installs on D: — by full path, their names ("git", "dev") are his
+# folders elsewhere. "my cv" found a VS Code file named …-CV774YSK.js
+# (2026-10-26).
+SKIP_PATHS = {os.path.normcase(p) for p in (
+    r"D:\Fortnite", r"D:\Git", r"D:\Microsoft VS Code", r"D:\RivaTuner Statistics Server",
+    r"D:\SteamLibrary", r"D:\Riot Games", r"D:\dev\android-sdk", r"D:\dev\jdk17",
+    r"D:\dev\uv-cache", r"D:\dev\dl", r"D:\dev\ollama", r"D:\dev\vosk")}
 INDEX_CAP = 400_000
 INDEX_TTL_S = 900.0
 TEXT_EXT = {".md", ".txt", ".html", ".htm", ".py", ".js", ".ts", ".tsx", ".json",
@@ -92,7 +100,8 @@ def _build_index():
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames
                            if d.lower() not in SKIP_DIRS
-                           and not (d.startswith(".") and d.lower() != ".claude")]
+                           and not (d.startswith(".") and d.lower() != ".claude")
+                           and os.path.normcase(os.path.join(dirpath, d)) not in SKIP_PATHS]
             for name in dirnames + filenames:
                 full = os.path.join(dirpath, name)
                 rows.append(full)
@@ -148,13 +157,19 @@ def _name_hits(words: list, limit: int = 8) -> list:
         idx = _index
     if not idx:
         return []
+    # A short word is a whole word: "my cv" matched "CGVShaders" and a
+    # "…DcVTT2w3.js" bundle, not his CV (2026-10-26).
+    tests = [(re.compile(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])").search
+              if len(w) <= 3 else (lambda s, w=w: w in s)) for w in words]
+    need = max(1, len(words) - (1 if len(words) > 2 else 0))
     scored = []
     for low, p, mt in idx:
-        base = os.path.basename(low)
-        in_path = sum(1 for w in words if w in low)
-        if in_path < max(1, len(words) - (1 if len(words) > 2 else 0)):
+        in_path = sum(1 for t in tests if t(low))
+        if in_path < need:
             continue
-        score = in_path + 2 * sum(1 for w in words if w in base)
+        base = os.path.basename(low)
+        score = (in_path + 2 * sum(1 for t in tests if t(base))
+                 + (1 if os.path.splitext(base)[1] in DOC_EXT | {".pdf"} else 0))
         scored.append((score, mt, p))
     scored.sort(key=lambda r: (-r[0], -r[1]))
     return [(p, mt) for _, mt, p in scored[:limit]]
@@ -370,7 +385,11 @@ def phone(args: dict) -> str:
         elif op == "scroll":
             cmd = {"op": "scroll", "up": a.lower() == "up"}
         elif op == "volume":
-            cmd = {"op": "volume", "action": a or "up", "percent": int(b or 50)}
+            act = a.lower() or "up"
+            if act in ("max", "all", "full", "loud", "100", "100%"):
+                act = "max"           # every stream: media, alarm, ring, notification
+            pct = re.sub(r"\D", "", b)
+            cmd = {"op": "volume", "action": act, "percent": int(pct or 50)}
         elif op == "media":
             cmd = {"op": "media", "action": a or "play_pause"}
         elif op == "torch":
@@ -415,6 +434,13 @@ def phone(args: dict) -> str:
                     "scroll, back, home, notifications, volume, media, torch, alarm, "
                     "timer, dial, sms, url, maps, search, settings)")
         res = _phone_call(cmd)
+        if (op == "volume" and cmd["action"] == "max"
+                and "volume action?" in str(res.get("error") or "")):
+            # the phone's app predates "max": media to full is what it can do
+            res = _phone_call({"op": "volume", "action": "set", "percent": 100})
+            if res.get("ok", True):
+                return ("media volume set to 100% — the alarm and ringer volume need "
+                        "the new GOAT phone app (/goat.apk), so they did NOT change")
     except urllib.error.URLError as e:
         return f"ERROR: GOAT's phone link is down ({e.reason})"
     except Exception as e:  # noqa: BLE001
@@ -518,21 +544,118 @@ def terminal_claude(args: dict) -> str:
                 line += "; its last steps: " + " / ".join(steps)
             out.append(line)
         return "Claude Code sessions in his terminal:\n" + "\n".join(out)
-    if action == "continue":
+    if action in ("continue", "send"):
         msg = str(args.get("message") or "Continue the task you were working on.").strip()
-        idle = [r for r in rows if r.get("status") != "busy" and r.get("sessionId")]
-        if not idle:
-            return "the terminal Claude is still working — nothing to continue; it's on it"
-        r = idle[0]
+        at = str(args.get("at") or "").strip()
+        if at:
+            # "continue it when my usage resets" (2026-10-25 night: he set a
+            # phone alarm for 01:45 to do it by hand — the voice said it
+            # couldn't). A timer in GOAT; it goes if GOAT is still running.
+            m = re.match(r"^(\d{1,2})[:.](\d{2})$", at)
+            if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+                return "ERROR: at is a 24-hour time like 01:45"
+            now = time.localtime()
+            due = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, int(m.group(1)),
+                               int(m.group(2)), 0, 0, 0, -1))
+            if due <= time.time():
+                due += 24 * 3600
+            t = threading.Timer(due - time.time(), _resume_later, (msg,))
+            t.daemon = True
+            t.start()
+            _later.append((due, msg))
+            return (f"set: at {at} GOAT sends the terminal Claude: {msg[:120]} "
+                    f"(in {int((due - time.time()) // 60)} min; only while GOAT is running)")
+        return _resume(rows, msg)
+    return "ERROR: action is status, continue or send"
+
+
+_later: list = []          # (when, message) the voice has scheduled
+
+
+def _resume(rows: list, msg: str) -> str:
+    idle = [r for r in rows if r.get("status") != "busy" and r.get("sessionId")]
+    if not idle:
+        return ("the terminal Claude is still working, so it can't take a new message "
+                "right now — it's on it")
+    r = idle[0]
+    try:
+        subprocess.Popen(["claude", "--bg", "--resume", r["sessionId"], msg],
+                         cwd=r.get("cwd") or HOME, shell=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: couldn't resume it: {e}"
+    return f"sent to {r.get('name') or r['sessionId'][:8]} (it runs in the background): {msg[:120]}"
+
+
+def _resume_later(msg: str):
+    r = _resume(_sessions() or [], msg)
+    print(f"[voice-hands] scheduled terminal Claude message -> {r[:120]!r}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# his browser history (2026-10-25 night: "search my history, I opened Vision
+# Quest several times this week" — the voice said it was checking, and had
+# nothing to check with)
+# ---------------------------------------------------------------------------
+
+def _history_files() -> list:
+    import glob
+    local = os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local")
+    roam = os.environ.get("APPDATA") or os.path.join(HOME, "AppData", "Roaming")
+    pats = [os.path.join(local, "Google", "Chrome", "User Data", "*", "History"),
+            os.path.join(local, "Microsoft", "Edge", "User Data", "*", "History"),
+            os.path.join(local, "BraveSoftware", "Brave-Browser", "User Data", "*", "History"),
+            # Opera keeps the profile itself in Roaming (and GX's extra ones under _side_profiles)
+            os.path.join(roam, "Opera Software", "Opera*", "History"),
+            os.path.join(roam, "Opera Software", "Opera*", "_side_profiles", "*", "History"),
+            os.path.join(HOME, "fasmetri-chrome-profile", "*", "History")]
+    return [f for p in pats for f in glob.glob(p)]
+
+
+def browser_history(args: dict) -> str:
+    """Pages he visited (Chrome, Edge) whose title or address has his words."""
+    import shutil
+    import sqlite3
+    import tempfile
+    q = str(args.get("query") or "").strip()
+    days = max(1, min(365, int(re.sub(r"\D", "", str(args.get("days") or "")) or 30)))
+    words = [w for w in re.findall(r"\w+", q.lower()) if len(w) > 1][:6]
+    since = (time.time() - days * 86400 + 11644473600) * 1_000_000   # Chrome's clock
+    hits: dict = {}
+    for f in _history_files():
+        tmp = os.path.join(tempfile.gettempdir(), f"goat-hist-{os.getpid()}.db")
         try:
-            subprocess.Popen(["claude", "--bg", "--resume", r["sessionId"], msg],
-                             cwd=r.get("cwd") or HOME, shell=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except Exception as e:  # noqa: BLE001
-            return f"ERROR: couldn't resume it: {e}"
-        return f"resumed {r.get('name') or r['sessionId'][:8]} in the background with: {msg[:120]}"
-    return "ERROR: action is status or continue"
+            shutil.copy2(f, tmp)          # the browser keeps the live file locked
+            con = sqlite3.connect(tmp)
+            sql = ("SELECT url, title, visit_count, last_visit_time FROM urls "
+                   "WHERE last_visit_time > ?")
+            par: list = [since]
+            for w in words:
+                sql += " AND (lower(title) LIKE ? OR lower(url) LIKE ?)"
+                par += [f"%{w}%", f"%{w}%"]
+            for url, title, n, t in con.execute(sql + " ORDER BY last_visit_time DESC LIMIT 40", par):
+                old = hits.get(url)
+                if old is None or t > old[2]:
+                    hits[url] = (title or "", n or 0, t)
+            con.close()
+        except Exception as e:  # noqa: BLE001 — one locked/odd profile must not hide the rest
+            print(f"[voice-hands] history {f}: {e!r}", flush=True)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    if not hits:
+        return (f"nothing in his browser history (Chrome, Edge, Brave, Opera) from the last {days} days "
+                f"matches {q!r}" if q else "his browser history is empty or unreadable")
+    rows = sorted(hits.items(), key=lambda kv: -kv[1][2])[:15]
+    out = [f"his browser history, last {days} days, newest first"
+           + (f", matching {q!r}" if q else "") + ":"]
+    for url, (title, n, t) in rows:
+        when = time.strftime("%a %d %b %H:%M", time.localtime(t / 1_000_000 - 11644473600))
+        out.append(f"- {when}: {title[:90] or '(no title)'} — {url[:140]} (visited {n}x)")
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +700,8 @@ def execute(name: str, args: dict) -> str:
             return terminal_claude(args)
         if name == "where_am_i":
             return where_am_i()
+        if name == "browser_history":
+            return browser_history(args)
         if name == "web_search":
             import local_hands
             q = str(args.get("query") or "")
@@ -593,7 +718,7 @@ def execute(name: str, args: dict) -> str:
 
 
 NAMES = {"find_files", "read_file", "list_folder", "open_path", "phone",
-         "terminal_claude", "web_search", "where_am_i"}
+         "terminal_claude", "web_search", "where_am_i", "browser_history"}
 
 DECLS = [
     {"name": "find_files",
@@ -625,7 +750,7 @@ DECLS = [
                     "(arg=visible text), type (arg=text, arg2='submit' also presses the app's Send "
                     "button and says whether it really went), scroll "
                     "(arg='up'|'down'), back, home, notifications, volume "
-                    "(arg=up|down|mute|set, arg2=percent), media (arg=play_pause|next|"
+                    "(arg=up|down|mute|set|max — max = media, alarm, ring and notification all full; arg2=percent), media (arg=play_pause|next|"
                     "previous), torch (arg=on|off), alarm (arg='HH:MM', arg2=label), "
                     "timer (arg=seconds), dial (arg=number), sms (arg=number, "
                     "arg2=text — opens the message, he presses send), url, maps, "
@@ -652,9 +777,20 @@ DECLS = [
      "parameters": {"type": "object", "properties": {}}},
     {"name": "terminal_claude",
      "description": "The Claude Code sessions in his terminal (not GOAT's own Claude): "
-                    "action 'status' says which are WORKING and on what, 'continue' "
-                    "resumes one that has stopped (message = what to do).",
+                    "action 'status' says which are WORKING and on what; 'send' types "
+                    "a message into one that has stopped (message = his words, or "
+                    "'continue'), at once or at a time (at='HH:MM', e.g. when his "
+                    "usage resets).",
      "parameters": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["status", "continue"]},
-         "message": {"type": "string"}}, "required": ["action"]}},
+         "action": {"type": "string", "enum": ["status", "send", "continue"]},
+         "message": {"type": "string"},
+         "at": {"type": "string", "description": "24-hour HH:MM; empty = now"}},
+         "required": ["action"]}},
+    {"name": "browser_history",
+     "description": "Pages he visited in Chrome, Edge, Brave or Opera whose title or address has these "
+                    "words, newest first, with when and how often.",
+     "parameters": {"type": "object", "properties": {
+         "query": {"type": "string"},
+         "days": {"type": "integer", "description": "how far back, default 30"}},
+         "required": ["query"]}},
 ]

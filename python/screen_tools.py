@@ -33,6 +33,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 import game_hands
 import game_pilot
+import close_guard
 import screen_browser
 import screen_hands
 import screen_policy
@@ -53,10 +54,10 @@ def set_emit(fn) -> None:
 
 
 def set_confirm_hook(fn) -> None:
-    """Install an interactive confirmer: fn(action, reason, args) -> bool|None.
+    """Install an approval checker: fn(action, reason, args) -> bool|None.
 
-    None means "no answer available" and the call falls back to the
-    confirm=true retry. Nothing here blocks forever waiting for a human.
+    The app returns True only for a matching, one-shot approval already given
+    by the user. None means no approval is available, so the tool asks first.
     """
     global _confirm_hook
     _confirm_hook = fn
@@ -107,6 +108,21 @@ def _fail(msg: str) -> dict:
     return {"content": [{"type": "text", "text": msg}], "isError": True}
 
 
+def _approval_key(action: str, args: dict, foreground: dict | None = None) -> str:
+    exact = dict(args or {})
+    exact.pop("confirm", None)
+    if foreground is None:
+        try:
+            foreground = screen_hands.foreground() or {}
+        except Exception:  # noqa: BLE001
+            foreground = {}
+    if not isinstance(foreground, dict):
+        foreground = {}
+    window = {k: foreground.get(k) for k in ("hwnd", "pid", "title")}
+    return close_guard.approval_key(
+        "screen", action, {"args": exact, "foreground": window})
+
+
 def _gate(action: str, args: dict) -> str | None:
     """Return a refusal-to-proceed message, or None when the action may run."""
     try:
@@ -115,10 +131,7 @@ def _gate(action: str, args: dict) -> str | None:
         fg = {}
     tier, reason = screen_policy.classify(action, args, fg.get("title", ""))
     what = screen_policy.describe(action, args)
-    if tier == screen_policy.AUTO or args.get("confirm") is True:
-        if tier != screen_policy.AUTO:
-            _record({"tool": "gate", "action": action, "what": what,
-                     "status": "ok", "confirmed": True, "reason": reason})
+    if tier == screen_policy.AUTO:
         return None
     if _confirm_hook:
         try:
@@ -133,11 +146,16 @@ def _gate(action: str, args: dict) -> str | None:
             _record({"tool": "gate", "action": action, "what": what,
                      "status": "gated", "confirmed": False, "reason": reason})
             return f"Giorgi said no to: {what}"
+    key = _approval_key(action, args, fg)
+    close_guard.ask(what, no_line="Sir, I won't do that.", key=key,
+                    strict_yes=True)
     _record({"tool": "gate", "action": action, "what": what,
              "status": "gated", "reason": reason})
     return (f"CONFIRM FIRST — {what}\nWhy it is gated: {reason}.\n"
-            f"Ask Giorgi in one short line, and if he agrees repeat this exact "
-            f"call with confirm=true. Nothing has happened yet.")
+            f"Ask Giorgi in one short line. Only his next explicit yes can "
+            f"approve this exact action; confirm=true alone is not approval. "
+            f"After a yes, repeat this exact call with confirm=true. "
+            f"Nothing has happened yet.")
 
 
 async def _run(tool_name: str, action: str, args: dict, fn, *fn_args, **fn_kw):

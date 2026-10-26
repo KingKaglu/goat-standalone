@@ -25,6 +25,7 @@ import screen_browser
 import screen_hands
 import screen_policy
 import screen_tools
+import close_guard
 
 PASS, FAIL = [], []
 
@@ -178,7 +179,9 @@ def test_policy() -> None:
         (("fill_selector", {"selector": "#x", "value": "გადახდა"}, "x"), confirm),
         (("type", {"text": "4111 1111 1111 1111"}, "Notepad"), confirm),
         (("key", {"text": "ctrl+shift+delete"}, "Chrome"), confirm),
-        (("key", {"text": "alt+f4"}, "Notepad"), confirm),
+        # alt+f4 is judged at the hand layer now, where the window it would
+        # close is known (close_guard: terminals, Claude, unsaved work ask)
+        (("key", {"text": "alt+f4"}, "Notepad"), auto),
         # location triggers, even when the action looks innocent
         (("click", {"x": 1, "y": 1}, "TBC Bank | Internet Banking"), confirm),
         (("type", {"text": "hello"}, "Stripe Checkout"), confirm),
@@ -299,7 +302,9 @@ def test_confirm_hook() -> None:
         screen_tools.set_confirm_hook(None)
     blocked = screen_tools._gate("click", {"x": 1, "y": 1, "label": "Pay now",
                                            "confirm": True})
-    check("confirm=true clears the gate", blocked is None)
+    check("confirm=true alone does not clear the gate",
+          blocked is not None and "Only his next explicit yes" in blocked)
+    close_guard.clear()
 
 
 def test_emit() -> None:

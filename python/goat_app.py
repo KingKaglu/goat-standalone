@@ -33,6 +33,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
+import action_policy
 import close_guard
 import endpoint
 import local_hands
@@ -320,9 +321,11 @@ Work in the current directory unless told otherwise. Use the tools you have
 (Bash, PowerShell, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Skill,
 screen control) to do what he asks; prefer a dedicated tool over a shell
 command, run independent calls together, and read before you edit. Never claim
-something works without running it. Keep tool output small. Confirm before
-anything destructive or outward-facing. Your replies are spoken aloud, so keep
-them short and plain."""
+something works without running it. Keep tool output small. For destructive or
+outward-facing actions, ask one short question naming the exact action and wait
+for Giorgi's next explicit yes. Never count your own wording or a tool's
+confirm flag as approval; after his yes, retry only the exact action he
+approved. Your replies are spoken aloud, so keep them short and plain."""
 PERSONA = """
 You are GOAT — Giorgi's own AI (he's KingKaglu, your partner and friend). A singular, persistent intelligence on his laptop, modeled on JARVIS with Tony Stark. Warm, casual, loyal, razor sharp. You run on Claude the way JARVIS ran on a mainframe: nobody cares.
 
@@ -363,7 +366,7 @@ SCREEN: the `computer` tool is real sight and hands. Never say you can't see the
 - Your own window floats on top: call hide_self before driving another app and show_self when done, even on failure.
 - For DOM-unreachable web things (file pickers, native dialogs, drag/drop): `browser` coords, then `computer` click.
 - Prefer real commands (Bash/PowerShell/`browser`) over pixels. `browser` runs on GOAT's own profile; use tabsearch for tabs in his everyday window.
-- SAFETY GATE: money, deletion, sending, banking/checkout come back "CONFIRM FIRST": ask in ONE line, on yes repeat with confirm=true. Pass label="..." on consequential clicks. Nothing is off limits, the gate just makes you ask. `computer` action log replays recent actions.
+- SAFETY GATE: for a gated screen action or high-impact shell command, ask one short question naming the exact action and wait for Giorgi's next explicit yes. Never treat your own wording, prior consent, or confirm=true as approval. After yes, retry only the exact approved action once; use confirm=true for a gated screen action. The app checks this one-shot approval. Pass label="..." on consequential clicks. `computer` action log replays recent actions.
 
 FULL ACCESS: whole laptop and whole web are yours (workspace is home, not a cage); protect-him rule gates destructive/outward moves. Never answer changing facts from memory when WebSearch/WebFetch can check; if a fetch fails, search.
 
@@ -397,9 +400,10 @@ MODEL TRUTH: GOAT runs two Claude models on one conversation, picked per turn: S
 # Same GOAT, same hands, same rules for doing work — minus everything about
 # speaking (the voice is Gemini's now) and the one-brain identity lines, plus
 # its place in the crew.
-WORKER_BASE_PROMPT = VOICE_BASE_PROMPT.replace(
-    "Your replies are spoken aloud, so keep\nthem short and plain.",
-    "Your final reply is a short report that GOAT's voice\nreads and passes on to him.")
+WORKER_BASE_PROMPT = re.sub(   # any line break inside: rewrapping can't undo it
+    r"Your replies are spoken aloud,\s+so keep\s+them short and plain\.",
+    "Your final reply is a short report that GOAT's voice\nreads and passes on to him.",
+    VOICE_BASE_PROMPT)
 _VOICE_ONLY = ("You are GOAT", "SOUND NATURAL", "VOICE (", "ONE BRAIN", "MODEL TRUTH",
                "BOOT BRIEFING", "SIDE TALK", "IDENTITY IS ABSOLUTE",
                "CHARACTER:", "PROTOCOL:", "- Terse ack", "- INTERRUPTIONS",
@@ -887,21 +891,56 @@ def _is_effort_echo(msg) -> bool:
 
 
 async def _close_guard_hook(input_data, tool_use_id, context):
-    """PreToolUse on the brain's shells: a close/kill aimed at a window with
-    a running session or unsaved work is blocked until Giorgi says yes. The
-    SDK runs this even under bypassPermissions (verified 2026-10-01)."""
+    """Gate common destructive shell commands and protected-window closes.
+
+    Approvals bind to the exact tool and command and are consumed once. The
+    SDK runs this even under bypassPermissions (verified 2026-10-01).
+    """
+    raw_input = input_data.get("tool_input") or {}
+    tool_input = raw_input if isinstance(raw_input, dict) else {}
+    cmd = str(tool_input.get("command") or "")
+    tool_name = str(input_data.get("tool_name") or "shell")
+    approval_input = {k: v for k, v in tool_input.items()
+                      if k not in ("description", "timeout", "timeout_ms")}
+    key = close_guard.approval_key("shell", tool_name, approval_input)
+    if close_guard.granted(key):
+        return {}
+
+    reasons = []
+    if not isinstance(raw_input, dict):
+        reasons.append("the shell command input could not be inspected")
     try:
-        cmd = str((input_data.get("tool_input") or {}).get("command") or "")
         reason = await asyncio.to_thread(close_guard.check_command, cmd)
-    except Exception:  # noqa: BLE001 — a broken guard must not break tools
+        if reason:
+            reasons.append(reason)
+    except Exception:  # noqa: BLE001 — a broken guard must fail closed
+        reasons.append("the protected-window safety check could not inspect it")
+    try:
+        reason = action_policy.shell_reason(cmd)
+        if reason:
+            reasons.append(reason)
+    except Exception:  # noqa: BLE001 — a broken policy must fail closed
+        reasons.append("the high-impact command safety check could not inspect it")
+    if not reasons:
         return {}
-    if not reason or close_guard.granted():
-        return {}
-    close_guard.ask(reason)
+    reason = "; ".join(dict.fromkeys(reasons))
+    close_guard.ask(reason, key=key, strict_yes=True,
+                    no_line="Sir, I won't run that command.")
     print(f"[close-guard] blocked: {reason}")
     return {"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
-        "permissionDecisionReason": close_guard.block_message(reason)}}
+        "permissionDecisionReason": (
+            "CONFIRM FIRST: " + reason + ". Ask Giorgi in one short line, "
+            "wait for his next explicit yes, then retry this exact command "
+            "unchanged once. No action has happened yet.")}}
+
+
+def _screen_confirm_hook(action, reason, args):
+    """Only a matching, one-shot user approval can clear a screen gate."""
+    if not isinstance(args, dict) or args.get("confirm") is not True:
+        return None
+    key = screen_tools._approval_key(action, args)
+    return True if close_guard.granted(key) else None
 
 
 CLOSE_GUARD_HOOKS = {"PreToolUse": [HookMatcher(matcher="Bash|PowerShell",
@@ -1086,6 +1125,7 @@ class TtsPipeline:
         self.gain = 1.0
         self._lock = threading.Lock()
         self._warned_fallback = False
+        self._warned_live_fallback = False
         # Word-sync bookkeeping: each spoken chunk registers its sample span
         # on the playback clock (audio.played_samples), so the UI can reveal
         # exactly the words the speaker has reached — text moves with the
@@ -1280,10 +1320,23 @@ class TtsPipeline:
         try:
             samples = tts_edge.synth(text)
             self._warned_fallback = False
+            live_error = tts_edge.live_fallback_reason()
+            if live_error:
+                if not self._warned_live_fallback:
+                    self.emit("status", f"live TTS stream unavailable ({live_error}) — "
+                                         "using standard online voice")
+                    self._warned_live_fallback = True
+            elif self._warned_live_fallback:
+                self._warned_live_fallback = False
+                self.emit("status", "live TTS stream recovered")
             return samples
         except Exception as e:  # noqa: BLE001 — voice must degrade, not die
             if not self._warned_fallback:
-                self.emit("status", f"online voice unavailable ({e}) — using local voice")
+                live_error = tts_edge.live_fallback_reason()
+                live_note = (f"live TTS stream unavailable ({live_error}); "
+                             if live_error else "")
+                self.emit("status", f"{live_note}online voice unavailable ({e}) — "
+                                     "using local voice")
                 self._warned_fallback = True
             with self._piper_lock:
                 return tts_edge.color(self.piper.synth(text))
@@ -1411,6 +1464,54 @@ SOFT_VOICE_WAIT_S = 0.3        # the most the soft filter may hold a turn
 SOFT_VOICE_MIN_S = 1.5         # less speech than this scores too unreliably
                                # to drop on (a 0.7 s "Nice, I don't have..."
                                # was dropped at -1.10, 2026-10-25 evening)
+
+
+def _norm_line(s: str) -> str:
+    return re.sub(r"\W+", " ", s.lower()).strip()
+
+
+def _unglue(text: str) -> str:
+    """Passes of one turn joined without a space: "…to Claude.Claude is …"."""
+    return re.sub(r"([.!?])(?=[A-Zა-ჿ])", r"\1 ", text)
+
+
+class _NextPass:
+    """on_text for a later pass of the same voice turn (after its hands
+    returned, or asked again). 2026-10-25 night the transcript had "Sir,
+    checking your recent browsing history….Sir, checking your recent browsing
+    history…" — the second pass opened by saying the first one's sentence
+    again, glued on. Its first sentence is held until it is complete and
+    dropped if it only repeats one already said; the pass never glues on."""
+
+    def __init__(self, spoken: list, emit):
+        self.emit = emit
+        self.said = {_norm_line(x) for x in re.split(r"(?<=[.!?])\s+", "".join(spoken))
+                     if _norm_line(x)}
+        self.glue = bool(spoken) and not "".join(spoken)[-1:].isspace()
+        self.buf = ""
+        self.held = True
+
+    def __call__(self, t: str):
+        if not self.held:
+            self.emit(t)
+            return
+        self.buf += t
+        m = re.search(r"[.!?](?:\s|$)", self.buf.lstrip())
+        if m or len(self.buf) >= 160:
+            self.flush(m)
+
+    def flush(self, m=None):
+        if not self.held:
+            return
+        self.held = False
+        body = self.buf.lstrip()
+        self.buf = ""
+        if m is None:
+            m = re.search(r"[.!?](?:\s|$)", body)
+        if m and _norm_line(body[:m.end()]) in self.said:
+            body = body[m.end():].lstrip()
+        if body:
+            self.emit((" " if self.glue else "") + body)
 
 
 class GoatApp:
@@ -1564,6 +1665,7 @@ class GoatApp:
             print(f"[extras] {type(e).__name__}: {e}")
         self._limit_warned = False
         self._stt_warned = False  # gates the spoken "transcriber down" warning
+        self._stt_notice = ""    # emits provider fallback notices on transitions
         self._quiet_warned = False  # gates the spoken "mic is too quiet" one
         # wake word: boot opens a conversation window (he just launched us);
         # after WAKE_WINDOW_S of silence, voice input must carry the name.
@@ -1949,11 +2051,9 @@ class GoatApp:
             asyncio.run_coroutine_threadsafe(self.live.warm(), self.loop)
         elif getattr(self, "talker", None) is not None:
             talk_brain.prime()      # and Gemini's socket, same reason
-        if self._gpu_ear():
-            # OpenAI's Whisper on his GPU is the English ear (his choice,
-            # 2026-10-24): no ElevenLabs stream to open, nor pay for. It
-            # listens live: each pause is transcribed on the spot, so the
-            # text is ready when he finishes (stt_whisper.Stream).
+        if self.language == "en" and not stt_realtime.ENGLISH_REALTIME:
+            # Keep English audio local by default. Stream Whisper on CPU or
+            # GPU so recognition overlaps the end of his utterance.
             self._rt = stt_whisper.Stream(self.loop, "en")
             if preroll is not None and len(preroll):
                 self._rt.feed(preroll)
@@ -2267,6 +2367,17 @@ class GoatApp:
         self.emit("turnlang", lang)
         self._prewarm_voice()
 
+    def _report_stt_state(self, message: str = ""):
+        """Report a recognition fallback once, then announce recovery once."""
+        if message:
+            if message != self._stt_notice:
+                self._stt_notice = message
+                self.emit("status", message)
+            return
+        if self._stt_notice:
+            self._stt_notice = ""
+            self.emit("status", "speech recognition recovered")
+
     async def _handle_utterance(self, audio_np: np.ndarray, rt=None, gap=None,
                                 source: str = "laptop"):
         vid = getattr(self, "vid", None)
@@ -2296,17 +2407,27 @@ class GoatApp:
                          or self._rt_lang())
                 self._set_turn_lang(heard if heard in ("en", "ka")
                                     else self.turn_lang)
+                self._report_stt_state()
                 await self._heard(text, gap, vcheck, source)
                 return
             # The 2026-09-23 first turn fell to the batch ear (1812ms) and the
             # log could not say why — the reason only ever reached the status
             # line. Log it so the next miss names itself.
             why = getattr(rt, "why", None)
-            print(f"[stt-rt] missed -> batch ear ({why() if why else '?'})")
-            self.emit("status", "streaming ear missed — using the full one")
-        elif stt_realtime.ENABLED and source != "phone" and not self._gpu_ear():
-            print("[stt-rt] no stream opened -> batch ear "
-                  "(realtime down after a failure, no key, or loop not ready)")
+            detail = " ".join(str(why() if why else "no transcript").split())[:120]
+            local_stream = getattr(rt, "local", False)
+            tag = "local" if local_stream else "rt"
+            stream_name = "local Whisper stream" if local_stream else "realtime stream"
+            fallback = ("retrying the full clip" if local_stream
+                        else "using batch fallback")
+            print(f"[stt-{tag}] missed -> {fallback} ({detail})")
+            self._report_stt_state(
+                f"{stream_name} missed ({detail}); {fallback}")
+        elif self.language != "en" or stt_realtime.ENGLISH_REALTIME:
+            reason = stt_realtime.unavailable_reason(self._rt_lang())
+            if reason:
+                print(f"[stt-rt] no stream opened -> {reason}")
+                self._report_stt_state(reason)
         if self._gpu_ear():
             # OpenAI's Whisper large-v3-turbo on his GPU (2026-10-24): the
             # English ear — local, no credits. Georgian is beyond it (see
@@ -2763,7 +2884,7 @@ class GoatApp:
         # drops it; anything else drops the question and is a normal turn.
         asked = close_guard.pending()
         if asked is not None:
-            if close_guard.YES_RE.match(text):
+            if close_guard.is_yes(text, asked):
                 if asked["run"] is not None:
                     close_guard.clear()
                     await self._reflex(text, reflex.Reflex(
@@ -3165,6 +3286,16 @@ class GoatApp:
             acted.append(name)
             his = text if kind == "user" else ""
             if name in voice_hands.NAMES:
+                if (kind == "user" and not started_speaking and not self.tts._sounded
+                        and getattr(self, "_hand_ack", 0) != my
+                        and BACKCHANNEL_MODE not in ("off", "0", "false", "no")):
+                    # It reached for a hand before saying a word: he hears
+                    # nothing until the hand returns (find_files cold: 6.4 s
+                    # of silence, 2026-10-26 probe; Live itself answers in
+                    # 0.4 s). Say "checking" now, not at the 1.5 s filler.
+                    self._hand_ack = my
+                    pool = BACKCHANNEL.get(self.turn_lang) or BACKCHANNEL["en"]
+                    self.tts.say(pool[1], filler=True)
                 # Live runs these through _voice_tool and speaks the result;
                 # the REST voice gets them in a second pass below.
                 self.emit("tool", f"{name} {json.dumps(args, ensure_ascii=False)[:90]}")
@@ -3242,6 +3373,43 @@ class GoatApp:
                 else:   # every Gemini model is resting: don't wait on a sure "no"
                     res = {"ok": False, "model": "", "ttft": None,
                            "error": f"Gemini out of quota until {self.talker.out_until()}"}
+            said = "".join(spoken).strip()
+            claimed = (talk_brain.ACT_CLAIM_RE.search(said)
+                       and not talk_brain.CLAIM_RE.search(said))
+            refused = talk_brain.REFUSE_RE.search(said)
+            if (kind == "user" and res["ok"] and not acted and live()
+                    and (claimed or refused)):
+                # It said it's doing it with its own hands and called nothing
+                # (2026-10-25 night: "increasing the volume", "checking your
+                # history" — nothing ran), or said it can't without trying ("I
+                # am unable to type into your terminal" — terminal_claude
+                # does). One more go: do it, or own up.
+                print(f"[talk] {'said it acted' if claimed else 'refused'}, called "
+                      f"nothing — asking again: {said[:80]!r}", flush=True)
+                fix = [{"text": (
+                    f'[you just told him "{said[:300]}" but you called NO tool, so '
+                    "NOTHING happened. Call the tool now, then tell him what it "
+                    "returned (don't repeat what you said). If none of your tools can "
+                    "do it, say in one short sentence that you did NOT do it, and hand "
+                    "it to Claude with hand_to_worker if Claude can.]") if claimed else (
+                    f'[you just told him "{said[:300]}" — but you have hands for most '
+                    "things: find_files/read_file/open_path (his files), phone (his "
+                    "phone), terminal_claude send (types his words into the terminal "
+                    "Claude, now or at='HH:MM'), browser_history, web_search, "
+                    "where_am_i, do_now (laptop apps), email, and hand_to_worker "
+                    "(Claude does anything else). If one fits, call it now and tell "
+                    "him what it returned. Only if truly none can, say what's missing "
+                    "in one sentence.]")}]
+                if via_live:
+                    res = await self.live.reply(fix, on_text_live, on_call, on_audio_live)
+                    if live_txt and live():
+                        self.tts.say_audio("".join(live_txt), None)
+                        live_txt.clear()
+                    res["ok"] = True
+                else:
+                    nxt = _NextPass(spoken, on_text)
+                    res = await self.talker.reply(parts + fix, nxt, on_call)
+                    nxt.flush()
             rounds = 0
             while (not via_live and res["ok"] and hands and live() and rounds < 3):
                 # The REST voice can't take results mid-stream: run its hands,
@@ -3259,7 +3427,9 @@ class GoatApp:
                                           "it" + (f'; you already said "{said}", go on '
                                                   "without repeating it" if said else "")
                                           + "]\n" + "\n\n".join(got)}]
-                res = await self.talker.reply(parts, on_text, on_call)
+                nxt = _NextPass(spoken, on_text)
+                res = await self.talker.reply(parts, nxt, on_call)
+                nxt.flush()
             if res["ok"] and look and live():
                 shot = await asyncio.to_thread(talk_brain.screenshot_part)
                 said = "".join(spoken).strip()
@@ -3277,7 +3447,9 @@ class GoatApp:
                         live_txt.clear()
                     res["ok"] = True
                 else:
-                    res = await self.talker.reply(parts2, on_text, no_look)
+                    nxt = _NextPass(spoken, on_text)
+                    res = await self.talker.reply(parts2, nxt, no_look)
+                    nxt.flush()
             self._emit_brains()          # winner model / quota state for the card
             if res["ok"]:
                 self.emit("talkbrain", self.live.label() if via_live
@@ -3374,7 +3546,7 @@ class GoatApp:
             self._quiet_state = "speak"
             self._stale_voice = False
             self._flush_sentences(force=True)
-            reply = "".join(spoken).strip()
+            reply = _unglue("".join(spoken).strip())
             if not reply:
                 ack = ""
                 if "hand_to_worker" in acted:
@@ -3438,6 +3610,7 @@ class GoatApp:
         gen = self.tts.gen
         await asyncio.sleep(BACKCHANNEL_AFTER_S)
         if (my != self._front_gen or gen != self.tts.gen or self.tts._sounded
+                or getattr(self, "_hand_ack", 0) == my
                 or not self.tts.enabled or self._say_buf
                 or self._quiet_state == "quiet" or not self.talk_busy):
             return
@@ -5030,6 +5203,7 @@ class GoatApp:
         # as it happens. Screen actions are the one kind of work he can't read
         # back off disk afterwards, so they have to be visible while they run.
         screen_tools.set_emit(self.emit)
+        screen_tools.set_confirm_hook(_screen_confirm_hook)
         self.model = options.model
         self.client = _new_client(options)
         connect_task = asyncio.create_task(self.client.connect())

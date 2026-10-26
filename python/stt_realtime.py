@@ -11,7 +11,9 @@ wait for the whole answer. Measured that day on his own captured audio:
 That entire wait is dead air, and it is pure overlap waste: the first five
 seconds of a six-second sentence could have been transcribed while he was
 still saying the sixth. Scribe v2 Realtime streams over a WebSocket, so the
-transcript is essentially finished the moment he stops. Same measurement,
+transcript is essentially finished the moment he stops. Georgian and bilingual
+modes use this cloud ear; English-only mode stays local unless
+`GOAT_STT_EN_REALTIME=on` opts into streaming English audio. Same measurement,
 same audio, same key:
 
     realtime, language pinned     134-554 ms   after he stopped speaking
@@ -25,9 +27,9 @@ TWO THINGS LEARNED THE HARD WAY, both encoded below:
    мотхидэн, эрти уна иквэз..."). Pinned to `kat` the same audio comes back
    in proper Mkhedruli. This is the opposite of the BATCH endpoint, where
    auto-detect is the accurate mode (see stt_gladia's note) — so the two ears
-   are configured differently on purpose. In bilingual "auto" mode there is
-   no language to pin, so this module stays out of the way and the batch ear
-   takes the turn.
+   are configured differently on purpose. In bilingual "auto" mode this
+   module opens one pinned ear per language and lets the alphabet decide
+   which transcript is usable.
 
 2. **GOAT's own VAD owns the turn, not the server's.** With
    `commit_strategy=vad` the server split one sentence into several committed
@@ -58,6 +60,11 @@ MODEL = os.environ.get("GOAT_STT_RT_MODEL", "scribe_v2_realtime")
 # worse than a slow one — GOAT_STT_REALTIME=off restores the batch-only path.
 ENABLED = os.environ.get("GOAT_STT_REALTIME", "on").strip().lower() not in (
     "off", "0", "false", "no")
+# English-only mode stays on the local Whisper path unless the user opts in
+# to streaming English audio to ElevenLabs. Georgian and bilingual modes
+# already select a cloud ear explicitly.
+ENGLISH_REALTIME = os.environ.get("GOAT_STT_EN_REALTIME", "off").strip().lower() \
+    in ("on", "1", "true", "yes")
 # How long to wait for the committed transcript after the last chunk. Measured
 # worst case was 554 ms. It was 2.5s, and a miss then cost 2.5s of waiting
 # PLUS the batch ear on top: 5073ms "ear" in his 2026-09-25 log. At 1.0s a
@@ -88,6 +95,7 @@ def commit_wait() -> float:
 LANG3 = {"ka": "kat", "en": "eng"}
 
 _down_until = [0.0]      # back off after a failure instead of retrying hot
+_down_reason = ""
 # Out of credits survives a restart (2026-10-25: GOAT restarts many times a
 # day, and the first phone turn after each one waited on a doomed ElevenLabs
 # connection — "insufficient_funds" — before the batch ear: 8.5 s to his
@@ -95,7 +103,9 @@ _down_until = [0.0]      # back off after a failure instead of retrying hot
 _BROKE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".stt-rt-broke.json")
 try:
     with open(_BROKE_FILE, encoding="utf-8") as _f:
-        _left = float(json.load(_f).get("until", 0)) - time.time()
+        _broke = json.load(_f)
+        _left = float(_broke.get("until", 0)) - time.time()
+        _down_reason = str(_broke.get("why", ""))
     if _left > 0:
         _down_until[0] = time.monotonic() + _left
 except (OSError, ValueError, TypeError, AttributeError):
@@ -146,15 +156,48 @@ def available(lang: str) -> bool:
     one pinned ear per language and letting the alphabet decide."""
     if not _usable():
         return False
+    if lang == "en" and not ENGLISH_REALTIME:
+        return False
     if lang in LANG3:
         return True
     return AUTO_MODE == "dual"
 
 
+def unavailable_reason(lang: str) -> str | None:
+    """Human-readable fallback reason, or None when realtime can be tried.
+
+    English-only mode intentionally stays on local Whisper unless explicitly
+    opted into cloud streaming, so that choice is not reported as an outage.
+    """
+    if lang == "en" and not ENGLISH_REALTIME:
+        return None
+    if not ENABLED:
+        return "realtime speech recognition is disabled; using batch fallback"
+    if time.monotonic() < _down_until[0]:
+        lower = _down_reason.lower()
+        if "insufficient_funds" in lower or "quota_exceeded" in lower:
+            return "ElevenLabs speech credits are exhausted; using Whisper fallback"
+        detail = _down_reason.strip()
+        if detail:
+            detail = detail.replace("\n", " ")[:100]
+            return (f"realtime speech recognition is temporarily unavailable "
+                    f"({detail}); using batch fallback")
+        return "realtime speech recognition is temporarily unavailable; using batch fallback"
+    if stt_gladia._scribe_key() is None:
+        return "ElevenLabs speech key is missing; using batch fallback"
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        return "websockets package is missing; using batch fallback"
+    return None
+
+
 def _mark_down(why: str = ""):
+    global _down_reason
     # Out of credits is not a blip (2026-10-24: "insufficient_funds" on every
     # single turn for hours, each one a doomed connection first): rest 6 h.
     broke = any(k in why for k in ("insufficient_funds", "quota_exceeded"))
+    _down_reason = why
     _down_until[0] = time.monotonic() + (6 * 3600 if broke else _DOWN_S)
     if broke:
         try:

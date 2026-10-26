@@ -23,7 +23,10 @@ goes through. Anything else drops the question.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import fnmatch
+import hmac
+import json
 import os
 import re
 import time
@@ -63,42 +66,91 @@ YES_RE = re.compile(
 NO_RE = re.compile(
     r"^\s*(?:no|nope|don't|do\s+not|stop|cancel|wait|leave\s+it|არა|არ\s+"
     r"დახურო|მოიცა)\b", re.IGNORECASE)
+ACTION_YES_RE = re.compile(
+    r"^\s*(?:(?:ok(?:ay)?|yeah|yes|yep|sure|go\s+ahead|do\s+it|"
+    r"confirm(?:ed)?|კი|ჰო|ხო|დიახ|კარგი)\b[\s,.!]*)+"
+    r"(?:please|goat|close\s+it|do\s+it|that|დახურე)?[\s.!]*$",
+    re.IGNORECASE)
 
 PENDING_S = 120.0   # how long a question stays open
 GRANT_S = 90.0      # how long his yes lets the brain's retry through
 
 _pending: dict | None = None
 _grant_until = 0.0
+_grant_key: str | None = None
 
 
-def ask(what: str, run=None, no_line: str = "") -> None:
+def approval_key(scope: str, action: str, payload) -> str:
+    """Stable opaque identity for one exact action; never stores its contents."""
+    raw = json.dumps([scope, action, payload], sort_keys=True,
+                     separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def ask(what: str, run=None, no_line: str = "", *, key: str | None = None,
+        strict_yes: bool = False) -> None:
     """Remember the question GOAT just asked. `run` is the close to perform
-    on his yes (reflex lane); None means "let the brain retry". `no_line` is
-    what his no gets back when the question wasn't a close (Wi-Fi off)."""
-    global _pending
+    on his yes (reflex lane); None means "let the brain retry". A keyed
+    request grants only that exact retry once. `strict_yes` rejects close-only
+    phrases such as "close it" for payments, deletes, and other actions."""
+    global _pending, _grant_until, _grant_key
+    _grant_until = 0.0
+    _grant_key = None
     _pending = {"what": what, "run": run, "t": time.monotonic(),
-                "no_line": no_line}
+                "no_line": no_line, "key": key, "strict_yes": strict_yes}
 
 
 def pending() -> dict | None:
     if _pending and time.monotonic() - _pending["t"] < PENDING_S:
         return _pending
+    if _pending:
+        clear_pending()
     return None
 
 
-def clear() -> None:
+def clear_pending() -> None:
     global _pending
     _pending = None
 
 
+def clear() -> None:
+    global _pending, _grant_until, _grant_key
+    _pending = None
+    _grant_until = 0.0
+    _grant_key = None
+
+
 def grant(seconds: float = GRANT_S) -> None:
-    global _grant_until
+    global _pending, _grant_until, _grant_key
+    asked = pending()
+    _grant_key = asked.get("key") if asked else None
     _grant_until = time.monotonic() + seconds
-    clear()
+    clear_pending()
 
 
-def granted() -> bool:
-    return time.monotonic() < _grant_until
+def granted(key: str | None = None) -> bool:
+    """With a key, consume a one-time approval for that exact action.
+
+    The no-argument form is retained for status display only; enforcement
+    call sites must always pass their action key.
+    """
+    global _grant_until, _grant_key
+    if time.monotonic() >= _grant_until:
+        _grant_until = 0.0
+        _grant_key = None
+        return False
+    if key is None:
+        return True
+    if _grant_key is not None and hmac.compare_digest(key, _grant_key):
+        _grant_until = 0.0
+        _grant_key = None
+        return True
+    return False
+
+
+def is_yes(text: str, asked: dict | None = None) -> bool:
+    pattern = ACTION_YES_RE if asked and asked.get("strict_yes") else YES_RE
+    return bool(pattern.match(text or ""))
 
 
 # ---- what is protected -----------------------------------------------------

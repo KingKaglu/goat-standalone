@@ -528,6 +528,104 @@ async def main():
           and tb.CLAIM_RE.search("Sir, Claude's on it.")
           and tb.CLAIM_RE.search("ბატონო, Claude-ს გადავეცი.")
           and not tb.CLAIM_RE.search("Sir, Claude finished the build an hour ago."))
+    # 2026-10-25 night: the voice said it was raising his phone's volume and
+    # called nothing. Now it is asked once more and must use the hand.
+    ran = []
+    real_exec = g.voice_hands.execute
+    g.voice_hands.execute = lambda n, a: ran.append((n, a)) or "ok: volume up"
+
+    def lying(text):
+        if len(t13v.seen) == 1:
+            return (["Sir, increasing the volume on your phone."], [])
+        if len(t13v.seen) == 2:
+            return ([], [("phone", {"op": "volume", "arg": "up", "arg2": "100"})])
+        return (["Volume's all the way up."], [])
+    t13v = FakeTalker(lying)
+    app = make_app(t13v)
+    await app._talk("turn all the volumes up on my phone")
+    await app._front_task
+    await settle()
+    g.voice_hands.execute = real_exec
+    check("said 'increasing the volume' with no tool -> asked again, the hand really runs",
+          len(ran) == 1 and ran[0][0] == "phone", (t13v.seen, ran))
+    t13w = FakeTalker(lambda text: (["Sir, the VisionQuest series is a Marvel show."], []))
+    app = make_app(t13w)
+    await app._talk("what is vision quest")
+    await app._front_task
+    await settle()
+    check("plain answers are not asked again", len(t13w.seen) == 1, t13w.seen)
+    ran.clear()
+    g.voice_hands.execute = lambda n, a: ran.append((n, a)) or "sent to it"
+
+    def refusing(text):
+        if len(t13r.seen) == 1:
+            return (["Sir, I am unable to type commands directly into your terminal."], [])
+        if len(t13r.seen) == 2:
+            return ([], [("terminal_claude", {"action": "send", "message": "continue"})])
+        return (["Sent it."], [])
+    t13r = FakeTalker(refusing)
+    app = make_app(t13r)
+    await app._talk("type continue into terminal Claude")
+    await app._front_task
+    await settle()
+    g.voice_hands.execute = real_exec
+    check("said 'I can't type into the terminal' -> reminded of its hands, it sends",
+          len(ran) == 1 and ran[0][0] == "terminal_claude", (t13r.seen, ran))
+    # 2026-10-25 night: "Sir, checking your recent browsing history….Sir,
+    # checking your recent browsing history…" — the pass after the hand said
+    # its first sentence again, glued on.
+    g.voice_hands.execute = lambda n, a: "VisionQuest S1 E2, Fri 16 Oct, Brave, 7x"
+
+    def twice(text):
+        if len(t13d.seen) == 1:
+            return (["Sir, checking your recent browsing history."],
+                    [("browser_history", {"query": "vision quest"})])
+        return (["Sir, checking your recent ", "browsing history.", " You watched ",
+                 "VisionQuest episode two on Friday."], [])
+    t13d = FakeTalker(twice)
+    app = make_app(t13d)
+    await app._talk("search my history for vision quest")
+    await app._front_task
+    await settle()
+    g.voice_hands.execute = real_exec
+    reply = t13d.history[-1]["text"] if t13d.history else ""
+    check("the pass after a hand doesn't say its first sentence twice, nor glue on",
+          reply.count("checking your recent") == 1
+          and "history. You watched VisionQuest" in reply, reply)
+    fillers_before = [s for s in app.tts.spoken if s in g.BACKCHANNEL["en"]]
+    check("a hand after it already spoke: no extra 'checking'", fillers_before == [],
+          app.tts.spoken)
+    g.voice_hands.execute = lambda n, a: "upwork-profile.md on the Desktop"
+
+    def hand_first(text):
+        if len(t13h.seen) == 1:
+            return ([], [("find_files", {"query": "upwork profile"})])
+        return (["It's on your Desktop."], [])
+    t13h = FakeTalker(hand_first)
+    app = make_app(t13h)
+    await app._talk("find my upwork profile")
+    await app._front_task
+    await settle()
+    g.voice_hands.execute = real_exec
+    check("a hand before any word: 'Sir, checking.' at once, said once",
+          app.tts.spoken.count("Sir, checking.") == 1, app.tts.spoken)
+    check("passes glued without a space are mended", g._unglue(
+        "Sir, handing that to Claude.Claude is looking into it.")
+        == "Sir, handing that to Claude. Claude is looking into it."
+        and g._unglue("see google.com now") == "see google.com now")
+    check("own-hand claims are recognised, promises and plain talk aren't",
+          all(tb.ACT_CLAIM_RE.search(s) for s in (
+              "Sir, checking your recent browsing history.",
+              "Sir, I've started the search for Vision Quest.",
+              "Sir, I am actively looking into your browser history.",
+              "Sir, setting an alarm for one forty-five AM.",
+              "Sir, turning the volume on your phone all the way up.",
+              "ბატონო, ვრთავ მუსიკას."))
+          and not any(tb.ACT_CLAIM_RE.search(s) for s in (
+              "Sir, the opening scene is great.",
+              "Sir, I'll check when the limit resets.",
+              "Sir, shall I open it?",
+              "Sir, once upon a time a robot watched the screens.")))
     # Claude busy, voice says the plain truth "Claude's already on it": no
     # extra note, no new job (2026-10-24 his "Yes." became a deep job).
     t13b = FakeTalker(lambda text: (["Sir, Claude's already on it."], []))

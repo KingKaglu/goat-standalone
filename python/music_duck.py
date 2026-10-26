@@ -26,11 +26,15 @@ class MusicDucker:
             self._thread = threading.Thread(target=self._run, daemon=True,
                                             name="music-duck")
             self._thread.start()
-            atexit.register(self.restore)
+            atexit.register(self.stop)
 
     def stop(self):
         self._stop.set()
-        self.restore()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            # SimpleAudioVolume is a COM interface created on the worker.
+            # Let that same COM apartment restore it before it exits.
+            thread.join(timeout=2.0)
 
     def _sessions(self):
         from pycaw.pycaw import AudioUtilities
@@ -56,7 +60,7 @@ class MusicDucker:
         except Exception as e:  # noqa: BLE001 — ducking is a nicety, never a crash
             print(f"[duck] {type(e).__name__}: {str(e)[:100]}")
 
-    def restore(self):
+    def _restore_on_owner_thread(self):
         saved, self._saved = self._saved, {}
         for vol, orig in saved.values():
             try:
@@ -81,8 +85,8 @@ class MusicDucker:
                     if self._quiet_since is None:
                         self._quiet_since = time.monotonic()
                     elif time.monotonic() - self._quiet_since >= RELEASE_DELAY:
-                        self.restore()
+                        self._restore_on_owner_thread()
                         self._quiet_since = None
         finally:
-            self.restore()
+            self._restore_on_owner_thread()
             comtypes.CoUninitialize()

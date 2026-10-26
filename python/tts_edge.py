@@ -18,6 +18,7 @@ ms, fine at sentence granularity.
 import asyncio
 import io
 import os
+import threading
 
 import edge_tts
 import numpy as np
@@ -361,6 +362,22 @@ _live = None
 HEDGE = max(1, int(os.environ.get("GOAT_TTS_HEDGE", "2")))
 HEDGE_AFTER_S = float(os.environ.get("GOAT_TTS_HEDGE_AFTER", "0.45"))
 _lives = []
+_live_status_lock = threading.Lock()
+_live_error = ""
+
+
+def live_fallback_reason() -> str:
+    """Return the latest persistent-stream failure, if per-clause TTS is used."""
+    with _live_status_lock:
+        return _live_error
+
+
+def _set_live_error(reason: str):
+    global _live_error
+    with _live_status_lock:
+        changed = reason != _live_error
+        _live_error = reason
+        return changed
 _rr = 0
 
 
@@ -423,9 +440,12 @@ def _persist_mp3(text: str, voice: str | None = None) -> bytes | None:
                 err = e
                 continue
             if len(mp3) >= 200:
+                _set_live_error("")
                 return mp3
-    print(f"[tts] live socket failed ({type(err).__name__ if err else 'Timeout'})"
-          " — per-clause path")
+    reason = type(err).__name__ if err else "Timeout"
+    if _set_live_error(reason):
+        print(f"[tts] live socket failed ({reason}) — using per-clause Edge TTS",
+              flush=True)
     return None
 
 

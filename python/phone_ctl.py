@@ -15,6 +15,11 @@ import time
 _NOWIN = 0x08000000
 _tls = threading.local()
 _user32 = ctypes.windll.user32
+_MEDIA_INIT_LOCK = threading.Lock()
+_MEDIA_READY = threading.Event()
+_MEDIA_LOOP = None
+_MEDIA_THREAD = None
+_MEDIA_ASYNC_LOCK = None
 
 # Chords the phone may send. Anything else is refused: the remote is a
 # convenience, not a way around the close guard.
@@ -126,15 +131,18 @@ def _app_name(aumid: str) -> str:
     return n[:1].upper() + n[1:] if n else ""
 
 
-def media():
-    """{app, title, artist, playing} for the current media session, or None."""
-    try:
-        import asyncio
+async def _read_media():
+    """Read WinRT media state on the dedicated media event-loop thread."""
+    global _MEDIA_ASYNC_LOCK
+    import asyncio
 
-        from winrt.windows.media.control import (
-            GlobalSystemMediaTransportControlsSessionManager as Mgr)
+    if _MEDIA_ASYNC_LOCK is None:
+        _MEDIA_ASYNC_LOCK = asyncio.Lock()
+    async with asyncio.timeout(3.0):
+        async with _MEDIA_ASYNC_LOCK:
+            from winrt.windows.media.control import (
+                GlobalSystemMediaTransportControlsSessionManager as Mgr)
 
-        async def go():
             m = await Mgr.request_async()
             s = m.get_current_session()
             if s is None:
@@ -145,8 +153,50 @@ def media():
                     "title": (p.title or "")[:120],
                     "artist": (p.artist or "")[:80],
                     "playing": st == 4}
-        return asyncio.run(go())
-    except Exception:  # noqa: BLE001 — package missing or no session
+
+
+def _media_loop_thread():
+    """Keep WinRT COM objects and async operations on one apartment/thread."""
+    import asyncio
+
+    global _MEDIA_LOOP, _MEDIA_ASYNC_LOCK
+    # Keep this thread independent of the phone_ctl volume worker: importing
+    # comtypes there initializes that worker's COM apartment as STA.
+    _MEDIA_ASYNC_LOCK = None
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _MEDIA_LOOP = loop
+    _MEDIA_READY.set()
+    loop.run_forever()
+
+
+def _media_loop():
+    global _MEDIA_THREAD
+    with _MEDIA_INIT_LOCK:
+        if _MEDIA_THREAD is None or not _MEDIA_THREAD.is_alive():
+            _MEDIA_READY.clear()
+            _MEDIA_THREAD = threading.Thread(
+                target=_media_loop_thread, name="phone-media-winrt", daemon=True)
+            _MEDIA_THREAD.start()
+    return _MEDIA_LOOP if _MEDIA_READY.wait(2.0) else None
+
+
+def media():
+    """{app, title, artist, playing} for the current media session, or None.
+
+    Phone state polling uses a thread pool, whose worker can change on every
+    request. WinRT media session interfaces are apartment-bound, so keep all
+    calls on one persistent loop thread and return only plain Python data.
+    """
+    try:
+        import asyncio
+
+        loop = _media_loop()
+        if loop is None:
+            return None
+        future = asyncio.run_coroutine_threadsafe(_read_media(), loop)
+        return future.result(timeout=4.0)
+    except Exception:  # noqa: BLE001 — package missing, timeout, or no session
         return None
 
 

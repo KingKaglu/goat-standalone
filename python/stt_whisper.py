@@ -275,6 +275,14 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000):
 
 
 EN_PROB_MIN = 0.10      # Whisper's English score at/above this = English
+NOISY_EN_MAX = 0.35     # below this, not detected English: ask the Live ear
+                        # (his noisy Georgian 0.13-0.33; his English, noisy
+                        # or not, is detected English, 2026-10-25)
+# His Georgian said in English mode goes to the Live ear — his order
+# (2026-10-25 evening: it came out as English nonsense). On by default;
+# GOAT_STT_EN_KA_CLOUD=off keeps English mode's audio local only.
+EN_KA_CLOUD = os.environ.get("GOAT_STT_EN_KA_CLOUD", "on").strip().lower() \
+    in ("on", "1", "true", "yes")
 
 
 # Speech nearby in a language he doesn't use with GOAT (2026-10-25, Essen:
@@ -323,12 +331,24 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
         if p_en < EN_PROB_MIN:
             # Not English at all: his Georgian (2026-10-25 evening: in English
             # mode his spoken Georgian was pinned to English and came out as
-            # nonsense; Whisper scores it 0.05-0.07 English). The cloud ear,
-            # pinned to Georgian, writes it; English mode stays English for
-            # the rest.
-            ka = _georgian(audio, sample_rate)
-            if ka is not None:
-                return ka, "ka"
+            # nonsense; Whisper scores it 0.05-0.07 English). Cloud Georgian
+            # recognition is opt-in in English mode to preserve local-only
+            # speech by default.
+            if EN_KA_CLOUD:
+                ka = _georgian(audio, sample_rate)
+                if ka is not None:
+                    return ka, "ka"
+        elif p_en < NOISY_EN_MAX:
+            # Not called English, but with talk around him the English score
+            # climbs: his Georgian mixed with GOAT's own voice or the room's
+            # read 0.13-0.33 English (detected russian/turkish) and came out
+            # as "Kamarjova Giyogi" (2026-10-25, his clips + the room
+            # recording). The Live ear decides: Georgian letters = Georgian;
+            # anything else is English after all.
+            if EN_KA_CLOUD:
+                ka = _georgian(audio, sample_rate, script_only=True)
+                if ka is not None:
+                    return ka, "ka"
         return _pinned(audio, sample_rate, "en")
     if force:
         return _pinned(audio, sample_rate, force)
@@ -361,17 +381,23 @@ _ka_at = 0.0         # when he last spoke Georgian
 KA_WARM_S = 300.0    # he spoke Georgian this recently: dial Live as he starts
 
 
-def _georgian(audio: np.ndarray, sample_rate: int):
+def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
     """Georgian text from the cloud ear, or None when it can't be had.
 
     Gemini Live's own transcription first (stt_live): on his 2026-10-25
     clips it wrote "როგორ ხარ, რას შვები?" and "გთხოვ, მითხარი რომელი საათია
     ახლა?" in 2.2-4.5 s, where Gladia wrote "რომ ხარობრაშ შვიმი" and
-    "გოტმით ხარი რომ ელი საათი ახლა" in 5-9 s. Gladia stays the fallback."""
+    "გოტმით ხარი რომ ელი საათი ახლა" in 5-9 s. Gladia stays the fallback.
+    script_only: the clip may be English — Georgian letters or None, and
+    no Gladia (pinned to Georgian, it would write English as Georgian)."""
     try:
         import stt_live
         t0 = time.monotonic()
         text = stt_live.transcribe(audio, sample_rate)
+        if script_only and not (text and re.search(r"[Ⴀ-ჿ]", text)):
+            print(f"[stt] Live ear says not Georgian ({time.monotonic() - t0:.1f}s): "
+                  f"{(text or '')[:60]!r}", flush=True)
+            return None
         if text:
             global _ka_at
             _ka_at = time.monotonic()
@@ -380,6 +406,8 @@ def _georgian(audio: np.ndarray, sample_rate: int):
             return clean_transcript(text, True)
     except Exception as e:  # noqa: BLE001 — Gladia below
         print(f"[stt] Live Georgian ear failed: {e!r}", flush=True)
+    if script_only:
+        return None
     try:
         import stt_gladia
         if not stt_gladia.available():
@@ -432,12 +460,12 @@ def _post(audio: np.ndarray, sample_rate: int, data: dict):
 # ---------------------------------------------------------------------------
 # Listening while he talks (2026-10-25, his order: "the other one listens and
 # thinks at the same time ... when I am done giving the task I have the
-# answer immediately"). The GPU ear transcribes the utterance the moment he
+# answer immediately"). The local Whisper ear transcribes the utterance the moment he
 # pauses (GOAT's soft end, 200 ms into a silence) instead of after the turn
 # is called (500 ms) — so the text is usually ready the instant the turn
 # ends, and the partial tells the endpointer whether the sentence sounds
-# finished ("...and I want to" waits the long hangover). Same interface as
-# stt_realtime.Session, so goat_app drives it the same way.
+# finished ("...and I want to" waits the long hangover). It works with the
+# CPU and CUDA whisper-server; same interface as stt_realtime.Session.
 # ---------------------------------------------------------------------------
 
 _POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper-live")
@@ -445,7 +473,7 @@ STREAM_RESULT_S = 8.0       # the final transcript never waits longer than this
 
 
 class Stream:
-    """One utterance on the GPU ear. feed/soft_commit/end are called from the
+    """One utterance on local Whisper. feed/soft_commit/end are called from the
     audio thread and only append or hand off; the work runs on _POOL."""
 
     local = True
@@ -461,7 +489,7 @@ class Stream:
         self._closed = False
         self.t_commit_sent = 0.0
         self.heard = lang             # the language the newest partial was in
-        if time.monotonic() - _ka_at < KA_WARM_S:
+        if EN_KA_CLOUD and time.monotonic() - _ka_at < KA_WARM_S:
             # he's talking Georgian lately: have the Live ear's session
             # dialled while he speaks (saves ~1.4 s, measured 3.2 -> 1.75 s)
             try:
@@ -523,7 +551,10 @@ class Stream:
             self.error = "whisper server failed"
             return None
         with self._lock:
-            if self._latest is not None and self._latest[0] == n:
+            # The executor can begin the worker before _submit stores its
+            # Future in _latest. Treat None as that initial submit race, but
+            # still ignore any genuinely superseded partial.
+            if self._latest is None or self._latest[0] == n:
                 self.last_partial = text
                 if heard in ("en", "ka"):
                     self.heard = heard
@@ -542,7 +573,7 @@ class Stream:
         if text is None:
             return None
         ms = (time.monotonic() - self.t_commit_sent) * 1000
-        print(f"[stt-live] heard {ms:.0f}ms after his pause: {text[:60]!r}")
+        print(f"[stt-local] heard {ms:.0f}ms after his pause: {text[:60]!r}")
         return text
 
     def why(self) -> str:

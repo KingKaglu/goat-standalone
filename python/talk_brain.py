@@ -132,6 +132,8 @@ YOUR OWN HANDS — use them yourself, at once; no need for Claude (his order 202
 - His PHONE: the phone tool does what Claude's phone hands do — open apps, read the screen, tap a button by its text, type, scroll, back/home, settings pages (mobile data, SIM, wifi, bluetooth…), alarms, timers, dial, a text message (opens it for him to send), maps, volume, media, torch. To check or fix something on the phone go step by step: settings → screen (read it) → tap_text → screen again, and tell him what you found.
 - THE TERMINAL CLAUDE: "the terminal Claude", "the Claude in my terminal", "Claude Code" = the Claude Code sessions HE runs on the laptop — NOT GOAT's own Claude. Only terminal_claude knows what they're doing: call it before you answer, and say exactly what it reports (working on what, since when). terminal_claude continue resumes one that has stopped. Never say it's idle without asking the tool.
 - THE WEB: web_search yourself for current facts (opening hours, news, prices, weather, "what does this word mean"); read_first=true when the snippets aren't enough. Long research goes to Claude.
+- TYPING INTO THE TERMINAL CLAUDE: "type/tell/say to terminal Claude …", "continue it when my usage resets" = terminal_claude send with his words as message (at='HH:MM' for later). You CAN do this — never say you can't type into the terminal.
+- HIS BROWSER HISTORY: browser_history finds pages he visited ("that Vision Quest page I watched this week").
 - WHERE HE IS: where_am_i gives the city he's in (approximate); use it for "where am I" and anything "near me" before you search.
 - A hand returns ERROR: say plainly what failed, in one line, and try another way or offer Claude.
 EMAIL — you write and send emails yourself with the email tool: to (an address, or "me" for his own inbox), subject, body. Write the body in his voice, short and natural, signed "Giorgi" unless he says otherwise. send=true sends it at once: use that when it goes to "me", or he clearly said send and the address is certain. Otherwise send=false: the draft opens on his screen, tell him in one line who it's to and what it says, and ask "Send it?"; his yes means send_draft. You don't know people's addresses: if he names someone whose address isn't in this conversation or memory, ask for it — never guess one.
@@ -672,6 +674,34 @@ CLAIM_RE = re.compile(
     r"(?:starting|beginning|running|building|rebuilding|making|writing|"
     r"drafting|updating|checking|looking into|getting)\b)|"
     r"Claude-ს\s+(?:გადავეცი|ვუთხარი|ვაბარებ)", re.IGNORECASE)
+
+# The voice said it is doing something with its OWN hands but called no tool
+# (2026-10-25 night: "Sir, increasing the volume on your phone", "Sir,
+# checking your recent browsing history", "I've started the search" — nothing
+# ran; he: "Bro, why the fuck would you lie?"). Present/perfect tense only: a
+# promise for later ("I'll check when the limit resets") is not a lie yet.
+ACT_CLAIM_RE = re.compile(
+    r"(?:^|[.!?,:]\s*|\b(?:i(?:'m| am)|i(?:'ve| have)|let me)\s+"
+    r"(?:now\s+|just\s+|actively\s+|already\s+|also\s+)?)"
+    r"(?:started|turn(?:ing|ed)\s+(?:up|down|on|off|the|your|it|all)|"
+    r"set(?:ting)?\s+(?:an?|the|your|it|up)|open(?:ing|ed)|search(?:ing|ed)?|"
+    r"check(?:ing|ed)?|look(?:ing|ed)?\s+(?:into|up|through|for|at)|"
+    r"increas(?:ing|ed)|rais(?:ing|ed)|lower(?:ing|ed)|mut(?:ing|ed)|"
+    r"call(?:ing|ed)|text(?:ing|ed)|sending|sent|clos(?:ing|ed)|typ(?:ing|ed)|"
+    r"navigat(?:ing|ed)|pull(?:ing|ed)\s+up|finding|scann(?:ing|ed)|"
+    r"play(?:ing|ed)\s+(?:the|your|some|it|music)|paus(?:ing|ed))\b|"
+    r"\b(?:ვრთავ|ვხსნი|გიხსნი|ვეძებ|ვამოწმებ|ვაყენებ|ვუწევ|ვუმატებ|ვკეტავ|ვურეკავ)",
+    re.IGNORECASE)
+
+# The voice said it can't, without trying a hand (2026-10-25 night: "I am
+# unable to type commands directly into your terminal" — terminal_claude
+# does exactly that; "I do not have a feature to …").
+REFUSE_RE = re.compile(
+    r"\b(?:i(?:'m| am)\s+(?:not\s+able|unable)|i\s+(?:can(?:'t|not)|don't|do not)\s+"
+    r"(?:have\s+(?:a\s+|the\s+|any\s+)?(?:direct\s+)?(?:access|feature|way|tool|ability|"
+    r"interface)|(?:directly\s+)?(?:type|access|see|reach|control|do that|open|search|"
+    r"check|read))|my\s+(?:tools|hands)\s+(?:are(?:n't| not)|don't|do not|can't))|"
+    r"ვერ\s+(?:შევძლებ|ვახერხებ)|არ\s+მაქვს\s+წვდომა", re.IGNORECASE)
 
 # "what's it doing / is it done / how's it going" — answerable from the
 # watch alone when Gemini is out of quota.
