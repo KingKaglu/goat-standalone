@@ -1120,7 +1120,7 @@ function connect() {
   ws.onopen = () => { dot.classList.add("on"); if (live) send({type: "live", on: true}); };
   ws.onclose = () => { dot.classList.remove("on"); setTimeout(connect, 1500); };
   ws.onmessage = e => {
-    if (typeof e.data !== "string") { if (!staleAudio()) play(e.data, sayText); else adbg("dropped as stale/cut"); return; }
+    if (typeof e.data !== "string") { if (!staleAudio()) { markReply(); play(e.data, sayText); } else adbg("dropped as stale/cut"); return; }
     const m = JSON.parse(e.data);
     if (m.type === "you") {
       cutAt = 0; add("you", m.text); goatBubble = null;
@@ -1129,7 +1129,10 @@ function connect() {
       // reply to him starts ("reply").
       if (paused) { stopPlayback(); cutAt = cutLast = performance.now(); }
     }
-    else if (m.type === "reply") { goatBubble = null; cutAt = 0; }
+    else if (m.type === "reply") {
+      goatBubble = null; cutAt = 0;
+      markReply(); if (ctx && ctx.state !== "running") kickCtx();   // warm the voice before it arrives
+    }
     else if (m.type === "say") {
       if (cutAt && m.audio) return;          // a cut sentence, never spoken
       if (m.audio) sayText = m.text;
@@ -1138,9 +1141,9 @@ function connect() {
       goatBubble.textContent += (goatBubble.textContent ? " " : "") + m.text;
       stick(follow);
     }
-    else if (m.type === "turn_done") { goatBubble = null; }
+    else if (m.type === "turn_done") { goatBubble = null; endReply(); }
     else if (m.type === "status") { if (!sources.length) setStatus(m.text); }
-    else if (m.type === "cancel") { if (sources.length || paused) stopPlayback(); }
+    else if (m.type === "cancel") { if (sources.length || paused) stopPlayback(); endReply(); }
     // Paused for "him" but the laptop's ear has no word of his: noise.
     else if (m.type === "carry") { if (paused) resumeVoice(true); }
     else if (m.type === "idle") {
@@ -1183,12 +1186,33 @@ function ensureCtx() {
 // A running AudioContext holds an output stream open, so Android reports
 // "music active" forever and the bubble mic flagged every clip as a video
 // (bug 2026-10-18: over other apps I ignored him). Park it when idle.
-let parkT = 0;
+// But never mid-reply (bug 2026-10-26, "phone speech is really bad"): Live
+// streams a reply with gaps between sentences; a gap > 1.5 s parked the
+// context, the next sentence arrived while it was suspended and resume()
+// lagged, so the voice stuttered and came late. A reply now holds the
+// context awake until turn_done/cancel, or 8 s with no new audio.
+let parkT = 0, replyOpen = false, replyAudioAt = 0;
+const REPLY_HOLD_MS = 8000;
+function replyHeld() { return replyOpen && performance.now() - replyAudioAt < REPLY_HOLD_MS; }
+function markReply() { replyOpen = true; replyAudioAt = performance.now(); clearTimeout(parkT); }
+function endReply() { replyOpen = false; if (!sources.length && !paused) parkCtx(); }
 function parkCtx() {
   clearTimeout(parkT);
   parkT = setTimeout(() => {
-    if (ctx && !live && !sources.length && ctx.state === "running") { playEnd = 0; ctx.suspend(); }
+    if (replyHeld()) { parkCtx(); return; }   // still mid-reply: check again later
+    if (ctx && !live && !sources.length && !paused && ctx.state === "running") { playEnd = 0; ctx.suspend(); }
   }, 1500);
+}
+// resume() can lag or be refused for a while; keep asking (and say so in
+// the log) instead of letting a reply pile up behind a frozen clock.
+let kickT = 0, kickN = 0;
+function kickCtx() {
+  if (!ctx || ctx.state === "running") { kickN = 0; return; }
+  wakeCtx().then(() => {
+    if (!ctx || ctx.state === "running") { if (kickN) adbg("ctx resumed after " + kickN + " retries"); kickN = 0; return; }
+    if (++kickN === 1 || kickN % 10 === 0) adbg("ctx still " + ctx.state + " (retry " + kickN + ")");
+    clearTimeout(kickT); if (kickN < 40) kickT = setTimeout(kickCtx, 250);
+  });
 }
 function playLevel() {
   if (!meter) return 0;
@@ -1232,7 +1256,7 @@ function play(buf, text) {
 }
 function schedule(ab, off, text) {
   clearTimeout(parkT);
-  if (ctx.state === "suspended") ctx.resume();
+  if (ctx.state !== "running") kickCtx();
   const s = ctx.createBufferSource(); s.buffer = ab; s.connect(master);
   const t = Math.max(ctx.currentTime + 0.04, playEnd);
   s.start(t, off); playEnd = t + ab.duration - off;
