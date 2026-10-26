@@ -368,6 +368,12 @@ def _press_send(text: str) -> str:
     return "sent (pressed the app's Send button; the box is empty now)"
 
 
+# What only works on an unlocked phone (alarms, timers, volume, media and the
+# torch work locked; Android shows no app or page over the lock screen).
+ON_SCREEN = {"open", "tap_text", "type", "scroll", "url", "maps", "search",
+             "settings", "dial", "sms", "notifications"}
+
+
 def phone(args: dict) -> str:
     op = str(args.get("op") or "").strip().lower()
     a = str(args.get("arg") or "").strip()
@@ -445,12 +451,30 @@ def phone(args: dict) -> str:
         return f"ERROR: GOAT's phone link is down ({e.reason})"
     except Exception as e:  # noqa: BLE001
         return f"ERROR: {type(e).__name__}: {e}"
+    locked = bool(res.get("locked"))
+    if locked and op in ON_SCREEN:
+        # 2026-10-26 03:13: "settings battery" said done, "open Calculator"
+        # said launch blocked — the phone was locked, nothing could show.
+        msg = (f"ERROR: his phone is LOCKED, so {op} can't show anything — tell him to "
+               "unlock it and you'll do it then")
+        # what the lock screen itself says often answers him anyway ("is my
+        # phone charging?" — it shows "Battery charging, 92 percent")
+        try:
+            items = (_phone_call({"op": "screen"}, timeout=6.0) or {}).get("items") or []
+            shown = [str(it.get("t") or "").strip() for it in items[:40]]
+            shown = [t for t in shown if t and len(t) > 3][:12]
+            if shown:
+                msg += ". Its lock screen shows: " + " | ".join(shown)
+        except Exception:  # noqa: BLE001
+            pass
+        return msg
     if not res.get("ok", True) and res.get("error"):
         return f"ERROR: {res['error']}"
     if op == "type" and cmd.get("submit") and res.get("ok", True):
         return _press_send(a)
     if op == "screen" and res.get("items") is not None:
-        lines = [f"phone screen, app {res.get('app')}:"]
+        lines = [f"phone screen, app {res.get('app')}"
+                 + (" (LOCKED: this is the lock screen)" if locked else "") + ":"]
         for it in res["items"][:80]:
             t = (it.get("t") or "").strip()
             if t:
@@ -647,8 +671,17 @@ def browser_history(args: dict) -> str:
             except OSError:
                 pass
     if not hits:
-        return (f"nothing in his browser history (Chrome, Edge, Brave, Opera) from the last {days} days "
-                f"matches {q!r}" if q else "his browser history is empty or unreadable")
+        if not q:
+            return "his browser history is empty or unreadable"
+        miss = (f"nothing in his browser history (Chrome, Edge, Brave, Opera) from the "
+                f"last {days} days matches {q!r}")
+        if days < 180:
+            # "this week" was 7 days; he'd watched it 10 days before
+            # (2026-10-26) — say when it last was, not just "nothing"
+            older = browser_history({"query": q, "days": 180})
+            if not older.startswith("nothing"):
+                return miss + "; further back, " + older.split(":", 1)[1].strip()
+        return miss
     rows = sorted(hits.items(), key=lambda kv: -kv[1][2])[:15]
     out = [f"his browser history, last {days} days, newest first"
            + (f", matching {q!r}" if q else "") + ":"]

@@ -108,6 +108,14 @@ vh._phone_call = old_app
 r = vh.phone({"op": "volume", "arg": "max"})
 check("an old phone app: media goes to full, and it says the alarm did NOT change",
       sent[-1] == {"op": "volume", "action": "set", "percent": 100} and "did NOT" in r, r)
+vh._phone_call = lambda cmd, timeout=25.0: (sent.append(cmd) or {
+    "ok": True, "locked": True, "items": [{"t": "Battery charging, 92 percent."}]})
+r = vh.phone({"op": "settings", "arg": "battery"})
+check("a locked phone: no false 'done' for a page he can't see",
+      r.startswith("ERROR") and "LOCKED" in r, r)
+check("...but what the lock screen shows comes along", "Battery charging" in r, r)
+r = vh.phone({"op": "torch", "arg": "on"})
+check("...the torch still works locked", r.startswith("done"), r)
 vh._phone_call = fake_phone
 vh.phone({"op": "tap_text", "arg": "Roaming"})
 check("tap a button by its text", sent[-1] == {"op": "tap_text", "text": "Roaming"}, sent[-1])
@@ -193,6 +201,9 @@ r = vh.browser_history({"query": "vision quest"})
 check("browser history finds the page he watched this week",
       "VisionQuest (TV Series 2026)" in r and "visited 4x" in r and "weather" not in r, r)
 check("...and not one from three months ago", "rumours" not in r, r)
+r = vh.browser_history({"query": "visionquest rumours", "days": 7})
+check("nothing this week: it says when it last was",
+      r.startswith("nothing") and "further back" in r and "VisionQuest rumours" in r, r)
 check("no match says so plainly", vh.browser_history({"query": "zebra"}).startswith("nothing"))
 check("he can't-type refusals are recognised, plain talk isn't",
       talk_brain.REFUSE_RE.search("Sir, I am unable to type commands directly into your terminal.")
