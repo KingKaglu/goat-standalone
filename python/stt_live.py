@@ -61,7 +61,10 @@ async def _dial(key: str):
         "generationConfig": {"responseModalities": ["AUDIO"],
                              "thinkingConfig": {"thinkingBudget": 0}},
         "systemInstruction": {"parts": [{"text": "Listen only. Reply with one word: ok."}]},
-        "inputAudioTranscription": {},
+        # His two languages named: without it short Georgian came back as
+        # Hindi, Spanish or Latin letters ("Romelisatia"); with it "რომელი
+        # საათია?" (2026-10-26, his Georgian-mode clips).
+        "inputAudioTranscription": {"languageCodes": ["ka-GE", "en-US"]},
         "realtimeInputConfig": {"automaticActivityDetection": {"disabled": True}},
     }}))
     first = json.loads(await asyncio.wait_for(ws.recv(), 5))

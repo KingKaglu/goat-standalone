@@ -2323,11 +2323,25 @@ class GoatApp:
             text, heard = await asyncio.to_thread(
                 stt_whisper.transcribe_lang, audio_np, 16000, None)
             if heard != "en" and text is not None:
-                ka_text, _ = await asyncio.to_thread(
-                    stt_gladia.transcribe_lang, audio_np, 16000, "ka")
+                # Live ear first, Gladia its fallback (see the ka branch)
+                ka_text = await asyncio.to_thread(
+                    stt_whisper._georgian, audio_np, 16000)
                 if ka_text is not None:
                     text, heard = ka_text, "ka"
             self._set_turn_lang(heard if heard in ("en", "ka") else self.turn_lang)
+        elif self.language == "ka" and (text := await asyncio.to_thread(
+                stt_whisper._georgian, audio_np, 16000)) is not None:
+            # Georgian mode: Gemini Live's transcript first, Gladia inside
+            # _georgian as its fallback. Straight to Gladia his Georgian came
+            # out garbled in 5.5-7.2 s ("გარგიმა მლობამ" for "კარგი მადლობა",
+            # 2026-10-25 23:01); Live wrote it right in 1.5-2.8 s. The next
+            # turn's session is dialled now (saves ~1.4 s).
+            self._set_turn_lang("ka")
+            try:
+                import stt_live
+                stt_live.prime()
+            except Exception:  # noqa: BLE001 — the turn dials its own
+                pass
         elif self.language != "en" and stt_gladia.available():
             # Georgian or bilingual mode: cloud ear (local whisper can't do
             # ka at all — it romanizes it into English-looking nonsense,

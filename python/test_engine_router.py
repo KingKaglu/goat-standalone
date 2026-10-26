@@ -651,6 +651,12 @@ async def main():
             def transcribe(self, audio):
                 self.calls += 1
                 return "english words"
+            live = None   # the Live Georgian ear's text; None = unreachable
+            def _georgian(self, audio, sr=16000):
+                # as stt_whisper._georgian: Live first, Gladia its fallback
+                if self.live is not None:
+                    return self.live
+                return g.stt_gladia.transcribe_lang(audio, sr, "ka")[0]
 
         real_ear, real_whisper, real_tts = g.stt_gladia, g.stt_whisper, g.tts_edge
 
@@ -717,6 +723,11 @@ async def main():
                 def transcribe_lang(self, audio, sr=16000, force=None):
                     self.calls.append(force)
                     return self.text, self.lang
+                live = None
+                def _georgian(self, audio, sr=16000):
+                    if self.live is not None:
+                        return self.live
+                    return g.stt_gladia.transcribe_lang(audio, sr, "ka")[0]
 
             async def hear_gpu(mode, text, lang):
                 app = make_app(MockClient())
@@ -751,6 +762,18 @@ async def main():
                   whis.calls == [None] and ear.calls == ["ka"]
                   and spoken == ["cloud words"] and app.turn_lang == "ka",
                   f"ear={ear.calls} whis={whis.calls} spoken={spoken} lang={app.turn_lang}")
+            # Gemini Live's Georgian ear first (2026-10-26: straight to Gladia
+            # his Georgian came out garbled; Live wrote it right)
+            GPUWhisper.live = "რომელი საათია?"
+            app, spoken, ear, whis = await hear_gpu("ka", "unused", "ka")
+            check("Georgian mode: the Live ear's words, Gladia not asked",
+                  spoken == ["რომელი საათია?"] and ear.calls == [] and app.turn_lang == "ka",
+                  f"ear={ear.calls} spoken={spoken} lang={app.turn_lang}")
+            app, spoken, ear, whis = await hear_gpu("auto", "wrong latin", "ka")
+            check("bilingual: Georgian -> the Live ear's words",
+                  spoken == ["რომელი საათია?"] and ear.calls == [] and app.turn_lang == "ka",
+                  f"ear={ear.calls} spoken={spoken} lang={app.turn_lang}")
+            GPUWhisper.live = None
             app, spoken, ear, whis = await hear_gpu("auto", "what time is it", "en")
             check("GPU whisper bilingual: English stays local",
                   whis.calls == [None] and ear.calls == [] and spoken == ["what time is it"]
