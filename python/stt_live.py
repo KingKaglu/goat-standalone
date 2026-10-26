@@ -40,6 +40,32 @@ _loop = None
 _loop_lock = threading.Lock()
 _warm: list = []     # [(monotonic time, ws)] — one session dialled ahead
 
+# Free-tier Live quota (2026-10-26 02:5x): with a new session for every
+# sentence, Google refused most of them ("1011 ... exceeded your current
+# quota") and his Georgian fell to Gladia's garbage. So a clean session is
+# kept for the next sentences (REUSE_N, while fresh), and a refusal rests
+# the ear (doubling, 1 -> 30 min) instead of costing every turn another
+# doomed 0.6-0.8 s dial. GOAT_STT_LIVE_REUSE=1 = a session per sentence.
+REUSE_N = int(os.environ.get("GOAT_STT_LIVE_REUSE", "30"))
+REUSE_S = 240.0      # a session idle longer than this is closed, not reused
+_REST_MIN, _REST_MAX = 60.0, 1800.0
+_rest = {"until": 0.0, "next": _REST_MIN}
+_reuse: list = []    # [[ws, uses, last used]] — the session kept between turns
+
+
+def resting() -> float:
+    """Seconds left of the quota rest (0 = the ear may be asked)."""
+    return max(0.0, _rest["until"] - time.monotonic())
+
+
+def _note_quota(err: str) -> None:
+    if "quota" not in err.lower():
+        return
+    _rest["until"] = time.monotonic() + _rest["next"]
+    print(f"[stt-live-ka] Live quota refused — resting {_rest['next'] / 60:.0f} min "
+          "(Gladia hears Georgian meanwhile)", flush=True)
+    _rest["next"] = min(_REST_MAX, _rest["next"] * 2)
+
 
 def _bg_loop():
     """One asyncio loop of our own (the sessions live on it)."""
@@ -98,53 +124,96 @@ def prime():
         asyncio.run_coroutine_threadsafe(_prime(key), _bg_loop())
 
 
+async def _close(ws):
+    try:
+        await ws.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _take(key: str):
+    """(session, times used): the kept one while it's fresh, else a dialled
+    one ahead of time, else a new one."""
     now = time.monotonic()
+    while _reuse:
+        ws, uses, last = _reuse.pop()
+        if (uses < REUSE_N and now - last < REUSE_S
+                and getattr(ws, "close_code", None) is None):
+            return ws, uses
+        await _close(ws)
     while _warm:
         t, ws = _warm.pop(0)
         if now - t < WARM_S and getattr(ws, "close_code", None) is None:
-            return ws
+            return ws, 0
+        await _close(ws)
+    return await _dial(key), 0
+
+
+async def _listen(ws, audio: np.ndarray):
+    """One utterance through an open session -> (transcript, clean). clean =
+    the model's own unplayed reply has finished, so the session can take the
+    next utterance without its words leaking in."""
+    pcm = (np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes()
+    await ws.send(json.dumps({"realtimeInput": {"activityStart": {}}}))
+    for i in range(0, len(pcm), CHUNK * 2):
+        await ws.send(json.dumps({"realtimeInput": {"audio": {
+            "mimeType": "audio/pcm;rate=16000",
+            "data": base64.b64encode(pcm[i:i + CHUNK * 2]).decode()}}}))
+    await ws.send(json.dumps({"realtimeInput": {"activityEnd": {}}}))
+    words, clean = "", False
+    deadline = time.monotonic() + TIMEOUT_S
+    while time.monotonic() < deadline:
+        wait = QUIET_S if words else max(0.1, deadline - time.monotonic())
         try:
-            await ws.close()
-        except Exception:  # noqa: BLE001
+            m = json.loads(await asyncio.wait_for(ws.recv(), wait))
+        except asyncio.TimeoutError:
+            if words:
+                break
+            continue
+        sc = m.get("serverContent") or {}
+        t = (sc.get("inputTranscription") or {}).get("text")
+        if t:
+            words += t
+        if sc.get("turnComplete"):
+            clean = True
+            break
+        # the transcript is complete once the model starts its own turn
+        if words and sc.get("modelTurn"):
+            break
+    if not clean:
+        # its one-word reply is still coming: let it finish (≤ 1.5 s), or
+        # the session isn't kept
+        end = time.monotonic() + 1.5
+        try:
+            while time.monotonic() < end:
+                m = json.loads(await asyncio.wait_for(ws.recv(), end - time.monotonic()))
+                if (m.get("serverContent") or {}).get("turnComplete"):
+                    clean = True
+                    break
+        except Exception:  # noqa: BLE001 — timeout or closed: not reusable
             pass
-    return await _dial(key)
+    return _one_script(words.strip()), clean
 
 
 async def _run(audio: np.ndarray, key: str) -> str | None:
-    ws = await _take(key)
+    ws, uses = await _take(key)
     try:
-        pcm = (np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes()
-        await ws.send(json.dumps({"realtimeInput": {"activityStart": {}}}))
-        for i in range(0, len(pcm), CHUNK * 2):
-            await ws.send(json.dumps({"realtimeInput": {"audio": {
-                "mimeType": "audio/pcm;rate=16000",
-                "data": base64.b64encode(pcm[i:i + CHUNK * 2]).decode()}}}))
-        await ws.send(json.dumps({"realtimeInput": {"activityEnd": {}}}))
-        words, last = "", time.monotonic()
-        deadline = time.monotonic() + TIMEOUT_S
-        while time.monotonic() < deadline:
-            wait = QUIET_S if words else max(0.1, deadline - time.monotonic())
-            try:
-                m = json.loads(await asyncio.wait_for(ws.recv(), wait))
-            except asyncio.TimeoutError:
-                if words:
-                    break
-                continue
-            sc = m.get("serverContent") or {}
-            t = (sc.get("inputTranscription") or {}).get("text")
-            if t:
-                words += t
-                last = time.monotonic()
-            # the transcript is complete once the model starts its own turn
-            if words and (sc.get("modelTurn") or sc.get("turnComplete")):
-                break
-        return _one_script(words.strip())
-    finally:
+        text, clean = await _listen(ws, audio)
+    except Exception:
+        await _close(ws)
+        if not uses:
+            raise
+        ws, uses = await _dial(key), 0     # a kept session went bad: once more fresh
         try:
-            await ws.close()
-        except Exception:  # noqa: BLE001
-            pass
+            text, clean = await _listen(ws, audio)
+        except Exception:
+            await _close(ws)
+            raise
+    if clean and REUSE_N > 1:
+        _reuse.append([ws, uses + 1, time.monotonic()])
+    else:
+        await _close(ws)
+    return text
 
 
 # Live now and then writes a Latin letter or two inside a Georgian word
@@ -171,12 +240,15 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000) -> str | None:
     key = talk_brain.api_key()
     if not key or len(audio) < sample_rate * 0.3:
         return None
-    if sample_rate != 16000:
+    if sample_rate != 16000 or resting():
         return None
     try:
         fut = asyncio.run_coroutine_threadsafe(
             _run(audio.astype(np.float32), key), _bg_loop())
-        return fut.result(TIMEOUT_S + 6)
+        text = fut.result(TIMEOUT_S + 6)
+        _rest["next"] = _REST_MIN
+        return text
     except Exception as e:  # noqa: BLE001 — the cloud ear takes over
         print(f"[stt-live-ka] failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+        _note_quota(str(e))
         return None
