@@ -6,6 +6,7 @@ Run: py -3.13 test_stt_live.py
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import sys
 
@@ -24,6 +25,19 @@ def check(name, cond, detail=""):
     else:
         FAIL += 1
         print(f"[FAIL] {name} {detail}")
+
+
+class ImmediatePool:
+    """Finish mocked provider calls inline so low host RAM can't fake a timeout."""
+
+    def submit(self, fn, *args):
+        future = concurrent.futures.Future()
+        try:
+            result = fn(*args)
+            future.set_result(result)
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
 
 
 class FakeWS:
@@ -112,9 +126,17 @@ import stt_gladia
 sl.transcribe = lambda a, sr=16000: None                   # Live resting
 stt_gladia.available = lambda: True
 stt_gladia.transcribe_lang = lambda a, sr, lang: ("გარგიმა მლობამ?", "ka")
-sl.transcribe_rest = lambda a, timeout=6.0: "კარგი, მადლობა."
+rest_calls = []
+sl.transcribe_rest = lambda a, timeout=6.0: (rest_calls.append(timeout)
+                                             or "კარგი, მადლობა.")
+real_ka_pool = stt_whisper._KA_POOL
+stt_whisper._KA_POOL = ImmediatePool()
+try:
+    rest_result = stt_whisper._georgian(audio, 16000)
+finally:
+    stt_whisper._KA_POOL = real_ka_pool
 check("Live resting: REST Gemini's Georgian beats Gladia's garbage",
-      stt_whisper._georgian(audio, 16000) == "კარგი, მადლობა.")
+      rest_result == "კარგი, მადლობა.", (ascii(rest_result), rest_calls))
 
 
 def slow(a, timeout=6.0):

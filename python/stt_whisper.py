@@ -331,7 +331,7 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
         code = _foreign(got)
         if code:
             print(f"[stt] {code} speech nearby, not him: "
-                  f"{(got.get('text') or '').strip()[:80]!r}", flush=True)
+                  f"{(got.get('text') or '').strip()[:80]!a}", flush=True)
             return "", code
         if str(got.get("detected_language") or "").lower() == "english":
             return clean_transcript(got.get("text", ""),
@@ -360,7 +360,7 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
     code = _foreign(got)
     if code:
         print(f"[stt] {code} speech nearby, not him: "
-              f"{(got.get('text') or '').strip()[:80]!r}", flush=True)
+              f"{(got.get('text') or '').strip()[:80]!a}", flush=True)
         return "", code
     text = clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until)
     # Bilingual: turbo can't name Georgian (p=0.000 on every Georgian clip,
@@ -398,13 +398,13 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
         text = stt_live.transcribe(audio, sample_rate)
         if script_only and not (text and re.search(r"[Ⴀ-ჿ]", text)):
             print(f"[stt] Live ear says not Georgian ({time.monotonic() - t0:.1f}s): "
-                  f"{(text or '')[:60]!r}", flush=True)
+                  f"{(text or '')[:60]!a}", flush=True)
             return None
         if text:
             global _ka_at
             _ka_at = time.monotonic()
             print(f"[stt] Georgian via Live in {time.monotonic() - t0:.1f}s: "
-                  f"{text[:60]!r}", flush=True)
+                  f"{text[:60]!a}", flush=True)
             return clean_transcript(text, True)
     except Exception as e:  # noqa: BLE001 — Gladia below
         print(f"[stt] Live Georgian ear failed: {e!r}", flush=True)
@@ -431,7 +431,9 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
         try:
             text = rest.result(timeout=REST_KA_WAIT_S)
             if text and re.search(r"[Ⴀ-ჿ]", text):
-                print(f"[stt] Georgian via REST Gemini: {text[:60]!r}", flush=True)
+                # ASCII escapes keep this diagnostic from raising under the
+                # Windows console's cp1252 encoding and dropping good text.
+                print(f"[stt] Georgian via REST Gemini: {text[:60]!a}", flush=True)
                 return clean_transcript(text, True)
         except Exception:  # noqa: BLE001 — too slow or failed: Gladia
             pass
@@ -616,7 +618,7 @@ class Stream:
                 text = ka
                 self.heard = "ka"
         ms = (time.monotonic() - self.t_commit_sent) * 1000
-        print(f"[stt-local] heard {ms:.0f}ms after his pause: {text[:60]!r}")
+        print(f"[stt-local] heard {ms:.0f}ms after his pause: {text[:60]!a}")
         return text
 
     def why(self) -> str:

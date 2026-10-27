@@ -13,9 +13,18 @@ import json
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
+
+# Headless runs can inherit Windows' strict cp1252 console from the launcher.
+# One non-ASCII diagnostic used to raise inside voice routing and cancel work.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:  # noqa: BLE001 — pythonw may have no console streams
+        pass
 
 import numpy as np
 

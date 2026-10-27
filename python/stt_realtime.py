@@ -398,7 +398,7 @@ class Session:
             return None
         ms = ((time.monotonic() - self.t_commit_sent) * 1000
               if self.t_commit_sent else -1)
-        print(f"[stt-rt] committed in {ms:.0f}ms: {text[:60]!r}")
+        print(f"[stt-rt] committed in {ms:.0f}ms: {text[:60]!a}")
         return text
 
     def why(self) -> str:
