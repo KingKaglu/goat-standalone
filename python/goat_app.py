@@ -575,6 +575,21 @@ VOICE_FORGET_RE = re.compile(
 # answer to a question I asked a moment ago. Kept across restarts.
 NAME_ONLY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".goat-name-only")
 NAME_ONLY_ANSWER_S = 20.0
+# The ear writes "GOAT" as "Gold, ..." / "Good, ..." / "Got, ..." (log
+# 2026-10-31 17:49). Opening the sentence with a pause after it, it's my name.
+NAME_SLIP_RE = re.compile(
+    r"\s*(?:(?:hey|yo|ok(?:ay)?|oh)[,\s]+)?(?:gold|good|got|goal|goth|gut|gogh|code)"
+    r"\s*[,!?.]", re.IGNORECASE)
+HEAR_CHECK_RE = re.compile(
+    r"\b(?:can|could|do)\s+you\s+(?:\w+\s+){0,2}hear\s+me\b"
+    r"|\bare\s+you\s+(?:\w+\s+)?(?:there|listening)\b"
+    r"|გესმის", re.IGNORECASE)
+NAME_ONLY_HINT = {
+    "en": "Sir, I hear you. Name-only mode is on — start with \"GOAT\", or say "
+          "\"you can talk freely again\" to turn it off.",
+    "ka": "ბატონო, გისმენ. მხოლოდ სახელზე ვპასუხობ — დაიწყე „GOAT“-ით, ან "
+          "მითხარი „you can talk freely again“, რომ გამოვრთო.",
+}
 NAME_ONLY_ON_RE = re.compile(
     r"\b(?:(?:don'?t|do not|never)\s+(?:say anything|answer|talk|respond|speak|reply)"
     r"[\w\s,']{0,20}\b(?:unless|until|if\s+i\s+(?:don'?t|do not))\s+(?:i\s+)?"
@@ -2740,7 +2755,8 @@ class GoatApp:
 
     def _name_gate(self, text: str) -> bool:
         """Name-only mode: True = this voice turn is not for me."""
-        if not getattr(self, "name_only", False) or WAKE_RE.search(text):
+        if (not getattr(self, "name_only", False) or WAKE_RE.search(text)
+                or NAME_SLIP_RE.match(text)):
             return False
         ex = getattr(self, "_exchanges", None)
         asked = bool(ex) and ex[-1][1].rstrip().endswith("?")
@@ -2853,6 +2869,12 @@ class GoatApp:
         if self._voice_command(text, source):
             return
         if not phone and not self.audio.is_tts_playing and self._name_gate(text):
+            if HEAR_CHECK_RE.search(text):
+                # 2026-10-31 17:49: "Can you even hear me?" x4, all ignored —
+                # he'd forgotten the mode was on. Say so instead of silence.
+                print(f"[wake] name-only mode, hearing check answered: {text!r}")
+                self._say_now(NAME_ONLY_HINT.get(self.turn_lang, NAME_ONLY_HINT["en"]))
+                return
             print(f"[wake] name-only mode, not addressed: {text!r}")
             self.emit("status", "name-only mode — say \"GOAT\" to talk to me")
             return
@@ -2860,7 +2882,7 @@ class GoatApp:
                 and (self.wake_enabled or getattr(self, "_asleep", False)) and not self.busy
                 and not self.audio.is_tts_playing
                 and time.monotonic() - self._last_exchange > WAKE_WINDOW_S
-                and not WAKE_RE.search(text)):
+                and not WAKE_RE.search(text) and not NAME_SLIP_RE.match(text)):
             # Idle and not addressed — JARVIS doesn't answer the TV.
             print(f"[wake] not addressed, ignored: {text!r}")
             self.emit("status", "heard — say my name to wake me")

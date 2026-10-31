@@ -135,6 +135,16 @@ app._exchanges = [("x", "Sir, shall I send it?")]
 check("name-only: his answer to my question -> heard", not app._name_gate("yes"))
 app._last_exchange -= 60
 check("name-only: a minute later it needs the name again", app._name_gate("yes"))
+for slip in ("Gold, what the fuck?", "Good, can you hear me?", "Hey got, open Spotify"):
+    check(f"name-only: misheard name {slip!r} -> heard", not app._name_gate(slip))
+check("name-only: 'Good morning everyone' is not my name", app._name_gate("Good morning everyone"))
+check("'Gold, ...' and 'Good, ...' count as my name",
+      bool(g.NAME_SLIP_RE.match("Gold, what the fuck?"))
+      and bool(g.NAME_SLIP_RE.match("Good, can you hear me?")))
+check("'Can you even hear me?' / 'Dude, can you hear me?' are hearing checks",
+      bool(g.HEAR_CHECK_RE.search("Can you even hear me?"))
+      and bool(g.HEAR_CHECK_RE.search("Dude, can you hear me?"))
+      and bool(g.HEAR_CHECK_RE.search("Can you fucking hear me, bro?")))
 app.name_only = False
 check("name-only off: no gate", not app._name_gate("what now"))
 
