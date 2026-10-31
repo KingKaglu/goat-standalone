@@ -538,6 +538,19 @@ def _restart_goat() -> str:
                f"Bypass -File {script}' }} | Out-Null; 'restart helper launched'")
 
 
+# GOAT quits itself (2026-10-29 01:01 "Okay, please shut down yourself" got "I
+# cannot shut myself down"). goat_app sets the hook: the UI quits after the
+# goodbye line has played.
+QUIT_HOOK = None
+
+
+def _quit_goat() -> str:
+    if QUIT_HOOK is None:
+        return "ERROR: no quit hook"
+    QUIT_HOOK()
+    return "quitting"
+
+
 _MS_SETTINGS = {
     "wifi": "network-wifi", "wi-fi": "network-wifi", "network": "network",
     "internet": "network", "bluetooth": "bluetooth", "devices": "bluetooth",
@@ -590,6 +603,14 @@ _W_RESTART_RE = re.compile(
     re.IGNORECASE)
 
 
+_W_QUIT_RE = re.compile(
+    r"^(?:(?:shut|turn|switch|power)\s+(?:yourself|goat)\s+(?:down|off)|"
+    r"(?:shut|turn|switch|power)\s+(?:down|off)\s+(?:yourself|goat|the\s+goat)|"
+    r"(?:close|quit|exit|kill)\s+(?:yourself|goat|the\s+goat(?:\s+app)?)|"
+    r"goat\s+(?:shut\s+down|turn\s+off|quit|exit)|"
+    r"გამოირთე|გაითიშე|გამორთე\s+(?:თავი|გოატ\w*))\s*[.!?]*$", re.IGNORECASE)
+
+
 def pc(t: str, raw: str = "") -> "object | None":
     """Windows-side settings and GOAT's own restart. `t` is normalized."""
     import reflex
@@ -600,6 +621,9 @@ def pc(t: str, raw: str = "") -> "object | None":
         # confirms that one.
         return reflex.Reflex("restart", "GOAT", _restart_goat,
                              speak="Sir, restarting. Back in a moment.")
+    if _W_QUIT_RE.match(t):
+        return reflex.Reflex("quit", "GOAT", _quit_goat,
+                             speak="Sir, shutting down. Call me when you need me.")
     m = _W_THEME_RE.match(t)
     if m:
         s = (m.group("s") or m.group("s2") or "").lower()

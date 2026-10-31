@@ -460,7 +460,8 @@ async def main():
         check("quota exhausted mid-work -> claude_out + work_fail",
               app.claude_out is True and has(app, "work_fail")
               and has(app, "work_done")
-              and bool(_re.fullmatch(r"\d\d:\d\d", app.claude_reset)),
+              # years away: the day is named too ("Tue 01 Jan 01:00")
+              and bool(_re.fullmatch(r"(?:\w{3} \d\d \w{3} )?\d\d:\d\d", app.claude_reset)),
               f"claude_out={app.claude_out} reset={app.claude_reset}")
 
         real = result_msg(

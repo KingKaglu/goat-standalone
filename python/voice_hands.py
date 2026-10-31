@@ -21,6 +21,7 @@ with no Claude usage:
   browser_history  pages he visited in Chrome/Edge
   web_search     current facts (Live's own Google Search is refused on his
                  free tier)
+  write_file, save_chat_log, work_hours   (desk_hands.py, 2026-10-31)
 
 execute(name, args) -> short text result for the model. Blocking: run it in
 a thread. Everything returns a string, never raises.
@@ -735,6 +736,8 @@ def execute(name: str, args: dict) -> str:
             return where_am_i()
         if name == "browser_history":
             return browser_history(args)
+        if name in desk_hands.NAMES:
+            return desk_hands.execute(name, args)
         if name == "web_search":
             import local_hands
             q = str(args.get("query") or "")
@@ -750,8 +753,10 @@ def execute(name: str, args: dict) -> str:
     return f"ERROR: unknown tool {name}"
 
 
+import desk_hands  # noqa: E402 — files he asks for, the chat log, work hours
+
 NAMES = {"find_files", "read_file", "list_folder", "open_path", "phone",
-         "terminal_claude", "web_search", "where_am_i", "browser_history"}
+         "terminal_claude", "web_search", "where_am_i", "browser_history"} | desk_hands.NAMES
 
 DECLS = [
     {"name": "find_files",
@@ -826,4 +831,4 @@ DECLS = [
          "query": {"type": "string"},
          "days": {"type": "integer", "description": "how far back, default 30"}},
          "required": ["query"]}},
-]
+] + desk_hands.DECLS

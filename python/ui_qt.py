@@ -6799,6 +6799,11 @@ class GoatWindow(QWidget):
         self.event_sig.emit(kind, str(data))
 
     def _on_event(self, kind: str, data: str):
+        if kind == "quit":
+            # he said "shut down yourself": let the goodbye line play first
+            print("[app] quitting on his order", flush=True)
+            QTimer.singleShot(int(data or 0), QApplication.quit)
+            return
         if kind == "status":
             self._statew = data.lower()
             self.stateword.setText(self._statew)

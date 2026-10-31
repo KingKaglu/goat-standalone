@@ -54,6 +54,11 @@ ENABLED = os.environ.get("GOAT_REFLEX", "on").strip().lower() not in (
 SITES = {
     "google": "https://www.google.com",
     "gmail": "https://mail.google.com", "mail": "https://mail.google.com",
+    # 2026-10-30 "Could you please open my email?" matched no site, so the
+    # voice went looking for a FILE and opened check-email-verification.ts.
+    "email": "https://mail.google.com", "e-mail": "https://mail.google.com",
+    "emails": "https://mail.google.com", "inbox": "https://mail.google.com",
+    "my mail": "https://mail.google.com", "my email": "https://mail.google.com",
     "youtube": "https://www.youtube.com", "yt": "https://www.youtube.com",
     "github": "https://github.com",
     "chatgpt": "https://chat.openai.com",
@@ -1006,6 +1011,11 @@ def match(text: str, lang: str = "en") -> Reflex | None:
     # went to the brain — the anchored patterns below sank on one "please".
     # Phone orders go to the phone's own command channel, never to taps.
     import device_reflex
+    # "shut down GOAT": normalize drops the name as a vocative, so ask first
+    q = re.sub(r"^(?:(?:ok(?:ay)?|please|hey|now)\W+)+|\W+please\W*$", "", t,
+               flags=re.IGNORECASE)
+    if device_reflex._W_QUIT_RE.match(q) and re.search(r"goat|გოატ", q, re.IGNORECASE):
+        return device_reflex.pc(q)
     bare, device = device_reflex.normalize(t)
     if device == "phone":
         return device_reflex.phone(bare)

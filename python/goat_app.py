@@ -144,6 +144,17 @@ BRAIN_ROUTING = os.environ.get("GOAT_BRAIN_ROUTE", "on").strip().lower() \
 # GOAT_TWO_BRAINS=off (or no Gemini key) = the one-brain design again.
 TWO_BRAINS = os.environ.get("GOAT_TWO_BRAINS", "on").strip().lower() \
     not in ("off", "0", "false", "no")
+# "is my Claude usage back?" — the voice gets the plan meter and answers it
+# (STT writes Claude as "cloud").
+USAGE_Q_RE = re.compile(
+    r"\b(?:usage|limit|quota|weekly|5[- ]hour|five[- ]hour|reset)\b.{0,40}"
+    r"\b(?:claude|cloud|up|back|left|reset|how much|percent|%)|"
+    r"\b(?:claude|cloud)(?:'s)?\s+(?:usage|limit|quota)", re.IGNORECASE)
+# ...but "why does it eat my usage, look into it" is a job for Claude.
+USAGE_WORK_RE = re.compile(
+    r"\b(?:why|where|what (?:on|for)|how (?:does|do|is) \w+ (?:spend|use)|spen[dt]s?|"
+    r"spending|wast\w*|burn\w*|eat\w*|look|check (?:the |its )?(?:logs?|code)|"
+    r"analy\w+|investigat\w*|audit|improve|save)\b", re.IGNORECASE)
 # "which model are you?" gets told which one is answering THIS turn.
 MODEL_Q_RE = re.compile(
     r"\b(?:which|what)\s+(?:model|brain|ai|llm|claude)|"
@@ -464,6 +475,8 @@ VOICE_DOWN = {
     "en": "Sir, my voice link just dropped. Give me a moment.",
     "ka": "ბატონო, ხმის კავშირი გაწყდა. ერთი წამი.",
 }
+VOICE_TO_JOB = {"en": "Sir, my voice is slow right now — I've passed that to Claude.",
+                "ka": "ბატონო, ხმა ახლა ნელა მუშაობს — Claude-ს გადავეცი."}
 
 ROUTE_FILE = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), ".phone", "route.json")
@@ -556,6 +569,23 @@ VOICE_LEARN_RE = re.compile(
     re.IGNORECASE)
 VOICE_FORGET_RE = re.compile(
     r"\b(forget|delete|erase|wipe)\b[\w\s']{0,12}\bmy voice\b", re.IGNORECASE)
+# ---- name-only mode (2026-10-29 01:01, his order: "When I talk, don't say
+# anything if I don't call the name") ----  On: a voice turn without my name
+# is ignored, even mid-conversation and while Claude works — except his
+# answer to a question I asked a moment ago. Kept across restarts.
+NAME_ONLY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".goat-name-only")
+NAME_ONLY_ANSWER_S = 20.0
+NAME_ONLY_ON_RE = re.compile(
+    r"\b(?:(?:don'?t|do not|never)\s+(?:say anything|answer|talk|respond|speak|reply)"
+    r"[\w\s,']{0,20}\b(?:unless|until|if\s+i\s+(?:don'?t|do not))\s+(?:i\s+)?"
+    r"(?:call|say|use)\s+(?:your\s+|the\s+|my\s+)?name|"
+    r"only\s+(?:answer|talk|respond|speak|reply)\s+(?:to me\s+)?(?:when|if)\s+i\s+"
+    r"(?:call|say|use)\s+(?:your|the)\s+name|name[- ]only\s+mode\s+on)\b",
+    re.IGNORECASE)
+NAME_ONLY_OFF_RE = re.compile(
+    r"\b(?:you can (?:talk|answer|speak|reply) (?:freely|normally|without (?:your|the) name)"
+    r"(?: again)?|(?:no need|you don'?t need) (?:for|to hear) (?:your|the) name|"
+    r"stop waiting for (?:your|the) name|name[- ]only\s+mode\s+off)\b", re.IGNORECASE)
 VOICE_LOCK_RE = re.compile(
     r"\bvoice[ -]?(?:lock|id)\b[\w\s']{0,12}?\b(on|off)\b"
     r"|\b(?:turn|switch|put)\b[\w\s']{0,6}?\b(on|off)\b[\w\s']{0,6}\bvoice[ -]?(?:lock|id)\b",
@@ -1101,6 +1131,60 @@ def saved_session_id():
             return sid or None
     except OSError:
         return None
+
+
+# 2026-10-31: the first job after a 16-hour break resumed a 128k-token session
+# and re-cached all of it (7 calls, ~343k tokens' worth) just to read the
+# usage file. The prompt cache is gone after an hour, so a cold session pays
+# its whole size again; past COLD_ROTATE_CTX a fresh one (~31k) is cheaper.
+CACHE_COLD_S = 3600
+COLD_ROTATE_CTX = 40_000
+
+
+def session_weight(sid, projects=None):
+    """(last context tokens, seconds since last write) of a saved engine
+    session, from the tail of its transcript. (0, 0) when it can't be read."""
+    projects = projects or os.path.join(os.path.expanduser("~"), ".claude",
+                                        "projects")
+    try:
+        path = next(p for p in (os.path.join(projects, d, sid + ".jsonl")
+                                for d in os.listdir(projects))
+                    if os.path.isfile(p))
+        idle = time.time() - os.path.getmtime(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - 2_000_000))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except (OSError, StopIteration):
+        return 0, 0
+    for ln in reversed(lines):
+        if '"usage"' not in ln:
+            continue
+        try:
+            u = json.loads(ln)["message"]["usage"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        return ((u.get("input_tokens") or 0)
+                + (u.get("cache_read_input_tokens") or 0)
+                + (u.get("cache_creation_input_tokens") or 0)), idle
+    return 0, idle
+
+
+def drop_cold_heavy_session():
+    """Forget the saved session when it is too big to re-cache cold. Returns
+    the dropped session's size, or 0 when it was kept."""
+    sid = saved_session_id()
+    if not sid:
+        return 0
+    ctx, idle = session_weight(sid)
+    if ctx > ROTATE_CTX or (idle > CACHE_COLD_S and ctx > COLD_ROTATE_CTX):
+        try:
+            os.remove(SESSION_FILE)
+        except OSError:
+            return 0
+        print(f"[usage] saved session {sid[:8]} is {ctx // 1000}k tokens, "
+              f"idle {idle / 3600:.1f}h — starting fresh instead of re-caching")
+        return ctx
+    return 0
 
 
 def _default_emit(kind, data):
@@ -1680,6 +1764,7 @@ class GoatApp:
         # after WAKE_WINDOW_S of silence, voice input must carry the name.
         self.wake_enabled = os.environ.get("GOAT_WAKE", "on").lower() not in (
             "off", "0", "false")
+        self.name_only = os.path.exists(NAME_ONLY_FILE)
         # Launched by Windows at login (ui_qt --startup, his order
         # 2026-09-27): come up asleep — no greeting sound, no briefing, no
         # warm-up turn (zero Claude usage) — and answer only when named.
@@ -1735,6 +1820,9 @@ class GoatApp:
                      if live_talk.ENABLED and self.talker.available() else None)
         if self.live is not None:
             self.live.tool_runner = self._voice_tool
+        import device_reflex
+        # "shut down yourself": the UI quits once the goodbye has played
+        device_reflex.QUIT_HOOK = lambda: self.emit("quit", "3500")
         self.fable = talk_brain.FableGate()
         self._watch = talk_brain.WATCH
         self.talk_busy = False          # a voice turn is composing (UI: thinking)
@@ -2595,6 +2683,15 @@ class GoatApp:
         """"learn my voice" / "voice lock on|off" / "forget my voice", handled
         here without the brain. (Typed, the brain does it with the voice_id
         CLI.) True = handled."""
+        if len(text.split()) <= 25:
+            on = bool(NAME_ONLY_ON_RE.search(text))
+            if on or NAME_ONLY_OFF_RE.search(text):
+                self.emit("you", text)
+                self.set_name_only(on)
+                self._say_now("Sir, understood. From now on I only answer when you "
+                              "say my name." if on else
+                              "Sir, alright. I'll answer without my name again.")
+                return True
         vid = getattr(self, "vid", None)
         if vid is None or len(text.split()) > 10:
             return False
@@ -2628,6 +2725,26 @@ class GoatApp:
                           if on else "Voice lock is off. I'll hear everyone.")
             return True
         return False
+
+    def set_name_only(self, on: bool):
+        self.name_only = on
+        try:
+            if on:
+                with open(NAME_ONLY_FILE, "w", encoding="utf-8") as f:
+                    f.write(datetime.datetime.now().isoformat(timespec="seconds"))
+            elif os.path.exists(NAME_ONLY_FILE):
+                os.remove(NAME_ONLY_FILE)
+        except OSError as e:
+            print(f"[wake] name-only flag not saved: {e}", flush=True)
+        print(f"[wake] name-only mode {'on' if on else 'off'}", flush=True)
+
+    def _name_gate(self, text: str) -> bool:
+        """Name-only mode: True = this voice turn is not for me."""
+        if not getattr(self, "name_only", False) or WAKE_RE.search(text):
+            return False
+        ex = getattr(self, "_exchanges", None)
+        asked = bool(ex) and ex[-1][1].rstrip().endswith("?")
+        return not (asked and time.monotonic() - self._last_exchange < NAME_ONLY_ANSWER_S)
 
     async def _enroll_turn(self, audio_np: np.ndarray, rt, source: str):
         """One utterance of "learn my voice": it's voice to learn, not a
@@ -2734,6 +2851,10 @@ class GoatApp:
         if not phone and self._mishearing(text):
             return
         if self._voice_command(text, source):
+            return
+        if not phone and not self.audio.is_tts_playing and self._name_gate(text):
+            print(f"[wake] name-only mode, not addressed: {text!r}")
+            self.emit("status", "name-only mode — say \"GOAT\" to talk to me")
             return
         if (not phone
                 and (self.wake_enabled or getattr(self, "_asleep", False)) and not self.busy
@@ -3212,10 +3333,33 @@ class GoatApp:
                 "(deep) one, tell him in one line and ask; quick jobs are fine. "
                 "Talking and explaining yourself costs Claude nothing — never "
                 "ask before answering him.")
+        if kind == "user" and plan and USAGE_Q_RE.search(text or ""):
+            # 2026-10-31 16:30 "So I can see Claude usage is up, right?" went to
+            # Claude as a job — 7 calls at 130k context to read a meter GOAT
+            # already holds. The voice answers it from here.
+            blocks.append(
+                f"[Claude plan meter, read at {str(plan.get('at', ''))[11:16]}: 5-hour "
+                f"window {plan.get('five_hour')}% used (resets "
+                f"{plan.get('five_hour_resets') or '?'}), weekly {plan.get('seven_day')}% "
+                f"used (resets {plan.get('seven_day_resets') or '?'}). Answer his usage "
+                "question from this yourself — never hand it to Claude.]")
         if self.claude_out:
+            left = ""
+            at = self._meter_spent_until() or self.claude_reset_at
+            if at and at > time.time():
+                mins = int((at - time.time()) // 60)
+                left = (f" — that is {mins // 60} h {mins % 60} min from now "
+                        f"(now {datetime.datetime.now():%a %d %b %H:%M}, back "
+                        f"{datetime.datetime.fromtimestamp(at):%a %d %b %H:%M}); "
+                        "quote exactly this, never estimate")
             extra = ("Claude is OUT OF USAGE" + (f" until about {self.claude_reset}"
-                     if self.claude_reset else "") + " — jobs can't run until then; "
-                     "only instant commands (open, close, volume, media) work.")
+                     if self.claude_reset else "") + left
+                     + ". Jobs for Claude can't run until then, so do NOT "
+                     "hand_to_worker and never say you handed it over. YOUR OWN "
+                     "hands still work without Claude: do_now, email, files "
+                     "(find/read/write_file/save_chat_log), work_hours, phone, "
+                     "web_search, browser_history. Use them instead of saying "
+                     "you need Claude.")
         eff = getattr(self, "_live_effort", None) or self.effort
         blocks.append(self._watch.status_note(self._worker_label(), eff, extra))
         if kind == "user":
@@ -3409,8 +3553,10 @@ class GoatApp:
                     "things: find_files/read_file/open_path (his files), phone (his "
                     "phone), terminal_claude send (types his words into the terminal "
                     "Claude, now or at='HH:MM'), browser_history, web_search, "
-                    "where_am_i, do_now (laptop apps), email, and hand_to_worker "
-                    "(Claude does anything else). If one fits, call it now and tell "
+                    "where_am_i, do_now (laptop apps), email, write_file (notes and "
+                    "text files), save_chat_log (your chat with him), work_hours "
+                    "(his hours workbook), and hand_to_worker (Claude does anything "
+                    "else, when it has usage). If one fits, call it now and tell "
                     "him what it returned. Only if truly none can, say what's missing "
                     "in one sentence.]")}]
                 if via_live:
@@ -3505,6 +3651,17 @@ class GoatApp:
                         self._cover_turn = True
                         await self._work(text, hard=False, echo_you=False)
                         return
+                    elif (kind == "user" and self.busy and self._job_silent
+                          and brain_route.classify(text, False) != brain_route.TALK):
+                        # 2026-10-31 16:35: "make sure the voice never tells me I
+                        # can't…" and "stop it, try a different approach, plan it
+                        # better" both got "my voice link just dropped" and were
+                        # lost. Orders for the running job reach Claude anyway.
+                        line = VOICE_TO_JOB[lang]
+                        self.tts.say(line)
+                        spoken.append(line)
+                        acted.append("message_worker")
+                        asyncio.create_task(self._message_worker(text, his=text))
                     else:
                         back = self.talker.out_until()
                         if back and lang == "en":
@@ -3631,9 +3788,42 @@ class GoatApp:
         self._bc_i = (getattr(self, "_bc_i", -1) + 1) % len(pool)
         self.tts.say(pool[self._bc_i], filler=True)
 
+    def _meter_answer(self, said: str) -> str:
+        """The spoken answer to a plain "is my Claude usage back?", from the
+        free plan meter — or "" when it isn't one (or the meter is stale), so
+        a real job about usage ("why does GOAT waste it?") still goes out."""
+        plan = getattr(self, "_plan_now", None) or {}
+        if (not plan or not USAGE_Q_RE.search(said or "")
+                or WORK_RE.search(said) or USAGE_WORK_RE.search(said)
+                or len(said.split()) > 18):
+            return ""
+        try:
+            age = time.time() - datetime.datetime.fromisoformat(
+                plan["at"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            return ""
+        if age > 15 * 60:
+            return ""
+        five, week = round(plan.get("five_hour") or 0), round(plan.get("seven_day") or 0)
+        r5, r7 = plan.get("five_hour_resets") or "", plan.get("seven_day_resets") or ""
+        if getattr(self, "turn_lang", "en") == "ka":
+            return (f"ბატონო, Claude-ის 5-საათიანი ლიმიტი {five}%-ზეა"
+                    + (f", განახლდება {r5}-ზე" if r5 else "")
+                    + f", კვირის — {week}%" + (f", განახლდება {r7}" if r7 else "") + ".")
+        return (f"Sir, Claude's 5-hour window is at {five}%"
+                + (f", resetting at {r5}" if r5 else "")
+                + f"; the weekly limit is at {week}%"
+                + (f", resetting {r7}" if r7 else "") + ".")
+
     async def _give_worker(self, task: str, depth: str = "deep", his: str = ""):
         """The voice hands Claude a job (or Claude is busy: it's a note)."""
         try:
+            line = self._meter_answer(his or task)
+            if line:
+                # A meter question costs Claude nothing to answer from here.
+                print(f"[usage] kept off Claude: {(his or task)[:60]!r}", flush=True)
+                self.tts.say(line)
+                return
             if self.busy and self._job_silent:
                 await self._message_worker(task, his=his)
                 return
@@ -3876,7 +4066,12 @@ class GoatApp:
         self.emit("model", name)
         self.emit("brain", f"{name}|{tier}|{effort}")
         self._emit_brains()
-        self.emit("work_start", f"{name}|{task}")
+        # The resume preamble isn't his words: the card shows his order (2026-10-28
+        # the phone kept an "[auto-resume] Claude's usage limit just reset" tab
+        # he couldn't get rid of).
+        shown = (("(resumed) " + task.split("\n", 1)[1])
+                 if task.startswith("[auto-resume]") and "\n" in task else task)
+        self.emit("work_start", f"{name}|{shown}")
         try:
             view = await asyncio.to_thread(live_view.note)
         except Exception as e:  # noqa: BLE001
@@ -4724,7 +4919,18 @@ class GoatApp:
                       + (f" — resets {self.claude_reset}" if self.claude_reset else ""))
             self._emit_brains()
             self._worker_finished("limit", report)
-            return False
+            # Start the next job on a fresh session. 2026-10-27..31 every dead
+            # retry (desktop note and all) piled into this one, unmeasured:
+            # the first job after the reset re-cached 130k tokens to answer
+            # "is my usage back?" — a fresh session starts at ~31k.
+            self._rotate_only = True
+            self._last_ctx = 0
+            try:
+                os.remove(SESSION_FILE)
+            except OSError:
+                pass
+            self._pending_handoff = self._handoff_text()
+            return True
         if msg.is_error and not report:
             self._work_failed = True
             self._last_work_summary = f"it errored: {err[:150]}"
@@ -4813,17 +5019,33 @@ class GoatApp:
             rl = (r or {}).get("rate_limits") or {}
             fh, sd = rl.get("five_hour") or {}, rl.get("seven_day") or {}
 
-            def _local(iso):
+            def _when(iso):
                 try:
-                    d = datetime.datetime.fromisoformat(iso).astimezone()
-                    return d.strftime("%H:%M")
+                    return datetime.datetime.fromisoformat(iso).astimezone()
                 except Exception:  # noqa: BLE001
+                    return None
+
+            def _local(iso, with_day=False):
+                d = _when(iso)
+                if d is None:
                     return ""
+                if with_day and d.date() != datetime.date.today():
+                    # A bare "16:00" for the weekly reset made the voice say
+                    # "15 hours" when it was 39 (2026-10-30). Name the day.
+                    return d.strftime("%a %d %b %H:%M")
+                return d.strftime("%H:%M")
+
+            def _ts(iso):
+                d = _when(iso)
+                return d.timestamp() if d else 0.0
             a, b = fh.get("utilization"), sd.get("utilization")
             if a is None and b is None:
                 return
             out = {"five_hour": a, "five_hour_resets": _local(fh.get("resets_at")),
-                   "seven_day": b, "seven_day_resets": _local(sd.get("resets_at")),
+                   "seven_day": b,
+                   "seven_day_resets": _local(sd.get("resets_at"), True),
+                   "five_hour_reset_ts": _ts(fh.get("resets_at")),
+                   "seven_day_reset_ts": _ts(sd.get("resets_at")),
                    "plan": (r or {}).get("subscription_type"),
                    "at": datetime.datetime.now().isoformat(timespec="seconds")}
             self._plan_now = out          # the voice sees it (_front_parts)
@@ -4857,9 +5079,25 @@ class GoatApp:
         m = re.search(r"\|(\d{9,11})", text)
         if m:
             return float(m.group(1))
+        # Weekly limits name the day too: "resets Oct 31, 4pm (Europe/Berlin)".
+        # The old regex wanted a digit right after "resets", missed it, and the
+        # 20-minute fallback fired a false "usage is back" all of 2026-10-28.
+        dm = re.search(r"resets?\s+(?:on\s+)?([A-Za-z]{3,9})\.?\s+(\d{1,2})"
+                       r"(?:st|nd|rd|th)?,?\s*(?:at\s+)?", text, re.IGNORECASE)
+        mon = day = 0
+        if dm:
+            try:
+                mon = datetime.datetime.strptime(dm.group(1)[:3].title(),
+                                                 "%b").month
+                day = int(dm.group(2))
+                text = text[:dm.start()] + "resets " + text[dm.end():]
+            except ValueError:
+                mon = day = 0
         m = CLAUDE_RESET_RE.search(text)
         if not m:
-            return 0.0
+            if not mon:
+                return 0.0
+            m = re.match(r"(0)(?::(00))?()", "0")   # date only: midnight
         h = int(m.group(1)) % 24
         mnt = int(m.group(2) or 0)
         ap = (m.group(3) or "").lower()
@@ -4877,6 +5115,11 @@ class GoatApp:
                 tz = None
         now = datetime.datetime.now(tz)
         t = now.replace(hour=h, minute=mnt, second=0, microsecond=0)
+        if mon:
+            t = t.replace(month=mon, day=day)
+            if t < now - datetime.timedelta(days=180):
+                t = t.replace(year=t.year + 1)    # "resets Jan 2" in December
+            return t.timestamp()
         if t <= now:
             t += datetime.timedelta(days=1)
         return t.timestamp()
@@ -4886,9 +5129,24 @@ class GoatApp:
         usable reset time) 20 minutes since the limit hit. A wrong guess costs
         one failed turn, never a stuck state."""
         now = time.time()
+        if self._meter_spent_until():
+            return False                      # the meter knows better
         if self.claude_reset_at:
             return now >= self.claude_reset_at
         return now - self._limit_hit_at >= 20 * 60
+
+    def _meter_spent_until(self) -> float:
+        """From the free plan meter: when the spent window (5-hour or weekly,
+        at ~100%) comes back, as an epoch; 0 if nothing is spent or unknown."""
+        p = getattr(self, "_plan_now", None) or {}
+        best = 0.0
+        for k in ("five_hour", "seven_day"):
+            try:
+                if float(p.get(k) or 0) >= 99:
+                    best = max(best, float(p.get(k + "_reset_ts") or 0))
+            except (TypeError, ValueError):
+                pass
+        return best if best > time.time() else 0.0
 
     def _arm_resume(self):
         """The limit cut a job off: remember it and wake up at the reset to
@@ -4904,12 +5162,26 @@ class GoatApp:
 
     async def _resume_after_reset(self):
         try:
+            blind = 20 * 60                   # no known reset time: back off
             while True:
-                if self.claude_reset_at:
+                if self.claude_reset_at and self.claude_reset_at > time.time():
                     wait = self.claude_reset_at - time.time() + 45
                 else:
-                    wait = 20 * 60
+                    wait = blind
+                    blind = min(blind * 2, 3 * 3600)
                 await asyncio.sleep(max(30.0, wait))
+                # Ask the free plan meter before believing the quota is back:
+                # a guessed reset must never say "usage is back" when it isn't.
+                self._plan_at = -999
+                await self._pull_plan_usage()
+                still = self._meter_spent_until()
+                if still:
+                    self.claude_reset_at = still
+                    self.claude_reset = datetime.datetime.fromtimestamp(
+                        still).strftime("%a %H:%M")
+                    print(f"[limit] meter says still spent until "
+                          f"{self.claude_reset}; waiting", flush=True)
+                    continue
                 for _ in range(120):          # let a running turn finish
                     if not self.busy:
                         break
@@ -4970,7 +5242,15 @@ class GoatApp:
             if reset:
                 self.claude_reset = reset
             self._limit_hit_at = time.time()
-            self.claude_reset_at = self._reset_epoch(text)
+            self.claude_reset_at = (self._reset_epoch(text)
+                                    or self._meter_spent_until())
+            if self.claude_reset_at - time.time() > 24 * 3600:
+                # Far off (weekly): give the day, not just a clock time. (A
+                # bare "resets 6:05pm" is always within a day: it keeps the
+                # message's own clock time.)
+                reset = datetime.datetime.fromtimestamp(
+                    self.claude_reset_at).strftime("%a %d %b %H:%M")
+                self.claude_reset = reset
             self.emit("claude", "out|" + reset)  # UI meter
             # Spoken heads-up comes through the talk lane's voice (once).
             # NEVER the raw CLI error — GOAT's own words only.
@@ -5117,6 +5397,7 @@ class GoatApp:
             away_h = talked if away_h is None else min(away_h, talked)
         except OSError:
             pass
+        drop_cold_heavy_session()
         self.emit("status", "starting speech recognition...")
         if self.language in ("ka", "auto"):
             # ka pins the Georgian voice now. auto RESUMES the language the

@@ -68,7 +68,8 @@ HOST = "generativelanguage.googleapis.com"
 # forecast, claimed it told Claude without calling the tool) — last resort.
 CHAIN = [m.strip() for m in os.environ.get(
     "GOAT_TALK_MODELS",
-    "gemini-3.6-flash,gemini-3-flash-preview,gemini-3.1-flash-lite").split(",")
+    "gemini-3.6-flash,gemini-3-flash-preview,gemini-3.5-flash-lite,"
+    "gemini-3.1-flash-lite").split(",")
     if m.strip()]
 PRIMARY = CHAIN[0]
 HEDGE = CHAIN[1] if len(CHAIN) > 1 else ""
@@ -80,6 +81,14 @@ THINK_LEVEL = {"gemini-3.8-flash": "low", "gemini-3.7-flash": "low",
 # turn asked two models and the free daily quota went twice as fast.
 HEDGE_AFTER_S = 2.4
 FIRST_TOKEN_S = 8.0        # nobody spoke by now: Gemini is down this turn
+# Still nothing by now: ask one more model. 2026-10-31 under Google's "high
+# demand": 3.6-flash gave no token in 8 s on every turn, 3-flash-preview
+# 3.7-5 s, and two turns ran out the 8 s — "Sir, my voice link just dropped"
+# — while 3.5-flash-lite answered in 1.1-2.3 s.
+HEDGE2_AFTER_S = 4.6
+# A model that was silent while another one answered sits at the back of the
+# chain this long, so a model that is down today doesn't open every turn.
+SLOW_S = 600.0
 STREAM_IDLE_S = 20.0       # a started stream silent this long is dead
 TEXT_IDLE_S = 8.0          # mid-sentence silence this long: the answer is over
 CALL_TAIL_S = 2.5          # after a function call: whatever else is coming
@@ -135,10 +144,14 @@ YOUR OWN HANDS — use them yourself, at once; no need for Claude (his order 202
 - TYPING INTO THE TERMINAL CLAUDE: "type/tell/say to terminal Claude …", "continue it when my usage resets" = terminal_claude send with his words as message (at='HH:MM' for later). You CAN do this — never say you can't type into the terminal.
 - HIS BROWSER HISTORY: browser_history finds pages he visited ("that Vision Quest page I watched this week").
 - WHERE HE IS: where_am_i gives the city he's in (approximate); use it for "where am I" and anything "near me" before you search.
+- NOTES AND TEXT FILES: write_file makes a text file (a note, a list, a letter, a roadmap, "create a notepad and write …") with the full text you write yourself, on his Desktop unless he names a place, and opens it; mode append adds to one. Never say making or filling a file needs Claude.
+- YOUR CHAT LOG: save_chat_log saves your conversations with him (days back, or from/to) into a text file and opens it — "save our chat of the last two days", "put our chat logs in a notepad".
+- HIS WORK HOURS: work_hours reads his Work-Hours-Pay workbook (this week Monday-Sunday, the month, pay, hours left to the higher rate) and logs a day's hours ("I worked 10 hours today" = action log, hours "10"). Quote its numbers; the week is never the month total.
 - A hand returns ERROR: say plainly what failed, in one line, and try another way or offer Claude.
-EMAIL — you write and send emails yourself with the email tool: to (an address, or "me" for his own inbox), subject, body. Write the body in his voice, short and natural, signed "Giorgi" unless he says otherwise. send=true sends it at once: use that when it goes to "me", or he clearly said send and the address is certain. Otherwise send=false: the draft opens on his screen, tell him in one line who it's to and what it says, and ask "Send it?"; his yes means send_draft. You don't know people's addresses: if he names someone whose address isn't in this conversation or memory, ask for it — never guess one.
+TRY, DON'T REFUSE (his order 2026-10-31: "make sure the talking voice never tells me I can't do this, I can't do that. Everything should be done by you as well if I ask you to do so. I know you can't do as good of a job, but you should try"): never answer "that requires Claude", "my tools depend on Claude", "I truly wish I could" or "we'll wait for the reset". Pick the closest hand and do it — write_file, save_chat_log, work_hours, do_now one step at a time, phone, email, find/read/open — and tell him what you did. Only when Claude is free AND it is real code or multi-step laptop work does it go to Claude. If a hand truly can't, say in one line what you tried and what's missing.
+EMAIL — you write and send emails yourself with the email tool: to (an address, or "me" for his own inbox), subject, body. Write the body in his voice, short and natural, signed "Giorgi" unless he says otherwise. send=true sends it at once: use that when it goes to "me", or he clearly said send and the address is certain. Otherwise send=false: the draft opens on his screen, tell him in one line who it's to and what it says, and ask "Send it?"; his yes means send_draft. You don't know people's addresses: if he names someone whose address isn't in this conversation or memory, ask for it — never guess one. "Write back / reply to them / write in my email that …" about a message on his screen (2026-10-30: OpenAI support's answer) is a REPLY to that sender: look_at_screen for their address, then email it (send=false) — never a draft to "me".
 
-WHAT GOES TO CLAUDE — call hand_to_worker: real work your own hands can't do: code, editing or creating files, installs, laptop settings, multi-step clicking or typing in laptop apps, long research, GOAT's own code, memory and restarts. Finding, reading and opening files, his phone, and quick web facts are yours (YOUR OWN HANDS) — don't send those to Claude, above all when Claude is out of usage. EXPLAINING is never Claude's job: "explain in detail how X works", "tell me everything about Y", "take your time" — you answer from what you know, as long as he asks for (2026-10-25: "explain how a car engine works" went to Claude and spent his Claude usage on a chat). Write `task` as a complete, self-contained instruction in English — Claude does not hear your conversation — with what he wants, the details he gave, and what "done" looks like. depth "quick" for one-step things (open, toggle, check, look up), "deep" for code, multi-step or careful work. In the SAME reply say one short line, like "Sir, handing that to Claude." Then stop: Claude's report comes back to you and you tell him.
+WHAT GOES TO CLAUDE — call hand_to_worker: real work your own hands can't do: code, editing existing documents or code files (a new note or text file is yours: write_file), installs, laptop settings, multi-step clicking or typing in laptop apps, long research, GOAT's own code, memory and restarts. Finding, reading and opening files, his phone, and quick web facts are yours (YOUR OWN HANDS) — don't send those to Claude, above all when Claude is out of usage. EXPLAINING is never Claude's job: "explain in detail how X works", "tell me everything about Y", "take your time" — you answer from what you know, as long as he asks for (2026-10-25: "explain how a car engine works" went to Claude and spent his Claude usage on a chat). Write `task` as a complete, self-contained instruction in English — Claude does not hear your conversation — with what he wants, the details he gave, and what "done" looks like. depth "quick" for one-step things (open, toggle, check, look up), "deep" for code, multi-step or careful work. In the SAME reply say one short line, like "Sir, handing that to Claude." Then stop: Claude's report comes back to you and you tell him.
 - Claude already busy: an addition or correction to the running job goes through message_worker — don't start a second job. A different, unrelated job also goes through message_worker (Claude queues it). "Stop it" / "cancel that" about the job means stop_worker.
 - He asks how it's going: answer from the [Claude] note — what it's doing now, for how long, its latest thought — in one or two plain sentences. If the note shows no job, say so. While the note says STILL RUNNING, never say Claude is done or finished, or that something is live or ready to look at — say what it's on and that it's still working.
 - Ask a yes/no question ("Send it?", "Shall I start?") once. If he already answered, act on it; don't ask the same thing again next turn. A short garbled reply right after your question ("Sannet", "send in") is most likely the answer you asked for.
@@ -435,6 +448,7 @@ class GeminiTalk:
         self.history: deque = deque(maxlen=HISTORY_TURNS)
         self.model = PRIMARY          # the model that answered last
         self._down: dict = {}         # model -> (epoch it may return, why)
+        self._slow: dict = {}         # model -> epoch it leads the chain again
         self._load_down()
         # A model resting on a day cap isn't the voice he'll hear: name the
         # first one that will actually answer.
@@ -531,7 +545,10 @@ class GeminiTalk:
 
     def _models(self) -> list:
         now = time.time()
-        return [m for m in CHAIN if self._down.get(m, (0, ""))[0] <= now]
+        up = [m for m in CHAIN if self._down.get(m, (0, ""))[0] <= now]
+        slow = getattr(self, "_slow", {})
+        return ([m for m in up if slow.get(m, 0) <= now]
+                + [m for m in up if slow.get(m, 0) > now])
 
     def usable(self) -> bool:
         """Is any Gemini model allowed to answer right now?"""
@@ -568,7 +585,7 @@ class GeminiTalk:
         t0 = time.monotonic()
         calls = [_Call(models[0], body, self.key, loop, q)]
         nxt_i = 1                  # next model in the chain not yet asked
-        hedged = False
+        hedged = hedged2 = False
         failed: set = set()
         winner = None
         err = ""
@@ -592,7 +609,13 @@ class GeminiTalk:
                     if not hedged and nxt_i < len(models) and now - t0 >= HEDGE_AFTER_S:
                         hedged = True
                         launch(f"{models[0]} silent {now - t0:.1f}s")
+                    if (hedged and not hedged2 and nxt_i < len(models)
+                            and now - t0 >= HEDGE2_AFTER_S):
+                        hedged2 = True
+                        launch(f"still silent {now - t0:.1f}s")
                     nxt = (t0 + HEDGE_AFTER_S if not hedged and nxt_i < len(models)
+                           else t0 + HEDGE2_AFTER_S if not hedged2 and nxt_i < len(models)
+                           and now - t0 < HEDGE2_AFTER_S
                            else t0 + FIRST_TOKEN_S)
                     wait = max(0.05, nxt - now)
                 else:
@@ -617,6 +640,12 @@ class GeminiTalk:
                         for c in calls:
                             if c is not call:
                                 c.cancel()
+                                if c not in failed and calls.index(c) < calls.index(call):
+                                    self.__dict__.setdefault("_slow", {})[c.model] = (
+                                        time.time() + SLOW_S)
+                                    print(f"[talk] {c.model} lost the race to "
+                                          f"{call.model}: it goes last for "
+                                          f"{SLOW_S / 60:.0f} min", flush=True)
                     else:                       # error, or ended empty
                         failed.add(call)
                         err = data if kind == "error" else "empty answer"
@@ -700,7 +729,12 @@ REFUSE_RE = re.compile(
     r"\b(?:i(?:'m| am)\s+(?:not\s+able|unable)|i\s+(?:can(?:'t|not)|don't|do not)\s+"
     r"(?:have\s+(?:a\s+|the\s+|any\s+)?(?:direct\s+)?(?:access|feature|way|tool|ability|"
     r"interface)|(?:directly\s+)?(?:type|access|see|reach|control|do that|open|search|"
-    r"check|read))|my\s+(?:tools|hands)\s+(?:are(?:n't| not)|don't|do not|can't))|"
+    r"check|read))|my\s+(?:tools|hands)\s+(?:are(?:n't| not)|don't|do not|can't)|"
+    # 2026-10-30 with Claude out of usage: "that requires Claude's active
+    # brain", "depends entirely on Claude", "I truly wish I could"
+    r"(?:requires?|needs?|depends?\s+(?:entirely\s+)?on)\s+(?:claude|the\s+brain)|"
+    r"i\s+(?:truly\s+|really\s+)?wish\s+i\s+could|"
+    r"i\s+don't\s+have\s+the\s+(?:capability|ability))|"
     r"ვერ\s+(?:შევძლებ|ვახერხებ)|არ\s+მაქვს\s+წვდომა", re.IGNORECASE)
 
 # "what's it doing / is it done / how's it going" — answerable from the
@@ -791,6 +825,11 @@ class WorkerWatch:
             j["t_end"] = time.monotonic()
             if state == "stopped":
                 return                  # he stopped it: the voice already said so
+            if state == "limit" and str(j.get("task", "")).startswith("[auto-resume]"):
+                # A quiet retry that found the quota still spent: he already
+                # heard about the limit once. 2026-10-28 this fired every
+                # 20 minutes for 16 hours ("ran out of usage again...").
+                return
             kind = "done" if state == "done" else "failed"
             self.pending = [p for p in self.pending if p["job"] != j["id"]]
             self.pending.append({"kind": kind, "job": j["id"], "t": time.monotonic(),
