@@ -725,8 +725,10 @@ async def main():
         await app._talk("set up my vpn")
         await app._front_task
         await settle()
+        # 2026-11-01: task_router now sends "set up …" straight to Claude
+        # before the voice could try do_now; either way Claude gets the job.
         check("not a quick action after all -> Claude does it",
-              app.client.queries and "configure the vpn" in app.client.queries[-1],
+              app.client.queries and "vpn" in app.client.queries[-1].lower(),
               app.client.queries[-1:])
     finally:
         reflex.match = real_match

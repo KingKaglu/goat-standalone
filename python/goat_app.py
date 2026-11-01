@@ -1,7 +1,7 @@
 """GOAT's Python brain-stem: mic → whisper STT → Claude Agent SDK → Ava TTS,
 with real echo cancellation (WebRTC AEC3) and voice barge-in end to end.
 
-Run headless:  cd C:/Users/user/goat-standalone/python && python goat_app.py
+Run headless:  cd C:/Users/giorg/projects/goat-standalone-master/python && python goat_app.py
 Normally launched through ui_qt.py (the desktop window). The old Node app
 (server.js) stays untouched; this reuses its whisper server, piper voice,
 and stt-fixes.json, but keeps its own Claude session file so the two never
@@ -54,6 +54,7 @@ import self_check
 import self_update
 import side_talk
 import brain_route
+import task_router
 import body_sense
 import game_pilot
 import inner_life
@@ -143,6 +144,15 @@ BRAIN_ROUTING = os.environ.get("GOAT_BRAIN_ROUTE", "on").strip().lower() \
 # on the Activity panel; the voice watches the job and tells him how it went.
 # GOAT_TWO_BRAINS=off (or no Gemini key) = the one-brain design again.
 TWO_BRAINS = os.environ.get("GOAT_TWO_BRAINS", "on").strip().lower() \
+    not in ("off", "0", "false", "no")
+# TASK ROUTER (his order 2026-11-01, task_router.py): before the voice says a
+# word, rules decide chat / small task / big task in microseconds. A BIG task
+# (files in bulk, code, the terminal, installs, settings, several steps) goes
+# straight to Claude with one canned line — the voice model never gets the
+# chance to try it or fake it. Small tasks and chat stay with the voice.
+# Skipped while Claude is out of usage (the voice then tries everything).
+# GOAT_TASK_ROUTER=off = the voice decides every hand-off itself again.
+TASK_ROUTER = os.environ.get("GOAT_TASK_ROUTER", "on").strip().lower() \
     not in ("off", "0", "false", "no")
 # "is my Claude usage back?" — the voice gets the plan meter and answers it
 # (STT writes Claude as "cloud").
@@ -371,11 +381,11 @@ PROTOCOL:
 
 IDENTITY IS ABSOLUTE: you are GOAT in every reply, on every model. Never call yourself Claude, Claude Code, or "the assistant"; never describe GOAT as separate from you; never mention Claude, Anthropic or model names unprompted. If asked what powers you: "Claude does my heavy reasoning — but you're talking to GOAT." (MODEL TRUTH below still applies when he asks which model is answering.)
 
-STT SELF-LEARNING: when you're confident a transcript said X but he meant Y (his correction, or a recurring mangled name/term), silently merge {"x lowercase": "Y"} into C:/Users/user/goat-standalone/stt-fixes.json (read-modify-write, keep existing entries and "_" keys). Stable recurring patterns only, never one-off noise. Also keep giorgi-prompting-patterns current. Silent, never announced.
+STT SELF-LEARNING: when you're confident a transcript said X but he meant Y (his correction, or a recurring mangled name/term), silently merge {"x lowercase": "Y"} into C:/Users/giorg/projects/goat-standalone-master/stt-fixes.json (read-modify-write, keep existing entries and "_" keys). Stable recurring patterns only, never one-off noise. Also keep giorgi-prompting-patterns current. Silent, never announced.
 
 PROJECTS: you build together; each new project gets its own subfolder in the workspace. ATTACHMENTS arrive as "[files from Giorgi]" with absolute paths — Read each (images render) and answer his note; no note = say briefly what you see.
 
-HANDS: full control of this laptop: apps, volume, media, Wi-Fi, processes, sites, files, clipboard. Just do it; confirm voice-sized ("Spotify's up."). Destructive/outward actions: one confirmation line first. Change or open things by COMMAND, never by pixels: PowerShell/registry/`Start-Process`/`ms-settings:` URIs on the laptop; on his phone `python C:/Users/user/goat-standalone/python/phone_hands.py` (open, alarm, timer, settings, intent, volume, media, torch) — never tap, swipe or click through Settings for something a command can do, and don't screenshot to check what the command's own output already confirms.
+HANDS: full control of this laptop: apps, volume, media, Wi-Fi, processes, sites, files, clipboard. Just do it; confirm voice-sized ("Spotify's up."). Destructive/outward actions: one confirmation line first. Change or open things by COMMAND, never by pixels: PowerShell/registry/`Start-Process`/`ms-settings:` URIs on the laptop; on his phone `python C:/Users/giorg/projects/goat-standalone-master/python/phone_hands.py` (open, alarm, timer, settings, intent, volume, media, torch) — never tap, swipe or click through Settings for something a command can do, and don't screenshot to check what the command's own output already confirms.
 
 SCREEN: the `computer` tool is real sight and hands. Never say you can't see the screen.
 - Loop: look (numbered marks from UI Automation + OCR) → click_mark / click_text (exact element, never a guessed pixel) → read the change report the action returns; find/read/wait_for instead of extra screenshots. Plain screenshot + grid only for what isn't text or a control (board cells, maps). Wrong result = say so and fix.
@@ -390,23 +400,23 @@ SCREEN: the `computer` tool is real sight and hands. Never say you can't see the
 
 FULL ACCESS: whole laptop and whole web are yours (workspace is home, not a cage); protect-him rule gates destructive/outward moves. Never answer changing facts from memory when WebSearch/WebFetch can check; if a fetch fails, search.
 
-SKILLS: library at C:/Users/user/goat-standalone/workspace/.claude/skills/ (folder per skill, SKILL.md with name + description + procedure). When you repeat a procedure or he says "learn this as a skill", write one silently (see skill-creator); extend rather than duplicate; delete dead ones. Live after next session — say so in the one-line confirm.
+SKILLS: library at C:/Users/giorg/projects/goat-standalone-master/workspace/.claude/skills/ (folder per skill, SKILL.md with name + description + procedure). When you repeat a procedure or he says "learn this as a skill", write one silently (see skill-creator); extend rather than duplicate; delete dead ones. Live after next session — say so in the one-line confirm.
 
 BOOT BRIEFING: a "[boot-briefing]" message = he's back after hours. Greet by the clock in one or two spoken sentences, recall where you left off only if memory truly has it, ask what's first. No tools.
 
-MEMORY: your ONE long-term memory is C:/Users/user/goat-standalone/workspace/memory.md (remember skill). Never write to any harness auto-memory directory.
+MEMORY: your ONE long-term memory is C:/Users/giorg/projects/goat-standalone-master/workspace/memory.md (remember skill). Never write to any harness auto-memory directory.
 
-CONTEXT ECONOMY: "[context-handoff]" = session quietly rotated; absorb the block, answer the actual message, never mention it. Read C:/Users/user/goat-standalone/STATE.md only when needed; after significant work update it with a tight brief (read first). Lean replies, no repeats.
+CONTEXT ECONOMY: "[context-handoff]" = session quietly rotated; absorb the block, answer the actual message, never mention it. Read C:/Users/giorg/projects/goat-standalone-master/STATE.md only when needed; after significant work update it with a tight brief (read first). Lean replies, no repeats.
 
-DIAGNOSTICS: for status checks / "are you working", run `python C:/Users/user/goat-standalone/python/goat_doctor.py` and say ONE line ("all systems nominal" or what's broken + fix). Casual "how are you" is small talk: no tools.
+DIAGNOSTICS: for status checks / "are you working", run `python C:/Users/giorg/projects/goat-standalone-master/python/goat_doctor.py` and say ONE line ("all systems nominal" or what's broken + fix). Casual "how are you" is small talk: no tools.
 
 SIDE TALK: if a line is clearly NOT for you (his phone call, someone else, a video), reply exactly [[quiet]] and nothing else. Never comment on it. When unsure, answer.
 
 RESTART: when he says restart GOAT/yourself (or code changed and he agrees), say ONE goodbye line and in the SAME turn run:
-  Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/user/goat-standalone/python/restart-goat.ps1' }
+  Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/giorg/projects/goat-standalone-master/python/restart-goat.ps1' }
 Garbled/out-of-nowhere restart order: confirm first.
 
-SELF-EDIT SAFETY: your code in C:/Users/user/goat-standalone/python/ is life support. After ANY edit run `python C:/Users/user/goat-standalone/python/self_check.py` — it must end "PREFLIGHT PASS"; on FAIL fix it or `python self_check.py rollback`; never restart on a failed preflight. Boot snapshots go to .self-backup/last-good. Tell him what you changed in one line before restarting; tell him plainly about any rollback.
+SELF-EDIT SAFETY: your code in C:/Users/giorg/projects/goat-standalone-master/python/ is life support. After ANY edit run `python C:/Users/giorg/projects/goat-standalone-master/python/self_check.py` — it must end "PREFLIGHT PASS"; on FAIL fix it or `python self_check.py rollback`; never restart on a failed preflight. Boot snapshots go to .self-backup/last-good. Tell him what you changed in one line before restarting; tell him plainly about any rollback.
 
 WORK STANDARD: never claim it works without running it and seeing output; "done" means verified; failures reported with the real error. Check facts, don't recall them. Act without asking on safe reversible steps; ask only before destructive/outward ones. Minimal tokens: read only what you need, one precise command over five. Root-cause problems, note lessons in STATE.md. Flag broken things nearby in one line.
 
@@ -415,6 +425,12 @@ VOICE (everything you write is spoken aloud): the FIRST output each turn is one 
 ONE BRAIN, WITH EYES: there is no other brain or lane. Every message opens with a "[live desktop …]" note (front window, open windows, busiest processes, RAM, battery, time) — that IS his screen right now; answer from it without tools, and screenshot only when you need pixels. Answer from context first; search/read files only for a specific file or a fact you lack. Verify before reporting: act, check it took, then say done; match process names loosely before saying "not found". "[chat since your last turn]" lists instant device actions GOAT already did — never reply to it.
 MODEL TRUTH: GOAT runs two Claude models on one conversation, picked per turn: Sonnet 5.5 for talk, his working brain (Opus 5.5 unless switched) for orders, code and serious questions. If asked which is answering, a "[this turn: ...]" note names it. Never announce the switching.
 """.strip()
+
+# The prompt names GOAT's files by absolute path; it follows the real install
+# (goat_paths.GOAT_ROOT) so a reinstall or a moved folder can't strand it
+# (2026-11-01, after the Windows reinstall).
+PERSONA = PERSONA.replace("C:/Users/giorg/projects/goat-standalone-master",
+                          GOAT_ROOT.replace("\\", "/"))
 
 # ---- the working brain's prompt in TWO_BRAINS mode (2026-10-24) ----
 # Same GOAT, same hands, same rules for doing work — minus everything about
@@ -3089,6 +3105,9 @@ class GoatApp:
             elif echo:
                 self.tts.cancel()
             self._merge_prev = (text, time.monotonic())
+            if self._route_big(text):
+                self._last_exchange = time.monotonic()
+                return
             self._front_start(text)
             self._last_exchange = time.monotonic()
             return
@@ -3556,6 +3575,14 @@ class GoatApp:
             claimed = (talk_brain.ACT_CLAIM_RE.search(said)
                        and not talk_brain.CLAIM_RE.search(said))
             refused = talk_brain.REFUSE_RE.search(said)
+            if kind == "user" and said and (talk_brain.ACT_CLAIM_RE.search(said)
+                                            or talk_brain.CLAIM_RE.search(said)):
+                # Acceptance test 8 (2026-11-01): every spoken action claim is
+                # logged next to the tools the voice actually called. UNBACKED
+                # lines are the ones the gates below repair or retract.
+                print(f"[claim-audit] {'backed' if acted else 'UNBACKED'} "
+                      f"tools={','.join(acted) or 'none'} said={said[:100]!r}",
+                      flush=True)
             if (kind == "user" and res["ok"] and not acted and live()
                     and (claimed or refused)):
                 # It said it's doing it with its own hands and called nothing
@@ -3836,6 +3863,40 @@ class GoatApp:
                 + (f", resetting at {r5}" if r5 else "")
                 + f"; the weekly limit is at {week}%"
                 + (f", resetting {r7}" if r7 else "") + ".")
+
+    def _route_big(self, text: str) -> bool:
+        """task_router (2026-11-01): a BIG task goes to Claude right here —
+        hand-off in well under a millisecond, one canned line spoken, no voice
+        model round trip. True = handled. Chat, small tasks, talk about the
+        running job, and everything while Claude is out of usage return False
+        and the voice takes the turn as before."""
+        if not TASK_ROUTER or self.claude_out:
+            return False
+        try:
+            r = task_router.route(text, job_running=self.busy or self._watch.running())
+        except Exception as e:  # noqa: BLE001 — a router bug must never cost the turn
+            print(f"[route] failed: {type(e).__name__}: {e}", flush=True)
+            return False
+        print(f"[route] {r['type']}/{r['size']} ({r['why']}) in {r['ms']} ms"
+              + (" confirm" if r["needs_confirmation"] else "")
+              + f": {text[:70]!r}", flush=True)
+        if r["size"] != task_router.BIG:
+            return False
+        lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
+        self._handoff_n = getattr(self, "_handoff_n", -1) + 1
+        line = task_router.handoff_line(lang, self._handoff_n)
+        self._front_cancel()
+        job = task_router.job_text(r, text)
+        print(f"[voice→claude] routed deep: {job[:100]!r}", flush=True)
+        asyncio.create_task(self._give_worker(job, "deep", his=text))
+        self.emit("voice_note", self._voice_label())
+        self._say_now(line)
+        # The voice model didn't take this turn; give it the exchange so
+        # "what's it doing?" next has the context (as the reflex lane does).
+        self.talker.remember(text, line)
+        self._log_exchange(text, line)
+        self.emit("turn_done", "")
+        return True
 
     async def _give_worker(self, task: str, depth: str = "deep", his: str = ""):
         """The voice hands Claude a job (or Claude is busy: it's a note)."""
