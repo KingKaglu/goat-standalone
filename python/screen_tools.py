@@ -33,6 +33,7 @@ from collections import deque
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 import game_hands
+import game_mind
 import game_pilot
 import close_guard
 import screen_browser
@@ -900,8 +901,8 @@ GAME_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"type": "string",
-                   "enum": ["check", "keys", "mouse", "autopilot", "status",
-                            "stop", "snip", "probe"],
+                   "enum": ["check", "play", "keys", "mouse", "autopilot",
+                            "status", "stop", "snip", "probe"],
                    "description": "What to do. See the tool description."},
         "target": {"type": "string",
                    "description": "Game window title fragment (default: the "
@@ -916,8 +917,15 @@ GAME_SCHEMA = {
         "button": {"type": "string", "enum": ["left", "right", "middle", "none"]},
         "plan": {"type": "object",
                  "description": "autopilot: {fps, stop_after_s, rules:[...]}."},
+        "goal": {"type": "string",
+                 "description": "play: what GOAT should achieve in the game."},
+        "notes": {"type": "string",
+                  "description": "play: the controls and tips for this game."},
+        "seconds": {"type": "number",
+                    "description": "play: how long to play (default 180, max 900)."},
         "region": {"type": "string",
-                   "description": "snip/probe: \"left,top,width,height\"."},
+                   "description": "snip/probe/play: \"left,top,width,height\" "
+                                  "(play: the game's view inside the window)."},
         "name": {"type": "string", "description": "snip: template name."},
         "frame": {"type": "boolean",
                   "description": "status: include the latest game frame."},
@@ -935,15 +943,23 @@ and browser games only. His own keyboard/mouse input instantly stops play
 and releases every key. Games must run windowed or borderless (exclusive
 fullscreen captures black). Call computer hide_self first.
 
-HOW TO PLAY
-- Slow / turn-based (chess, cards, puzzles, strategy, menus): play it
-  yourself — computer look/screenshot to see, click_mark/click, game keys.
-- Real-time (platformers, runners, shooters, rhythm, clickers): you are too
-  slow (seconds per turn). Write an autopilot plan of reflex rules, start it,
-  then check status every so often and rewrite the rules when play goes badly.
+HOW TO PLAY (his order 2026-11-02: GOAT plays itself, live; no screenshot
+loops, no autopilot unless he asks for one)
+- Any game with a picture, real-time or not: `play`. GOAT's game mind (a
+  fast Gemini Live session) gets the game view straight from the screen
+  ~1x a second and decides + acts itself each frame. You only start it
+  (menus done, the world on screen), give goal + controls in notes, then
+  read `status` (its thoughts and moves) now and then; if it plays badly,
+  start it again with a sharper goal/notes. No screenshots of your own.
+- Menus / pure-text screens: computer look/click_mark/click_text.
+- Autopilot: only when he asks for reflex rules, or for twitch games the
+  mind is too slow for (~1 s a decision).
 
 actions:
   check     - is the game window OK to drive; its view rect in real pixels.
+  play      - goal= (+ notes= controls/tips, seconds= default 180, region=
+              the game's view inside the window, e.g. a browser canvas, so
+              the mind doesn't see the page around it). GOAT plays itself.
   keys      - seq= scancode keys games actually feel: "w:800" holds 800 ms,
               "a+d:300" chord, "space*3", "wait:200", "lclick"/"rclick:150",
               "mouse:+120,-30" (relative camera move), "down:shift"/"up:shift"
@@ -969,9 +985,10 @@ actions:
               ACT: {"keys":"space"} | {"click":"match"|[x,y]} |
                    {"aim":"match","gain":0.5,"then_click":true} (relative,
                    from view centre) | {"move_to":"match"} | "stop"
-  status    - running?, fps, hits per rule, recent events, why it stopped;
-              frame=true adds the latest frame.
-  stop      - stop the autopilot and release everything.
+  status    - the mind (when playing): steps, decision ms, its last
+              thoughts and moves, why it stopped; else the autopilot: fps,
+              hits per rule, recent events. frame=true adds the latest frame.
+  stop      - stop the mind and the autopilot, release everything.
   snip      - region= + name=: save that screen crop as a template.
   probe     - region=: the main colours there (to write colour rules), or
               x,y: the exact colour of one pixel.
@@ -991,10 +1008,15 @@ async def game(args: dict) -> dict:
     p = game_pilot.PILOT
     try:
         if action in ("status", "stop"):
+            m = game_mind.MIND
             if action == "stop":
+                m.stop("stopped by GOAT")
                 p.stop("stopped by GOAT")
-                return _text("autopilot stopped, every key and button released")
-            s, png = p.status(bool(args.get("frame")))
+                return _text("play stopped, every key and button released")
+            if m.status_d.get("started", 0) >= p.status_d.get("started", 0):
+                s, png = m.status(bool(args.get("frame")))
+            else:
+                s, png = p.status(bool(args.get("frame")))
             text = json.dumps(s, ensure_ascii=False, default=str)
             return {"content": ([_image(png)] if png else [])
                     + [{"type": "text", "text": text}]}
@@ -1035,6 +1057,19 @@ async def game(args: dict) -> dict:
             out = await asyncio.to_thread(_mouse, win, args)
             _record({"tool": "game", "action": action, "status": "ok",
                      "what": "game mouse", "result": out})
+            return _text(out)
+
+        if action == "play":
+            goal = str(args.get("goal") or "").strip()
+            if not goal:
+                return _fail('play needs goal="what to achieve"')
+            region = _region(args) if args.get("region") else None
+            p.stop("GOAT's mind took over")
+            out = await asyncio.to_thread(
+                game_mind.MIND.start, win, goal, str(args.get("notes") or ""),
+                float(args.get("seconds") or 180), region)
+            _record({"tool": "game", "action": action, "status": "ok",
+                     "what": f"GOAT plays: {goal[:40]}", "result": out})
             return _text(out)
 
         if action == "autopilot":
