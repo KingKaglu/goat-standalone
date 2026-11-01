@@ -665,6 +665,12 @@ def focus_window(target: str) -> dict:
         if _user32.IsIconic(hwnd):
             _user32.ShowWindow(hwnd, SW_RESTORE)
         fg = _user32.GetForegroundWindow()
+        if fg == hwnd:
+            # Already in front: SetFocus on the top-level frame would yank
+            # focus off the page's own child widget, which kills browser
+            # pointer lock (Minecraft Classic paused on every game call).
+            w["focused"] = True
+            return w
         cur = _user32.GetWindowThreadProcessId(fg, None)
         own = ctypes.windll.kernel32.GetCurrentThreadId()
         attached = bool(_user32.AttachThreadInput(own, cur, True)) if cur != own else False
