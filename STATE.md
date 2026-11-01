@@ -715,3 +715,7 @@ VERIFIED: test_message_pop.py 19/19, test_bubble.py 40/40, preflight PASS.
 - Symptom: Georgian speech arrived as 1.1-1.5 s stubs ("გოგი ხარობა"), rest lost; English fine.
 - Cause: _sentence_state returned None when the ka streaming ear had no partial yet -> audio_io used the 500 ms short hangover. Fix: in non-en modes, no partial = not finished (1200 ms wait).
 - Still open: his Georgian while I'm speaking may never trip the barge vote (16/20 chunks over floor*3) — a whole attempt left no log trace.
+
+## 2026-11-01 23:4x — invented-job claims + failed-reason logging (3b3f15c)
+- Voice said "Claude's already checking the markets" with no job; the make-the-claim-true gate then spawned a deep job from his bare "Is it?" (it bought SOL on demo). Now talk_brain.STATE_CLAIM_RE (already/currently/still) + Claude idle + no hand-off verb + no WORK_RE in his words = spoken correction, no job. Prompt line added too.
+- [engine] task_notification lines were cut at 200 chars by ids, so failed sub-task reasons never logged; now status + description + summary (400). [claude] job failed/limit reports keep 400 chars.
