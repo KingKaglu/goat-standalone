@@ -243,7 +243,7 @@ COMPUTER_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["look", "click_mark", "click_text", "find", "read",
+            "enum": ["live", "look", "click_mark", "click_text", "find", "read",
                      "changes", "wait_for",
                      "screenshot", "click", "double_click", "right_click",
                      "middle_click", "move", "drag", "scroll", "type", "key",
@@ -284,7 +284,9 @@ COMPUTER_SCHEMA = {
                   "description": "What the thing being clicked SAYS. Pass it on "
                                  "anything consequential - it is what lets the "
                                  "safety gate read the intent."},
-        "seconds": {"type": "number", "description": "For wait, max 30."},
+        "seconds": {"type": "number",
+                    "description": "wait / wait_for timeout (max 30); live: "
+                                   "how far back to report (default 60)."},
         "max_edge": {"type": "integer",
                      "description": "Longest screenshot edge, default 1400."},
         "grid": {"type": "boolean",
@@ -308,6 +310,12 @@ Automation gives every control's exact rectangle, Windows OCR every word.
 THE LOOP: look -> click_mark / click_text -> read the change report that
 comes back (it says what changed on screen) -> look again only if needed.
 
+  live       - LIVE EYES, no picture, instant: the window he's on, open
+               windows, and everything that happened in the last
+               seconds=N (default 60): focus moves, windows/dialogs opening
+               and closing, title changes (a price in a title), text that
+               changed on screen. Start here. look/find/read/wait_for answer
+               from the same always-current cache when it's fresh.
   look       - the window he's on (target=title or "screen" for all) as
                numbered MARKS on a screenshot + a list "[12] button 'Save'
                (840,512)". image=false for the list alone (cheaper).
@@ -369,6 +377,18 @@ def _image(png: bytes) -> dict:
 async def _sight(action: str, args: dict) -> dict | None:
     """Real-sight actions (screen_sense, 2026-10-21). None = not one of them."""
     target = args.get("target")
+    if action == "live":
+        import live_eyes
+        eyes = live_eyes.get()
+        if eyes is None:
+            return _fail("live eyes are off (GOAT_LIVE_EYES=off or not started); "
+                         "use look/changes")
+        secs = max(5.0, min(float(args.get("seconds") or 60), 600.0))
+        txt = await asyncio.to_thread(eyes.digest, secs)
+        _record({"tool": "computer", "action": action, "status": "ok",
+                 "what": f"live — last {int(secs)}s"})
+        return _text(txt)
+
     if action == "look":
         try:
             r = await asyncio.to_thread(

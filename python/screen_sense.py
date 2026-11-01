@@ -67,6 +67,20 @@ def target(target_spec=None) -> dict:
     return w
 
 
+def _live(win: dict, box):
+    """(ui, ocr lines) from live_eyes' cache when it shows this window as it
+    is right now; None = read it the slow way."""
+    try:
+        import live_eyes
+        eyes = live_eyes.get()
+        if eyes is None or not win.get("hwnd") \
+                or eyes.front.get("hwnd") != win["hwnd"]:
+            return None
+        return eyes.fresh(win["hwnd"], box)
+    except Exception:  # noqa: BLE001 — the eyes are an accelerator only
+        return None
+
+
 def _clip(rect, box):
     l, t, r, b = rect
     bl, bt, bw, bh = box
@@ -312,29 +326,34 @@ def look(target_spec=None, ocr: bool = True, image: bool = True,
     win = target(target_spec)
     box = (win["left"], win["top"], win["width"], win["height"])
     t0 = time.monotonic()
-    # Marks taken while the window is still laying itself out point at
-    # buttons that then move (Calculator, 2026-10-21: "=" landed on the
-    # decimal point). Wait up to 1 s for two frames 120 ms apart to agree.
-    try:
-        prev = _small(box)
-        while time.monotonic() - t0 < 1.0:
-            time.sleep(0.12)
-            cur = _small(box)
-            if not diff_boxes(prev, cur, box):
-                break
-            prev = cur
-    except Exception:  # noqa: BLE001
-        pass
     ui, lines, notes = [], [], []
-    try:
-        ui = uia_elements(win)
-    except Exception as e:  # noqa: BLE001 — OCR can still see
-        notes.append(f"ui automation unavailable ({type(e).__name__})")
-    if ocr:
+    cached = _live(win, box)
+    if cached is not None:
+        ui, lines = cached[0], (cached[1] if ocr else [])
+        notes.append("from live eyes (screen state kept current)")
+    else:
+        # Marks taken while the window is still laying itself out point at
+        # buttons that then move (Calculator, 2026-10-21: "=" landed on the
+        # decimal point). Wait up to 1 s for two frames 120 ms apart to agree.
         try:
-            lines = ocr_lines(box)
-        except Exception as e:  # noqa: BLE001
-            notes.append(f"ocr unavailable ({type(e).__name__})")
+            prev = _small(box)
+            while time.monotonic() - t0 < 1.0:
+                time.sleep(0.12)
+                cur = _small(box)
+                if not diff_boxes(prev, cur, box):
+                    break
+                prev = cur
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            ui = uia_elements(win)
+        except Exception as e:  # noqa: BLE001 — OCR can still see
+            notes.append(f"ui automation unavailable ({type(e).__name__})")
+        if ocr:
+            try:
+                lines = ocr_lines(box)
+            except Exception as e:  # noqa: BLE001
+                notes.append(f"ocr unavailable ({type(e).__name__})")
     marks = merge(ui, lines, box[2] * box[3])
     with _lock:
         _frame.clear()
@@ -464,8 +483,10 @@ def find(query: str, target_spec=None, limit: int = 5) -> list[dict]:
     win = target(target_spec)
     box = (win["left"], win["top"], win["width"], win["height"])
     hits = []
+    cached = _live(win, box)
     try:
-        for e in uia_elements(win, kinds=_INTERACTIVE + ("Text",)):
+        for e in (cached[0] if cached is not None else
+                  uia_elements(win, kinds=_INTERACTIVE + ("Text",))):
             n = _norm(e["name"])
             if not n:
                 continue
@@ -483,7 +504,7 @@ def find(query: str, target_spec=None, limit: int = 5) -> list[dict]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        for ln in ocr_lines(box):
+        for ln in (cached[1] if cached is not None else ocr_lines(box)):
             norm = [_norm(w["text"]) for w in ln["words"]]
             for i in range(len(norm) - len(ww) + 1):
                 if norm[i:i + len(ww)] != ww:
@@ -519,7 +540,8 @@ def read(target_spec=None, limit: int = 8000) -> str:
     field values UIA knows that aren't drawn as plain text."""
     win = target(target_spec)
     box = (win["left"], win["top"], win["width"], win["height"])
-    lines = ocr_lines(box)
+    cached = _live(win, box)
+    lines = list(cached[1]) if cached is not None else ocr_lines(box)
     lines.sort(key=lambda e: (e["rect"][1] // 12, e["rect"][0]))
     rows, cur, cur_y = [], [], None
     for ln in lines:
@@ -623,15 +645,35 @@ def _describe_change(boxes: list, box, ocr: bool = True) -> str:
 
 def changes(target_spec=None) -> str:
     """What changed in the window since GOAT last looked at it."""
+    global _changes_seq
     win = target(target_spec)
     box = (win["left"], win["top"], win["width"], win["height"])
     now = _small(box)
     prev = _last_small.get(_key(box))
     _last_small[_key(box)] = now
+    events = ""
+    try:
+        import live_eyes
+        eyes = live_eyes.get()
+        if eyes is not None:
+            evs = eyes.since(_changes_seq, seconds=120)
+            _changes_seq = eyes.seq
+            if evs:
+                events = "\nlive eyes saw: " + "; ".join(
+                    time.strftime("%H:%M:%S ", time.localtime(e["t"])) + e["text"]
+                    + (f" (x{e['n']})" if e.get("n", 1) > 1 else "")
+                    for e in evs[-12:])
+    except Exception:  # noqa: BLE001
+        pass
     if prev is None:
+        if events:
+            return "first pixel look at this window from here." + events
         return ("first look at this window from here, nothing to compare; "
                 "ask again after something happens")
-    return _describe_change(diff_boxes(prev, now, box), box)
+    return _describe_change(diff_boxes(prev, now, box), box) + events
+
+
+_changes_seq = 0
 
 
 def act_and_report(fn, settle: float = 0.35, target_spec=None) -> tuple:
@@ -677,6 +719,16 @@ def wait_for(text: str | None = None, gone: str | None = None,
     win = target(target_spec)
     box = (win["left"], win["top"], win["width"], win["height"])
     prev, still_since = _small(box), time.monotonic()
+    live = None
+    if text or gone:
+        try:
+            import live_eyes
+            eyes = live_eyes.get()
+            if eyes is not None and eyes.front.get("hwnd") == win.get("hwnd") \
+                    and win.get("hwnd"):
+                live = eyes
+        except Exception:  # noqa: BLE001
+            live = None
     while time.monotonic() - t0 < timeout:
         if text and not target_spec:
             # "wait for Calculator" right after launching it: the app shows
@@ -688,6 +740,15 @@ def wait_for(text: str | None = None, gone: str | None = None,
             if hit:
                 return (f"window {hit['title'][:60]!r} is open after "
                         f"{time.monotonic() - t0:.1f}s (hwnd {hit['hwnd']})")
+        if (text or gone) and live is not None:
+            # Live eyes re-read only what changes, the moment it settles:
+            # wake on their refresh instead of OCR-ing the window 3x a second.
+            took = live.wait_text(text, gone, timeout=0.5)
+            if took is not None:
+                el = time.monotonic() - t0
+                return (f"'{text}' appeared after {el:.1f}s" if text
+                        else f"'{gone}' is gone after {el:.1f}s")
+            continue
         if text or gone:
             body = _norm(" ".join(ln["name"] for ln in ocr_lines(box)))
             if text and _norm(text) in body:

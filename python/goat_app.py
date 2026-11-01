@@ -1778,6 +1778,10 @@ class GoatApp:
             from watchers import Watchers
             self._watchers = Watchers(self)
             self._watchers.start()
+            # 2026-11-01 (his goal "see my laptop live"): live eyes keep the
+            # screen state current so sight answers without screenshots.
+            import live_eyes
+            live_eyes.start()
             # 2026-10-20 ("give the GOAT the consciousness"): each finished
             # day remembered as an episode, in the background.
             import episodes
