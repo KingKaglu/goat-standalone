@@ -73,13 +73,45 @@ def _hit(text: str, words: list[str]) -> str | None:
     return None
 
 
-def classify(action: str, args: dict, window_title: str = "") -> tuple[str, str]:
+# Fake-money sandboxes where he lets me trade without a yes per step (his yes
+# 2026-11-01 22:08). Matched against the browser's REAL address-bar host, never
+# the title (live Binance and demo share "Binance Spot" titles). Live sites stay
+# fully gated.
+DEMO_HOSTS = ("demo.binance.com",)
+
+
+def _url_host(url: str) -> str:
+    u = (url or "").strip().lower()
+    u = re.sub(r"^[a-z]+://", "", u)
+    return u.split("/", 1)[0].split("?", 1)[0].split(":", 1)[0]
+
+
+def is_demo(url: str) -> bool:
+    host = _url_host(url)
+    return bool(host) and any(host == h for h in DEMO_HOSTS)
+
+
+def classify(action: str, args: dict, window_title: str = "",
+             url: str = "") -> tuple[str, str]:
     """Return (tier, reason). tier is AUTO or CONFIRM; reason explains why.
 
     Never raises and never refuses — the caller decides what a CONFIRM means.
+    `url` is the foreground browser's address-bar text when known; a DEMO_HOSTS
+    page skips the banking-window and money-word gates (destructive chords and
+    card numbers still ask).
     """
     args = args or {}
     action = (action or "").lower()
+
+    if url and is_demo(url):
+        if action == "key":
+            combo = str(args.get("text") or args.get("combo") or "").lower()
+            for chord in combo.split():
+                if chord in RISKY_KEYS:
+                    return CONFIRM, f"{chord} is destructive or locks the session"
+        if action == "type" and _CARD_RE.search(str(args.get("text") or "")):
+            return CONFIRM, "the text looks like a card number"
+        return AUTO, ""
 
     # Looking is always free. This is the half that must never be gated, or
     # GOAT loses the ability to check what it just did.

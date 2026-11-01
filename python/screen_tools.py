@@ -25,6 +25,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 import traceback
 from collections import deque
@@ -123,13 +124,63 @@ def _approval_key(action: str, args: dict, foreground: dict | None = None) -> st
         "screen", action, {"args": exact, "foreground": window})
 
 
+_BROWSER_HINTS = ("brave", "chrome", "edge", "opera", "vivaldi", "chromium")
+_HOST_RE = re.compile(r"^(?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#]|$)", re.I)
+
+
+def _browser_url(fg: dict) -> str:
+    """Address-bar text of the foreground Chromium browser via UI Automation,
+    or "" (non-browser, or anything fails). Used only to recognise demo hosts,
+    so a failure just keeps the normal gate."""
+    title = str(fg.get("title") or "").lower()
+    hwnd = fg.get("hwnd")
+    if not hwnd or not any(b in title for b in _BROWSER_HINTS):
+        return ""
+    try:
+        import comtypes
+        import comtypes.client
+        import fast_hands
+        try:
+            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+        except OSError:
+            pass
+        mod = fast_hands._uia()
+        uia = comtypes.client.CreateObject(mod.CUIAutomation,
+                                           interface=mod.IUIAutomation)
+        root = uia.ElementFromHandle(int(hwnd))
+        cond = uia.CreatePropertyCondition(mod.UIA_ControlTypePropertyId,
+                                           mod.UIA_EditControlTypeId)
+        found = root.FindAll(mod.TreeScope_Descendants, cond)
+        # Only the browser's own address bar counts: page inputs (an order
+        # price like "77200.5") must never pass for a URL.
+        for i in range(min(found.Length, 40)):
+            el = found.GetElement(i)
+            if "address" not in (el.CurrentName or "").lower():
+                continue
+            try:
+                pat = el.GetCurrentPattern(mod.UIA_ValuePatternId)
+                val = pat.QueryInterface(mod.IUIAutomationValuePattern).CurrentValue
+            except Exception:  # noqa: BLE001
+                continue
+            val = (val or "").strip()
+            if _HOST_RE.match(val):
+                return val
+            return ""
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
 def _gate(action: str, args: dict) -> str | None:
     """Return a refusal-to-proceed message, or None when the action may run."""
     try:
         fg = screen_hands.foreground() or {}
     except Exception:  # noqa: BLE001
         fg = {}
-    tier, reason = screen_policy.classify(action, args, fg.get("title", ""))
+    title = fg.get("title", "")
+    url = _browser_url(fg) if screen_policy._hit(
+        title, screen_policy.RISKY_WINDOWS) else ""
+    tier, reason = screen_policy.classify(action, args, title, url)
     what = screen_policy.describe(action, args)
     if tier == screen_policy.AUTO:
         return None
