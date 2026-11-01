@@ -1,7 +1,7 @@
 """Live check: a dead audio stream (what resume-from-sleep leaves behind) must
 be noticed and reopened by the watchdog. Uses the real mic/speaker.
 
-Run:  cd C:/Users/user/goat-standalone/python && py -3.13 test_audio_stall.py
+Run:  cd C:/Users/giorg/projects/goat-standalone-master/python && py -3.13 test_audio_stall.py
 """
 import time
 

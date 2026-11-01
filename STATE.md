@@ -529,7 +529,7 @@ Current design: ONE Claude brain that speaks and sees (see first section). Older
 - STATE.md split: history before 2026-09-14 midday -> STATE-archive.md (1780 -> 424 lines). Keep under ~450.
 - goat_doctor check 7 'self-knowledge' scans memory.md + skills for STALE_TERMS of removed features.
 - self-upgrade skill step 7: any change to how GOAT works updates memory.md ## Self + skills in the same turn.
-- Trap: shell `python` is 3.12 (no scipy); the app runs Python313. Preflight must use C:/Users/user/AppData/Local/Programs/Python/Python313/python.exe.
+- Trap: shell `python` is 3.12 (no scipy); the app runs Python313. Preflight must use C:/Users/giorg/AppData/Local/Programs/Python/Python313/python.exe.
 
 
 ## ONE BRAIN WITH SIGHT (2026-09-23 night — his order: "remove the talking
@@ -620,7 +620,7 @@ Google" paid 8-19s of hidden thinking, then a SECOND round trip to narrate the
 tool result, then TTS.
 
 "Open the file GG on my desktop" was worse, and had its own separate bug: his
-Desktop is **OneDrive-redirected** (`C:\Users\user\OneDrive\Desktop`), but
+Desktop is **OneDrive-redirected** (`C:\Users\giorg\OneDrive\Desktop`), but
 `local_llm.chat` asserted `{home}\Desktop` as machine fact. That path also
 exists and is nearly empty, so the model looked in a real folder, found
 nothing, and ESCALATEd — and the work lane went hunting the icon with

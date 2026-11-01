@@ -19,7 +19,7 @@ fails; after relaunch it watches the fresh instance and, if it dies at boot,
 restores the snapshot itself (in PowerShell — this file might be the thing
 that's broken) and relaunches.
 
-Run:  python C:/Users/user/goat-standalone/python/self_check.py [preflight|snapshot|rollback]
+Run:  python C:/Users/giorg/projects/goat-standalone-master/python/self_check.py [preflight|snapshot|rollback]
 """
 import json
 import os

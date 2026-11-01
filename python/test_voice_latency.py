@@ -5,7 +5,7 @@ that decide how fast GOAT feels, and the one that decides whether it is
 POLITE: adaptive endpointing, the first-breath clause flush, the gap
 backchannel, and barge-in.
 
-Run:  cd C:/Users/user/goat-standalone/python && python test_voice_latency.py
+Run:  cd C:/Users/giorg/projects/goat-standalone-master/python && python test_voice_latency.py
 """
 import asyncio
 import io

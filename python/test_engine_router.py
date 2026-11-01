@@ -792,7 +792,7 @@ async def main():
     # 19. tool-step describer
     class _Blk:
         name = "Edit"
-        input = {"file_path": "C:/Users/user/goat-standalone/python/ui_qt.py"}
+        input = {"file_path": "C:/Users/giorg/projects/goat-standalone-master/python/ui_qt.py"}
     check("_describe_tool renders 'Edit — ui_qt.py'",
           g._describe_tool(_Blk()) == "Edit — ui_qt.py",
           g._describe_tool(_Blk()))

@@ -2,9 +2,13 @@
 ' Native Qt window, no browser. Silent: no console; errors land in
 ' python\goat-app.log. If GOAT is already running, just focus it.
 
-Const APP_DIR = "C:\Users\user\goat-standalone\python"
+' This script's own folder (2026-11-01: no hardcoded user path, so a reinstall
+' or a moved folder still launches).
+APP_DIR = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
 
 Set sh = CreateObject("WScript.Shell")
+PY_LAUNCHER = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%\Programs\Python\Launcher\py.exe")
+If Not CreateObject("Scripting.FileSystemObject").FileExists(PY_LAUNCHER) Then PY_LAUNCHER = "py"
 Set wmi = GetObject("winmgmts:\\.\root\cimv2")
 
 Set running = wmi.ExecQuery( _
@@ -83,4 +87,4 @@ extra = ""
 If WScript.Arguments.Count > 0 Then
   If LCase(WScript.Arguments(0)) = "/startup" Then extra = " --startup"
 End If
-sh.Run "cmd /c py -3.13 -u ui_qt.py" & extra & " >> " & logName & " 2>&1", 0, False
+sh.Run "cmd /c """ & PY_LAUNCHER & """ -3.13 -u ui_qt.py" & extra & " >> " & logName & " 2>&1", 0, False

@@ -2,7 +2,7 @@
 doing ("are you okay", "status", "run diagnostics"). Read-only probes, safe
 while the app is live. Prints a compact report; the brain speaks ONE line.
 
-Run:  python C:/Users/user/goat-standalone/python/goat_doctor.py
+Run:  python C:/Users/giorg/projects/goat-standalone-master/python/goat_doctor.py
 """
 import glob
 import json
@@ -18,8 +18,9 @@ PY_DIR = os.path.dirname(os.path.abspath(__file__))
 # launcher logs that run to goat-app.<stamp>.log instead — read the newest.
 LOG = max(glob.glob(os.path.join(PY_DIR, "goat-app*.log")),
           key=os.path.getmtime, default=os.path.join(PY_DIR, "goat-app.log"))
-SESSION = "C:/Users/user/goat-standalone/.goat-session-py"
-FIXES = "C:/Users/user/goat-standalone/stt-fixes.json"
+ROOT = os.path.dirname(PY_DIR)          # follows the install (2026-11-01)
+SESSION = os.path.join(ROOT, ".goat-session-py")
+FIXES = os.path.join(ROOT, "stt-fixes.json")
 STT_PORT = 3781
 
 checks = []
@@ -89,7 +90,7 @@ except (OSError, json.JSONDecodeError) as e:
 # (2026-10-24: Gemini is GOAT's voice again and the two brains are real, so
 # "gemini" / "two brains" / "talking brain" are current words, not stale.)
 STALE_TERMS = ("front desk", "front-desk", "fast brain", "talk lane")
-WS = "C:/Users/user/goat-standalone/workspace"
+WS = os.path.join(ROOT, "workspace")
 notes = [os.path.join(WS, "memory.md")]
 skills = os.path.join(WS, ".claude", "skills")
 if os.path.isdir(skills):
@@ -101,6 +102,9 @@ for path in notes:
             for ln in f:
                 low = ln.lower()
                 # A note that says a thing was removed is current, not stale.
+                # "AI Front Desk" is his side-hustle business, not the old
+                # GOAT part (false alarm found 2026-11-01).
+                low = low.replace("ai front desk", "")
                 if any(t in low for t in STALE_TERMS) and "deleted" not in low \
                         and "removed" not in low:
                     stale.append(os.path.relpath(path, WS))

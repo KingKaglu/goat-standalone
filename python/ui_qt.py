@@ -1,6 +1,6 @@
 """GOAT's face: a native, frameless, fullscreen Qt window. No browser.
 
-Run:  cd C:/Users/user/goat-standalone/python && python ui_qt.py
+Run:  cd C:/Users/giorg/projects/goat-standalone-master/python && python ui_qt.py
 
 Design (v7 — "Goat, your personal assistant", 2026-09-30, from his concept):
 - Three columns on a midnight room: a left rail (goat mark, pages, a live

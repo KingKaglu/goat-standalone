@@ -1,7 +1,7 @@
 """Simulation: exceptions inside the audio callback and the VAD thread must
 be survived, not fatal — no hardware, no torch, no livekit needed.
 
-Run:  cd C:/Users/user/goat-standalone/python && python test_audio_resilience.py
+Run:  cd C:/Users/giorg/projects/goat-standalone-master/python && python test_audio_resilience.py
 """
 import queue
 import threading

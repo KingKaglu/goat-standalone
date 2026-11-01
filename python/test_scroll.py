@@ -1,6 +1,6 @@
 """Offscreen simulation of the follow-mode autoscroll in GoatWindow.
 
-Run:  cd C:/Users/user/goat-standalone/python && python test_scroll.py
+Run:  cd C:/Users/giorg/projects/goat-standalone-master/python && python test_scroll.py
 """
 import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"

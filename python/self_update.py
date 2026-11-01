@@ -33,7 +33,8 @@ LAST = os.path.join(HERE, ".update-last.json")        # what install changed
 NOTICE = os.path.join(HERE, "update-notice.txt")      # told on his next turn
 ENGINE_UP = os.path.join(HERE, ".engine-up")           # brain connected (watchdog)
 
-PY313 = r"C:\Users\user\AppData\Local\Programs\Python\Python313\python.exe"
+PY313 = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python",
+                     "Python313", "python.exe")   # 2026-11-01: no hardcoded user
 SDK = "claude-agent-sdk"
 MODELS_URL = "https://docs.claude.com/en/docs/about-claude/models/overview"
 EVERY_H = 24.0

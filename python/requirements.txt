@@ -7,7 +7,7 @@ claude-agent-sdk>=0.2.159   # 0.2.159 bundles CLI 2.1.281, the first that knows 
 httpx
 edge-tts
 soundfile
-PySide6
+PySide6==6.11.3   # 6.12.0 crashed the window (access violation in pyside6.abi3.dll), 2026-11-01
 psutil
 comtypes      # fast_hands: click by name through Windows UI Automation
 mss
@@ -23,3 +23,11 @@ pycaw                             # volume (phone Control tab, music ducking)
 comtypes
 pywebpush
 dxcam>=0.0.5           # game capture via Desktop Duplication (game_pilot)
+# Imported by the app but missing from this list before 2026-11-01:
+onnxruntime            # audio_io / voice_id: Silero VAD + voice ID
+pillow                 # screenshots
+opencv-python          # screen_sense / game_pilot
+segno                  # phone QR code
+soundcard              # audio_io loopback
+websocket-client       # screen_browser
+websockets             # live_talk / stt_live / stt_realtime

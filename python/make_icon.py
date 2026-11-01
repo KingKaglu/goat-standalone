@@ -3,7 +3,7 @@ in its electric-blue gradient, on a midnight rounded square. The mark is
 painted by ui_qt.paint_goat_mark, so the icon, the rail, the greeting and
 the collapsed bubble are always the same face.
 
-Run:  cd C:/Users/user/goat-standalone/python && py -3.13 make_icon.py
+Run:  cd C:/Users/giorg/projects/goat-standalone-master/python && py -3.13 make_icon.py
 """
 import io
 import os

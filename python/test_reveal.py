@@ -2,7 +2,7 @@
 hardware, no threads, no network. Drives the exact sequences that failed
 live on 2026-07-10 (Giorgi's screenshots) and asserts the epoch fence holds.
 
-Run:  cd C:/Users/user/goat-standalone/python && python test_reveal.py
+Run:  cd C:/Users/giorg/projects/goat-standalone-master/python && python test_reveal.py
 """
 import queue
 import threading

@@ -58,3 +58,6 @@ python/.talk-quota.json
 python/.fable-gate.json
 .plan_usage.json
 python/.stt-rt-broke.json
+
+# graphify knowledge graph (rebuild with /graphify)
+graphify-out/

@@ -1,6 +1,6 @@
 """Offscreen check: status lines must survive the 33ms hud_tick stomp.
 
-Run:  cd C:/Users/user/goat-standalone/python && python test_statusword.py
+Run:  cd C:/Users/giorg/projects/goat-standalone-master/python && python test_statusword.py
 """
 import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"

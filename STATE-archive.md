@@ -875,7 +875,7 @@ All in goat_app.py, PREFLIGHT PASS verified; needs an app restart to apply.
   inbox/screen.png + Read. Protect-him rule still gates destructive actions.
 
 ## Standalone move + launcher fix (2026-07-10)
-Home is now C:\Users\user\goat-standalone (this folder). The old C:\Users\user\goat
+Home is now C:\Users\giorg\projects\goat-standalone-master (this folder). The old C:\Users\giorg\goat
 is frozen — never read/write stt-fixes.json or STATE.md there again (learned STT
 fixes were landing in the old dir and never applying; merged back, paths fixed in
 PERSONA + goat_doctor). Desktop GOAT.lnk + root GOAT.bat/start-goat.vbs now all
@@ -907,7 +907,7 @@ dry mid-session without noticing; (b) "add so I can send you images or files."
 - ui_qt.py: footer now shows "· 12k in / 3k out" (_fmt_tok); "limit" event
   prints the warning as an amber line + stateword "out of usage".
 - Attachments: drag-drop anywhere on the window, Ctrl+O file picker, or
-  Ctrl+V with an image on the clipboard (saved to C:\Users\user\goat\inbox\
+  Ctrl+V with an image on the clipboard (saved to C:\Users\giorg\goat\inbox\
   clip-*.png). ui_qt._send_files → goat.submit_files(paths, note) — note is
   whatever's typed-but-unsent in the input field. Message format:
   "[files from Giorgi]\n<abs paths>", PERSONA has an ATTACHMENTS section
@@ -923,7 +923,7 @@ dry mid-session without noticing; (b) "add so I can send you images or files."
 His words: "I don't want anything to do with the browser... an application
 based on Python... do not touch the old code." Also: Fable 5 as the brain,
 but KEEP the model-switching tricks (fast/full router, same as Node app).
-Built in C:\Users\user\goat\python\:
+Built in C:\Users\giorg\goat\python\:
 - `goat_app.py` — full pipeline: DuplexAudio (WebRTC AEC3, working) → whisper
   STT → ClaudeSDKClient (Fable 5 full / Haiku fast, "[fast-turn]"+ESCALATE
   router ported from server.js incl. delta-hold gate) → sentence-streamed
@@ -1136,7 +1136,7 @@ Verified synthesis works standalone; NOT yet confirmed by Giorgi in the
 live app. Python rewrite's `tts_piper.py` still uses Alan — switch it too
 once the Node side is confirmed.
 
-## Old app (C:\Users\user\goat) — Node/Express + browser UI — still live, mostly untouched
+## Old app (C:\Users\giorg\goat) — Node/Express + browser UI — still live, mostly untouched
 server.js + public/index.html. Node/Express + WebSocket server driving a
 persistent Claude Agent SDK session (@anthropic-ai/claude-agent-sdk),
 talked to via a dark JARVIS-style browser UI. Resident Piper neural TTS
@@ -1145,7 +1145,7 @@ session persists across server restarts. NOT being touched during the
 Python migration — stays live as fallback until the Python replacement
 works end-to-end.
 
-## Python rewrite (C:\Users\user\goat\python\) — Giorgi's explicit, detailed spec, approved, in progress
+## Python rewrite (C:\Users\giorg\goat\python\) — Giorgi's explicit, detailed spec, approved, in progress
 Full spec: shared duplex audio pipeline, real echo cancellation with a
 time-aligned reference, Silero VAD replacing RMS thresholds, is_tts_playing
 + asymmetric interrupt timing (300ms while speaking / 100ms while quiet),
@@ -1170,7 +1170,7 @@ fine — subprocess-based, no different from Node).
    executed**: hand-rolled NLMS adaptive echo canceller in numpy (no native
    lib) + Silero VAD, instead of the named libraries.
 
-## What's built (C:\Users\user\goat\python\)
+## What's built (C:\Users\giorg\goat\python\)
 - `requirements.txt` — sounddevice, numpy, scipy, silero-vad
 - `audio_io.py` — `DuplexAudio`: one shared `sd.Stream` (duplex, 16kHz,
   10ms/160-sample blocks) via WASAPI devices selected explicitly
@@ -1335,7 +1335,7 @@ it to our plan and in you").
   file, never the Node app's). Streams text deltas → sentence-split →
   TTS as they arrive; skips unspeakable text (code/paths/URLs);
   tool_use printed; barge-in cancels TTS queue + playback.
-  Run: `cd C:\Users\user\goat\python && python goat_app.py`.
+  Run: `cd C:\Users\giorg\goat\python && python goat_app.py`.
 - Deps fixed along the way: pydantic-core/httpx/attrs/jsonschema etc.
   were all half-corrupted in site-packages (force-reinstalled); pywin32
   was broken w/ stale pypiwin32 shim (removed, reinstalled).
@@ -1359,7 +1359,7 @@ it to our plan and in you").
 ## Old status (pre-pipeline), for history:
 Same run command:
 ```
-cd C:\Users\user\goat\python
+cd C:\Users\giorg\goat\python
 python test_aec.py
 ```
 Do NOT declare echo-cancellation "done" again until he confirms this

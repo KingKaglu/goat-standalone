@@ -9,7 +9,9 @@
 #   3. watchdog   — if the fresh instance dies within 45s, restore the
 #                   last-good snapshot (pure PowerShell — the broken thing
 #                   might be self_check itself) and relaunch that.
-$py = "C:\Users\user\goat-standalone\python"
+$py = $PSScriptRoot      # 2026-11-01: follows the install, no hardcoded user path
+$pyl = Join-Path $env:LOCALAPPDATA 'Programs\Python\Launcher\py.exe'
+if (-not (Test-Path $pyl)) { $pyl = (Get-Command py -ErrorAction SilentlyContinue).Source }
 # Own file: goat-app.log is held open by the app's `>>` redirect, so every
 # Add-Content to it failed and the watchdog's verdicts were never recorded.
 $log = Join-Path $py "restart-goat.log"
@@ -71,11 +73,11 @@ function GoatStarted($since) {
 }
 
 function LaunchGoat {
-    Start-Process wscript.exe -ArgumentList '"C:\Users\user\goat-standalone\python\start-goat-app.vbs"'
+    Start-Process wscript.exe -ArgumentList "`"$py\start-goat-app.vbs`""
 }
 
 # 1. PREFLIGHT — while the old instance is still alive and talking.
-$pf = Start-Process py -ArgumentList '-3.13', 'self_check.py', 'preflight' `
+$pf = Start-Process $pyl -ArgumentList '-3.13', 'self_check.py', 'preflight' `
         -WorkingDirectory $py -WindowStyle Hidden -Wait -PassThru
 if ($pf.ExitCode -ne 0) {
     Log "PREFLIGHT FAILED - restart ABORTED, current app left running. Fix the code or run: python self_check.py rollback"
@@ -91,7 +93,7 @@ Start-Sleep -Seconds 2
 # Daily self-update: a pending engine update installs HERE, the only moment
 # the bundled claude.exe isn't locked by a running GOAT.
 if (Test-Path (Join-Path $py ".update-pending.json")) {
-    $up = Start-Process py -ArgumentList '-3.13', 'self_update.py', 'install' `
+    $up = Start-Process $pyl -ArgumentList '-3.13', 'self_update.py', 'install' `
             -WorkingDirectory $py -WindowStyle Hidden -Wait -PassThru
     Log "self-update install exit $($up.ExitCode)"
 }
@@ -146,7 +148,7 @@ if (-not (Test-Path $backup)) {
 KillGoat
 Copy-Item (Join-Path $backup '*.py') $py -Force
 # A just-installed engine may be the thing that broke boot.
-Start-Process py -ArgumentList '-3.13', 'self_update.py', 'revert' `
+Start-Process $pyl -ArgumentList '-3.13', 'self_update.py', 'revert' `
     -WorkingDirectory $py -WindowStyle Hidden -Wait | Out-Null
 Start-Sleep -Seconds 2
 $r = WaitUp
