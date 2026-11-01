@@ -3731,7 +3731,23 @@ class GoatApp:
             if not live():
                 return
             said = "".join(spoken)
-            if (kind == "user" and res["ok"] and not acted
+            invented = (kind == "user" and res["ok"] and not acted
+                        and not self.busy and not self._watch.running()
+                        and talk_brain.STATE_CLAIM_RE.search(said)
+                        and not PASSED_RE.search(said)
+                        and not WORK_RE.search(text or ""))
+            if invented:
+                # It described a Claude job that doesn't exist and he asked for
+                # no work: say the truth instead of spawning a job from it.
+                print(f"[talk] invented Claude job — correcting, no hand-off: "
+                      f"{said[:80]!r}", flush=True)
+                fix = ("Correction, Sir: Claude isn't working on anything right now. "
+                       "Say the word and I'll hand it a job." if lang != "ka" else
+                       "შესწორება, ბატონო: Claude ახლა არაფერზე მუშაობს. "
+                       "მითხარი და დავავალებ.")
+                self.tts.say(fix)
+                spoken.append(" " + fix)
+            elif (kind == "user" and res["ok"] and not acted
                     and talk_brain.CLAIM_RE.search(said)
                     and (not self.busy or PASSED_RE.search(said))):
                 # It SAID Claude has it but called nothing: make it true.
@@ -4187,7 +4203,8 @@ class GoatApp:
         """Claude's job ended: hand the outcome to the watch (the voice says it)."""
         self._job_silent = False
         self._watch.finish(state, report)
-        print(f"[claude] job {state}: {(report or '')[:120]!r}", flush=True)
+        cut = 120 if state == "done" else 400   # a failure keeps its reason
+        print(f"[claude] job {state}: {(report or '')[:cut]!r}", flush=True)
 
     async def _watch_loop(self):
         """The voice keeping an eye on Claude: once a second, is there news
@@ -4764,8 +4781,17 @@ class GoatApp:
                         and (msg.data or {}).get("status") in ENGINE_ROUTINE)):
                     # Retries, compaction, anything else the CLI reports —
                     # the log is where a slow turn's "wait" gets its name.
-                    print(f"[engine] {msg.subtype}: "
-                          f"{json.dumps(msg.data, default=str)[:200]}")
+                    d = msg.data or {}
+                    if msg.subtype in ("task_notification", "task_started"):
+                        # The ids filled the old 200-char cut, so a failed
+                        # sub-task's reason never reached the log (2026-11-01).
+                        print(f"[engine] {msg.subtype} {d.get('status', '')}: "
+                              f"{str(d.get('description') or '')[:120]!r} "
+                              f"{str(d.get('summary') or d.get('error') or '')[:400]!r}",
+                              flush=True)
+                    else:
+                        print(f"[engine] {msg.subtype}: "
+                              f"{json.dumps(d, default=str)[:400]}")
             elif isinstance(msg, ResultMessage):
                 if self._compacting:
                     # The muted /compact turn just finished. Trust nothing —
