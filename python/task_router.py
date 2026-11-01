@@ -118,6 +118,14 @@ _SMALL_HAND_RE = re.compile(
     r"weather|work\s+hours|terminal\s+claude)\b",
     re.IGNORECASE)
 
+_GAME_RE = re.compile(
+    r"\b(?:games?|play\s+(?:chess|snake|tetris|minesweeper|solitaire|"
+    r"sudoku|2048|wordle|checkers|pac-?man|flappy|dino|slither|agar)|"
+    r"play\s+(?:against|vs\.?)|beat\s+(?:the|this)\s+level)\b", re.IGNORECASE)
+_MEDIA_RE = re.compile(
+    r"\b(?:music|song|songs|playlist|album|podcast|video|spotify|youtube|"
+    r"radio|track)\b", re.IGNORECASE)
+
 _TERMINAL_CLAUDE_RE = re.compile(
     r"\b(?:terminal\s+claude|claude\s+(?:in|on)\s+(?:my|the)\s+terminal|claude\s+code)\b",
     re.IGNORECASE)
@@ -171,6 +179,10 @@ def route(text: str, *, job_running: bool = False) -> dict:
     if not (order or question):
         return done(why="talk")
     trouble = his and bool(_TROUBLE_RE.search(t))
+    # Playing a game is Claude's (game tool + autopilot), never a media "play".
+    if order and _GAME_RE.search(t) and not _MEDIA_RE.search(t):
+        return done(type=TASK, size=BIG, task_summary=_summary(t),
+                    needs_confirmation=False, why="a game")
     if bulk or multi or (order and (big_verb or machine or code)) or (
             question and his and (machine or bulk or code or trouble)):
         why = ("files in bulk" if bulk else "several steps" if multi
