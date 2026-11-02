@@ -69,6 +69,8 @@ def feed(a, n: int, voiced: bool, playing):
     """n VAD chunks; `playing` is a bool or a callable(i) -> bool."""
     for i in range(n):
         p = playing(i) if callable(playing) else playing
+        if a.cuts:
+            p = False   # a cut clears playback; the cut turn's audio is dropped
         if p:
             a._play_last_t = time.monotonic()   # what the audio callback does
         a._on_vad_chunk(CHUNK, voiced, CHUNK_MS, was_playing=p)

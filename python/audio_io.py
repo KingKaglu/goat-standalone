@@ -41,7 +41,10 @@ PREROLL_MS = 300
 # voice, and in double-talk the canceller suppresses him with it. -10 dB
 # brings the two level, so his words get through to the vote — and GOAT
 # audibly backs off the way a person does when someone starts talking.
-DUCK_GAIN = 0.3
+# 2026-11-02: 0.3 -> 0.2 (-14 dB). Ducking is also what lets him through the
+# canceller: AEC3 suppresses the mic hardest while GOAT's echo is loud, and
+# erased his voice outright in loud passages (test_barge_doubletalk.py).
+DUCK_GAIN = 0.2
 DUCK_NEEDED = 2              # voiced chunks of the last 3 before ducking: one
                              # stray chunk (22 ducks / 10 min in his room)
                              # shouldn't dip the voice
@@ -120,6 +123,21 @@ NOISE_FLOOR_MARGIN = 3.0    # cleaned-block RMS must clear floor*margin to count
 # 0.0005 added one. So: 2x.
 PLAY_FLOOR_MARGIN = 2.0
 PLAY_GATE_MIN = 0.0008
+# Once GOAT has ducked for a possible interrupt (2026-11-02, his report "I
+# can't cut GOAT off on the laptop"). Root cause, measured offline through
+# this same canceller (test_barge_doubletalk.py): his own voice is ~88% voiced
+# chunks clean, but in double-talk AEC3's suppressor + noise suppression leave
+# only ~43% of his chunks voiced (and some of those under PLAY_GATE_MIN: live
+# log "p=0.80 rms=0.0006 <= 0.0008"). The 16-of-20 confirm vote asks for 80%,
+# so he had to talk 2-3 s over GOAT, or it never stopped. Ducked, GOAT's echo
+# is DUCK_GAIN quieter and so is its residual, so (a) the loudness floor
+# scales with the duck, and (b) the confirm vote drops to DUCKED_NEEDED.
+# Before the duck nothing changes: 2 of 3 voiced chunks still have to come
+# first. Replayed against his real room echo (recorded 2026-11-02, 41 s at
+# full volume) with GOAT held ducked the whole time: no self-interrupt.
+DUCKED_NEEDED = 10           # of VOTE_WINDOW (~320 ms voiced in ~640 ms; through the
+                             # canceller that is ~0.6 s of his real speech, so an
+                             # 'mm-hm' still doesn't cut GOAT, his 2026-10-17 order)
 
 
 def _wasapi_devices():
@@ -583,7 +601,9 @@ class DuplexAudio:
                 and time.monotonic() - self._play_last_t < SPEAKING_HOLD_S)
             if talking:
                 margin = PLAY_FLOOR_MARGIN
-                gate = max(self._noise_floor * margin, PLAY_GATE_MIN)
+                # ducked: the echo (and its residual) is DUCK_GAIN quieter
+                gate_min = PLAY_GATE_MIN * (self.duck_gain if self._duck_active else 1.0)
+                gate = max(self._noise_floor * margin, gate_min)
             else:
                 margin = NOISE_FLOOR_MARGIN
                 gate = self._noise_floor * margin
@@ -637,6 +657,8 @@ class DuplexAudio:
             # Music leaves a speech-shaped residual even after cancellation;
             # the barge-in vote (7 of ~320ms) ignores it where 3-of-4 won't.
             window, needed = VOTE_WINDOW, BARGE_NEEDED
+            if was_playing and self._duck_active:
+                needed = DUCKED_NEEDED
         else:
             window, needed = QUIET_WINDOW, QUIET_NEEDED
         vote = sum(list(self._vote_hist)[-window:])
