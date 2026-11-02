@@ -3,6 +3,11 @@
   python phone_hands.py tap X Y | hold X Y | swipe X1 Y1 X2 Y2 | scroll [up]
   python phone_hands.py alarm HH MM [label] [once|daily|weekdays|weekends|mon,wed] | alarms (list GOAT's + phone's next)
   python phone_hands.py alarm_off|alarm_on|alarm_delete [next|all|ID|HH:MM|label] | alarm_stop | alarm_snooze
+  python phone_hands.py dnd on|priority|alarms|silent|off|status | rights (what USB grants the app holds)
+  python phone_hands.py get|set brightness|timeout|rotate|location|stay_awake|dark|... [VALUE]
+  python phone_hands.py get|set system|secure|global KEY [VALUE]   (any Android setting, no screen)
+  python phone_hands.py notifs [whatsapp|messenger|viber|telegram] [chat name] [all]  (his messages, newest first)
+  python phone_hands.py reply "chat name" "text" [app] | reply key=KEY "text"  (SENDS: needs his yes)
   python phone_hands.py clock_alarm HH MM [label] (Samsung Clock; can't be listed/turned off by command)
   python phone_hands.py timer SECONDS [label] | dial NUMBER | sms NUMBER "text"
   python phone_hands.py url URL | maps "place" | search "query" | settings [wifi|bluetooth|display|sound|battery|apps|location]
@@ -41,6 +46,19 @@ def _q(x): return urllib.parse.quote(x)
 
 SETS = {"wifi": "WIFI", "bluetooth": "BLUETOOTH", "display": "DISPLAY", "sound": "SOUND", "battery": "BATTERY_SAVER",
         "apps": "APPLICATION", "location": "LOCATION_SOURCE", "airplane": "AIRPLANE_MODE", "data": "DATA_ROAMING"}
+# Friendly names for `get`/`set` (tier T1, written directly, no Settings screen).
+SETTING = {
+    "brightness": ("system", "screen_brightness"),          # 0-255 (set auto_brightness 0 first)
+    "auto_brightness": ("system", "screen_brightness_mode"),  # 1 auto, 0 manual
+    "timeout": ("system", "screen_off_timeout"),            # ms
+    "rotate": ("system", "accelerometer_rotation"),         # 1 auto-rotate
+    "location": ("secure", "location_mode"),                # 3 on, 0 off
+    "font_scale": ("system", "font_scale"),
+    "stay_awake": ("global", "stay_on_while_plugged_in"),   # 7 on any charger, 0 off
+    "anim": ("global", "animator_duration_scale"),
+    "haptics": ("system", "haptic_feedback_enabled"),
+    "dark": ("secure", "ui_night_mode"),                    # 2 dark, 1 light (applies after screen off/on on some builds)
+}
 SHORT = {
     # GOAT's own alarm clock in the phone app (2026-11-02): set/list/off by command.
     "alarm": lambda r: {"op": "alarm_set", "h": int(r[0]), "m": int(r[1]),
@@ -82,6 +100,28 @@ def main(a):
         if r: c["on"] = r[0] == "on"
     elif op in ("alarm_off", "alarm_on", "alarm_delete"):
         c["which"] = r[0] if r else "next"
+    elif op == "dnd": c["mode"] = r[0] if r else "status"
+    elif op in ("get", "set"):
+        # set [system|secure|global] KEY VALUE, or a friendly name from SETTING
+        if r and r[0] in SETTING:
+            ns, key = SETTING[r[0]]; rest = r[1:]
+        elif r and r[0] in ("system", "secure", "global"):
+            ns, key, rest = r[0], r[1], r[2:]
+        else:
+            ns, key, rest = "system", r[0], r[1:]
+        c.update(ns=ns, key=key)
+        if op == "set": c["value"] = rest[0]
+    elif op == "notifs":
+        # notifs [app] [chat words...] [all]
+        if r and r[-1] == "all": c["all"] = True; r = r[:-1]
+        if r: c["app"] = r[0]
+        if len(r) > 1: c["chat"] = " ".join(r[1:])
+    elif op == "reply":
+        # reply "chat name" "text" [app]   or   reply key=KEY "text"
+        if r[0].startswith("key="): c["key"] = r[0][4:]
+        else: c["chat"] = r[0]
+        c["text"] = r[1]
+        if len(r) > 2: c["app"] = r[2]
     elif op in SHORT:
         c = SHORT[op](r)
     res = call(c)
