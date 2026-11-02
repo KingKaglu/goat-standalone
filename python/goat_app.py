@@ -3403,7 +3403,7 @@ class GoatApp:
                      "hand_to_worker and never say you handed it over. YOUR OWN "
                      "hands still work without Claude: do_now, email, files "
                      "(find/read/write_file/save_chat_log), work_hours, phone, "
-                     "web_search, browser_history. Use them instead of saying "
+                     "web_search, browser_history, trade_status. Use them instead of saying "
                      "you need Claude.")
         eff = getattr(self, "_live_effort", None) or self.effort
         blocks.append(self._watch.status_note(self._worker_label(), eff, extra))
@@ -3606,6 +3606,7 @@ class GoatApp:
                     "things: find_files/read_file/open_path (his files), phone (his "
                     "phone), terminal_claude send (types his words into the terminal "
                     "Claude, now or at='HH:MM'), browser_history, web_search, "
+                    "trade_status (his open trades' profit/loss, live), "
                     "where_am_i, do_now (laptop apps), email, write_file (notes and "
                     "text files), save_chat_log (your chat with him), work_hours "
                     "(his hours workbook), and hand_to_worker (Claude does anything "

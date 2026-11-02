@@ -22,6 +22,7 @@ with no Claude usage:
   web_search     current facts (Live's own Google Search is refused on his
                  free tier)
   write_file, save_chat_log, work_hours   (desk_hands.py, 2026-10-31)
+  trade_status   his open Binance demo trades, live P&L (trade_hands.py)
 
 execute(name, args) -> short text result for the model. Blocking: run it in
 a thread. Everything returns a string, never raises.
@@ -738,6 +739,8 @@ def execute(name: str, args: dict) -> str:
             return browser_history(args)
         if name in desk_hands.NAMES:
             return desk_hands.execute(name, args)
+        if name in trade_hands.NAMES:
+            return trade_hands.execute(name, args)
         if name == "web_search":
             import local_hands
             q = str(args.get("query") or "")
@@ -754,9 +757,11 @@ def execute(name: str, args: dict) -> str:
 
 
 import desk_hands  # noqa: E402 — files he asks for, the chat log, work hours
+import trade_hands  # noqa: E402 — his open demo trades, live (read-only)
 
-NAMES = {"find_files", "read_file", "list_folder", "open_path", "phone",
-         "terminal_claude", "web_search", "where_am_i", "browser_history"} | desk_hands.NAMES
+NAMES = ({"find_files", "read_file", "list_folder", "open_path", "phone",
+          "terminal_claude", "web_search", "where_am_i", "browser_history"}
+         | desk_hands.NAMES | trade_hands.NAMES)
 
 DECLS = [
     {"name": "find_files",
@@ -831,4 +836,4 @@ DECLS = [
          "query": {"type": "string"},
          "days": {"type": "integer", "description": "how far back, default 30"}},
          "required": ["query"]}},
-] + desk_hands.DECLS
+] + desk_hands.DECLS + trade_hands.DECLS
