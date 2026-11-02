@@ -97,4 +97,5 @@ def main(a):
     print(json.dumps(res, ensure_ascii=False)[:3000])
 
 
-main(sys.argv[1:])
+if __name__ == "__main__":
+    main(sys.argv[1:])
