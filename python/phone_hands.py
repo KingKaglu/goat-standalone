@@ -1,7 +1,10 @@
 """GOAT's hands on Giorgi's phone. Usage:
   python phone_hands.py screen | shot | apps | back | home | recents | notifications
   python phone_hands.py tap X Y | hold X Y | swipe X1 Y1 X2 Y2 | scroll [up]
-  python phone_hands.py alarm HH MM [label] | timer SECONDS [label] | dial NUMBER | sms NUMBER "text"
+  python phone_hands.py alarm HH MM [label] [once|daily|weekdays|weekends|mon,wed] | alarms (list GOAT's + phone's next)
+  python phone_hands.py alarm_off|alarm_on|alarm_delete [next|all|ID|HH:MM|label] | alarm_stop | alarm_snooze
+  python phone_hands.py clock_alarm HH MM [label] (Samsung Clock; can't be listed/turned off by command)
+  python phone_hands.py timer SECONDS [label] | dial NUMBER | sms NUMBER "text"
   python phone_hands.py url URL | maps "place" | search "query" | settings [wifi|bluetooth|display|sound|battery|apps|location]
   python phone_hands.py intent '{"action":..,"data":..,"package":..,"extras":{..}}'  (any Android intent, instant)
   python phone_hands.py tap_text "Send" | type "hello" [submit] | open "WhatsApp"
@@ -39,7 +42,10 @@ def _q(x): return urllib.parse.quote(x)
 SETS = {"wifi": "WIFI", "bluetooth": "BLUETOOTH", "display": "DISPLAY", "sound": "SOUND", "battery": "BATTERY_SAVER",
         "apps": "APPLICATION", "location": "LOCATION_SOURCE", "airplane": "AIRPLANE_MODE", "data": "DATA_ROAMING"}
 SHORT = {
-    "alarm": lambda r: _i("android.intent.action.SET_ALARM", extras={
+    # GOAT's own alarm clock in the phone app (2026-11-02): set/list/off by command.
+    "alarm": lambda r: {"op": "alarm_set", "h": int(r[0]), "m": int(r[1]),
+                        "label": r[2] if len(r) > 2 else "GOAT", "days": r[3] if len(r) > 3 else ""},
+    "clock_alarm": lambda r: _i("android.intent.action.SET_ALARM", extras={
         "android.intent.extra.alarm.HOUR": int(r[0]), "android.intent.extra.alarm.MINUTES": int(r[1]),
         "android.intent.extra.alarm.MESSAGE": r[2] if len(r) > 2 else "GOAT",
         "android.intent.extra.alarm.SKIP_UI": True}),
@@ -74,6 +80,8 @@ def main(a):
     elif op == "media": c["action"] = r[0] if r else "play_pause"
     elif op == "torch":
         if r: c["on"] = r[0] == "on"
+    elif op in ("alarm_off", "alarm_on", "alarm_delete"):
+        c["which"] = r[0] if r else "next"
     elif op in SHORT:
         c = SHORT[op](r)
     res = call(c)

@@ -94,10 +94,43 @@ check("phone settings page opens the right intent",
       sent[-1]["action"] == "android.settings.DATA_ROAMING_SETTINGS", sent[-1])
 r = vh.phone({"op": "screen"})
 check("phone screen is read back as text", "Mobile data" in r and "[button]" in r, r)
+vh.phone({"op": "alarm", "arg": "7:30", "arg2": "gym daily"})
+c = sent[-1]
+check("alarm 7:30 goes to GOAT's own alarm clock", c["op"] == "alarm_set" and c["h"] == 7
+      and c["m"] == 30 and c["label"] == "gym" and c["days"] == "daily", c)
+
+
+def no_alarms_app(cmd, timeout=25.0):
+    sent.append(cmd)
+    if cmd.get("op", "").startswith("alarm"):
+        return {"ok": False, "error": "unknown op " + cmd["op"]}
+    return {"ok": True}
+
+
+vh._phone_call = no_alarms_app
 vh.phone({"op": "alarm", "arg": "7:30", "arg2": "gym"})
-ex = sent[-1]["extras"]
-check("alarm 7:30", ex["android.intent.extra.alarm.HOUR"] == 7
-      and ex["android.intent.extra.alarm.MINUTES"] == 30, ex)
+ex = sent[-1].get("extras") or {}
+check("old phone app: alarm falls back to Samsung Clock", ex.get("android.intent.extra.alarm.HOUR") == 7
+      and ex.get("android.intent.extra.alarm.MINUTES") == 30, sent[-1])
+r = vh.phone({"op": "alarm_off", "arg": "all"})
+check("old phone app: alarm_off says the APK is needed", "too old" in r, r)
+
+
+def alarms_app(cmd, timeout=25.0):
+    sent.append(cmd)
+    if cmd.get("op") == "alarms":
+        return {"ok": True, "alarms": [{"id": 1, "time": "10:00", "label": "GOAT", "repeat": "once",
+                                        "on": True, "next": "Mon 02.11 10:00"}],
+                "phone_next": "Mon 02.11 10:00", "phone_next_app": "com.kingkaglu.goat"}
+    return {"ok": True}
+
+
+vh._phone_call = alarms_app
+r = vh.phone({"op": "alarms"})
+check("alarms are listed as text", "#1 10:00" in r and "any app" in r, r)
+vh.phone({"op": "alarm_off", "arg": "10:00"})
+check("alarm_off sends which", sent[-1] == {"op": "alarm_off", "which": "10:00"}, sent[-1])
+vh._phone_call = fake_phone
 vh.phone({"op": "volume", "arg": "all", "arg2": "100%"})
 check("'all the volumes up' asks the phone for every stream at full",
       sent[-1]["action"] == "max" and sent[-1]["percent"] == 100, sent[-1])

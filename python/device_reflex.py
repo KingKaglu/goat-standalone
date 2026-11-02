@@ -242,13 +242,19 @@ def alarm_or_timer(t: str) -> "object | None":
             return None
         h, mi = hm
         label = (m.group("label") or "GOAT").strip(" .,!?")
+        clock = _intent("android.intent.action.SET_ALARM", extras={
+            "android.intent.extra.alarm.HOUR": h,
+            "android.intent.extra.alarm.MINUTES": mi,
+            "android.intent.extra.alarm.MESSAGE": label,
+            "android.intent.extra.alarm.SKIP_UI": True})
+
+        def run(h=h, mi=mi, label=label, clock=clock):
+            # GOAT's own alarm clock (2026-11-02): listable and switchable
+            # off by command; an older phone app falls back to Samsung Clock.
+            r = phone_call({"op": "alarm_set", "h": h, "m": mi, "label": label})
+            return phone_call(clock) if "too old" in r else r
         return reflex.Reflex(
-            "phone", f"alarm {h:02d}:{mi:02d}",
-            _run(_intent("android.intent.action.SET_ALARM", extras={
-                "android.intent.extra.alarm.HOUR": h,
-                "android.intent.extra.alarm.MINUTES": mi,
-                "android.intent.extra.alarm.MESSAGE": label,
-                "android.intent.extra.alarm.SKIP_UI": True})),
+            "phone", f"alarm {h:02d}:{mi:02d}", run,
             speak=f"Sir, setting an alarm for {h:02d}:{mi:02d} on your phone.")
     m = _TIMER_RE.match(t)
     if m:

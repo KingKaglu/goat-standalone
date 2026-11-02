@@ -403,12 +403,47 @@ def phone(args: dict) -> str:
         elif op == "torch":
             cmd = {"op": "torch", "on": a.lower() != "off"}
         elif op == "alarm":
+            # GOAT's own alarm clock in the phone app (2026-11-02): it can be
+            # listed and switched off by command later. arg2 may end in a
+            # repeat word: "gym daily", "work weekdays".
             hh, _, mm = a.replace(".", ":").partition(":")
+            lab, days = b or "GOAT", ""
+            rm = re.search(r"\s*\b(once|daily|every\s*day|weekdays|weekends)\s*$", lab, re.I)
+            if rm:
+                lab, days = (lab[:rm.start()].strip() or "GOAT"), rm.group(1)
+            res = _phone_call({"op": "alarm_set", "h": int(hh), "m": int(mm or 0),
+                               "label": lab, "days": days})
+            if "unknown op" not in str(res.get("error") or ""):
+                if not res.get("ok", True):
+                    return f"ERROR: {res.get('error')}"
+                al = res.get("alarm") or {}
+                return (f"alarm set in GOAT's phone alarm clock: {al.get('time')} "
+                        f"({al.get('repeat')}), next ring {al.get('next')}, id {al.get('id')}"
+                        + ("" if res.get("notifications", True) else
+                           " — GOAT's notifications are off on the phone, so it rings without Stop buttons"))
+            # old phone app: Samsung Clock via intent (can't be turned off by command)
             cmd = _intent("android.intent.action.SET_ALARM", extras={
                 "android.intent.extra.alarm.HOUR": int(hh),
                 "android.intent.extra.alarm.MINUTES": int(mm or 0),
                 "android.intent.extra.alarm.MESSAGE": b or "GOAT",
                 "android.intent.extra.alarm.SKIP_UI": True})
+        elif op in ("alarms", "alarm_off", "alarm_on", "alarm_delete", "alarm_stop", "alarm_snooze"):
+            cmd = {"op": op, "which": a or "next"}
+            res = _phone_call(cmd)
+            if "unknown op" in str(res.get("error") or ""):
+                return ("ERROR: the GOAT app on his phone is too old for alarm commands — "
+                        "he needs the new APK (/goat.apk); alarms made in Samsung Clock "
+                        "can't be listed or turned off by command at all")
+            if not res.get("ok", True):
+                return f"ERROR: {res.get('error')}"
+            if op == "alarms":
+                rows = [f"#{x['id']} {x['time']} {x['label']} ({x['repeat']}, "
+                        f"{'on, next ' + x['next'] if x['on'] else 'off'})"
+                        for x in res.get("alarms") or []]
+                tail = (f". Phone's next alarm from any app: {res['phone_next']} "
+                        f"({res.get('phone_next_app')})" if res.get("phone_next") else "")
+                return ("GOAT alarms: " + ("; ".join(rows) or "none")) + tail
+            return json.dumps(res, ensure_ascii=False)[:800]
         elif op == "timer":
             cmd = _intent("android.intent.action.SET_TIMER", extras={
                 "android.intent.extra.alarm.LENGTH": int(float(a)),
@@ -439,7 +474,8 @@ def phone(args: dict) -> str:
             cmd = _intent("android.settings." + (key + "_SETTINGS" if key else "SETTINGS"))
         else:
             return (f"ERROR: unknown phone op {op!r} (screen, open, tap_text, type, "
-                    "scroll, back, home, notifications, volume, media, torch, alarm, "
+                    "scroll, back, home, notifications, volume, media, torch, alarm, alarms, "
+                    "alarm_off, alarm_on, alarm_delete, alarm_stop, alarm_snooze, "
                     "timer, dial, sms, url, maps, search, settings)")
         res = _phone_call(cmd)
         if (op == "volume" and cmd["action"] == "max"
@@ -794,7 +830,10 @@ DECLS = [
                     "button and says whether it really went), scroll "
                     "(arg='up'|'down'), back, home, notifications, volume "
                     "(arg=up|down|mute|set|max — max = media, alarm, ring and notification all full; arg2=percent), media (arg=play_pause|next|"
-                    "previous), torch (arg=on|off), alarm (arg='HH:MM', arg2=label), "
+                    "previous), torch (arg=on|off), alarm (arg='HH:MM', arg2=label, may end in "
+                    "daily|weekdays|weekends), alarms (list them), alarm_off / alarm_on / "
+                    "alarm_delete (arg=next|all|id|'HH:MM'|label), alarm_stop / alarm_snooze "
+                    "(the one ringing now), "
                     "timer (arg=seconds), dial (arg=number), sms (arg=number, "
                     "arg2=text — opens the message, he presses send), url, maps, "
                     "search, settings (arg=wifi|bluetooth|mobile|sim|network|battery|"
