@@ -1,0 +1,82 @@
+{
+ "at": "2026-11-05 02:55",
+ "code": "C:\\Users\\giorg\\AppData\\Local\\Temp\\claude\\3f36f478cdfd941e\\27f3fcda-da33-451b-b761-1e3ff77a463f\\scratchpad\\goat-head\\python",
+ "memory_cap": null,
+ "summary": {
+  "n": 4,
+  "answered_itself": 0,
+  "no_tool": 0,
+  "silent": 4,
+  "handoff": 1,
+  "question_back": 0,
+  "georgian_in_english": 0,
+  "wrong_or_missing": [],
+  "ttfa_median": null,
+  "ttfa_worst": null,
+  "over_4s": 0,
+  "max_sentences": 0
+ },
+ "rows": [
+  {
+   "q": "how many Georgian lari is 434 euros",
+   "route": "chat/small",
+   "ttfa": null,
+   "first": null,
+   "tools": [],
+   "text": "",
+   "ok": false,
+   "error": "connect: ConnectionClosedError: received 1007 (invalid frame payload data) Thinking budget is not supported for this model.; then sent 1007 (invalid frame payload data) Thinking budget is not supported for this model.",
+   "itself": false,
+   "no_tool": true,
+   "question_back": false,
+   "georgian": false,
+   "lets_check": false,
+   "right": false,
+   "sentences": 0
+  },
+  {
+   "q": "convert 10 miles to kilometers",
+   "route": "task/big",
+   "ttfa": null,
+   "first": null,
+   "tools": [],
+   "text": "",
+   "ok": false,
+   "error": "router: handed to Claude"
+  },
+  {
+   "q": "what is the speed of light",
+   "route": "chat/small",
+   "ttfa": null,
+   "first": null,
+   "tools": [],
+   "text": "",
+   "ok": false,
+   "error": "connect: ConnectionClosedError: received 1007 (invalid frame payload data) Thinking budget is not supported for this model.; then sent 1007 (invalid frame payload data) Thinking budget is not supported for this model.",
+   "itself": false,
+   "no_tool": true,
+   "question_back": false,
+   "georgian": false,
+   "lets_check": false,
+   "right": false,
+   "sentences": 0
+  },
+  {
+   "q": "who was Napoleon",
+   "route": "chat/small",
+   "ttfa": null,
+   "first": null,
+   "tools": [],
+   "text": "",
+   "ok": false,
+   "error": "connect: ConnectionClosedError: received 1007 (invalid frame payload data) Thinking budget is not supported for this model.; then sent 1007 (invalid frame payload data) Thinking budget is not supported for this model.",
+   "itself": false,
+   "no_tool": true,
+   "question_back": false,
+   "georgian": false,
+   "lets_check": false,
+   "right": false,
+   "sentences": 0
+  }
+ ]
+}
