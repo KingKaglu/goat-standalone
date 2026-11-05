@@ -130,6 +130,20 @@ _TERMINAL_CLAUDE_RE = re.compile(
     r"\b(?:terminal\s+claude|claude\s+(?:in|on)\s+(?:my|the)\s+terminal|claude\s+code)\b",
     re.IGNORECASE)
 
+# A knowledge "order" is still a question (his order 2026-11-05: the voice
+# answers general knowledge itself, at once). "convert 434 euros to lari",
+# "compare the BMW M3 and the Audi RS4", "calculate 15% of 240" are facts and
+# maths, not work; "convert this video to mp4" / "compare these two files"
+# name a thing of his and stay Claude's.
+_KNOWLEDGE_LEAD_RE = re.compile(
+    r"^(?:convert|compare|calculate|work\s+out|define|translate|explain|"
+    r"tell\s+me|give\s+me|name|list)\b", re.IGNORECASE)
+_THING_RE = re.compile(
+    r"\b(?:this|these|that|those|it|them|my|our|files?|folders?|videos?|"
+    r"photos?|pictures?|images?|documents?|docs?|pdfs?|sheets?|spreadsheets?|"
+    r"excel|word|csv|json|mp[34]|wav|png|jpe?g|gif|zip|text\s+file|"
+    r"page|website|site|email|emails|messages?)\b", re.IGNORECASE)
+
 _FILLER_RE = re.compile(
     r"^\W*(?:(?:okay|ok|hey|now|please|so|and|alright|goat|yes|yeah|then|just|also|"
     r"uh|um|hmm|well|actually|can\s+you|could\s+you|would\s+you|will\s+you)\W+)*",
@@ -164,7 +178,12 @@ def route(text: str, *, job_running: bool = False) -> dict:
         # reads and types into them in one step ("terminal" isn't a job).
         return done(type=TASK, size=SMALL, task_summary=_summary(t),
                     why="the terminal Claude")
-    big_lead = bool(_BIG_VERB_RE.match(_FILLER_RE.sub("", t)))
+    lead = _FILLER_RE.sub("", t)
+    if (_KNOWLEDGE_LEAD_RE.match(lead) and not _THING_RE.search(t)
+            and not _MACHINE_RE.search(t) and not _BULK_FILES_RE.search(t)
+            and not _MULTI_STEP_RE.search(t)):
+        return done(why="knowledge")
+    big_lead = bool(_BIG_VERB_RE.match(lead))
     order = bool(_ORDER.search(t)) or big_lead
     question = bool(_QUESTION_RE.match(t)) and not re.match(
         r"(?i)^\W*(?:can|could|would|will)\s+you\s+(?!tell|explain|say)", t)

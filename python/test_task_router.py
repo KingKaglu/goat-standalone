@@ -42,6 +42,34 @@ BIG = [
     "check my disk space",
     "uninstall spotify",
 ]
+# General knowledge (his order 2026-11-05): always the voice, never Claude.
+KNOWLEDGE = [
+    "how many Georgian lari is 434 euros",
+    "434 euros in lari",
+    "convert 434 euros to lari",
+    "convert 10 miles to kilometers",
+    "compare the BMW M3 and the Audi RS4",
+    "calculate 15% of 240",
+    "translate thank you into German",
+    "define photosynthesis",
+    "what is the speed of light",
+    "who was Napoleon",
+    "how far is the moon",
+    "why does the sky look blue",
+    "how does a turbocharger work",
+    "how do I fix a flat tire",
+    "how to install a ceiling fan",
+    "how much is 100 dollars in euros",
+    "explain how vaccines work",
+    "name the planets",
+    "Sir what's the tallest mountain in Georgia",
+]
+# ...but a "knowledge" verb on a thing of his is still a job.
+KNOWLEDGE_VERB_JOBS = [
+    "convert this video to mp4",
+    "compare these two files",
+    "convert my photos to png",
+]
 JOB_TALK = ["What's it doing?", "Cancel that", "change it to blue", "stop that"]
 
 
@@ -65,6 +93,17 @@ class RouteTests(unittest.TestCase):
                 self.assertEqual((r["type"], r["size"]), (tr.TASK, tr.BIG))
                 self.assertTrue(r["task_summary"])
 
+    def test_general_knowledge_is_the_voices(self):
+        for s in KNOWLEDGE:
+            with self.subTest(s=s):
+                r = tr.route(s)
+                self.assertEqual((r["type"], r["size"]), (tr.CHAT, tr.SMALL), r)
+
+    def test_knowledge_verbs_on_his_things_stay_jobs(self):
+        for s in KNOWLEDGE_VERB_JOBS:
+            with self.subTest(s=s):
+                self.assertEqual(tr.route(s)["size"], tr.BIG)
+
     def test_confirmation_only_for_destructive(self):
         self.assertTrue(tr.route("Delete the test folder")["needs_confirmation"])
         self.assertTrue(tr.route("uninstall spotify")["needs_confirmation"])
@@ -78,7 +117,7 @@ class RouteTests(unittest.TestCase):
 
     def test_fast(self):
         """Budget is 300 ms; the router must cost well under a millisecond."""
-        all_s = CHAT + SMALL + BIG + JOB_TALK
+        all_s = CHAT + SMALL + BIG + JOB_TALK + KNOWLEDGE
         t0 = time.perf_counter()
         for _ in range(100):
             for s in all_s:
