@@ -43,7 +43,9 @@ VOICES = {"goat": "Kore", "ultron": "Charon"}
 URL = ("wss://generativelanguage.googleapis.com/ws/"
        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")
 CONNECT_S = 6.0            # socket + setupComplete
-FIRST_S = 6.0              # nothing at all by now: Live is down this turn
+# Nothing at all by now: Live is down this turn, the REST voice takes it.
+# Was 6 s; his order 2026-11-05: no turn stays silent past ~4 s.
+FIRST_S = float(os.environ.get("GOAT_LIVE_FIRST_S", "4.0"))
 STALE_S = 300.0            # silent this long: redial (resuming) before his turn
 IDLE_S = 8.0               # a started answer silent this long is over
 # After a function call Google closes the turn (turnComplete) and THEN
@@ -64,6 +66,18 @@ OUT_RATE = 24000           # Live speaks 24 kHz PCM16; GOAT plays 16 kHz
 # answered itself). Measured 2026-10-25 on his key. ("thinkingLevel" is
 # refused by this model.)
 THINK_BUDGET = int(os.environ.get("GOAT_LIVE_THINK", "0"))
+# 2026-11-05: gemini-3.8-live started refusing ANY thinkingConfig at setup
+# ("1007 Thinking budget is not supported for this model", thinkingLevel
+# the same) - so every Live connect failed and every turn fell back to the
+# REST voice, 3.5-12 s to his first word. A model that refuses it is
+# remembered and the session opened without it; one that takes it keeps
+# budget 0.
+_NO_THINK: set = set()
+
+
+def _think_refused(err: str) -> bool:
+    e = (err or "").lower()
+    return "thinking" in e and "not supported" in e
 
 
 class Resampler:
@@ -157,8 +171,7 @@ class LiveTalk:
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {"voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": voice}}},
-                "thinkingConfig": {"thinkingBudget": THINK_BUDGET}},
+                    "prebuiltVoiceConfig": {"voiceName": voice}}}},
             "systemInstruction": {"parts": [{"text": self.talker._system}]},
             # (No googleSearch: on his free tier any Live session that
             # includes it is refused, "You exceeded your current quota" —
@@ -171,16 +184,33 @@ class LiveTalk:
             "contextWindowCompression": {"slidingWindow": {}},
             "sessionResumption": {"handle": self._handle} if self._handle else {},
         }
+        if self.model not in _NO_THINK:
+            setup["generationConfig"]["thinkingConfig"] = {"thinkingBudget": THINK_BUDGET}
         return {"setup": setup}
 
     async def _connect(self):
+        try:
+            await self._connect_once()
+        except Exception as e:  # noqa: BLE001
+            if self.model in _NO_THINK or not _think_refused(str(e)):
+                raise
+            _NO_THINK.add(self.model)
+            print(f"[live] {self.model} refuses thinkingConfig — opening without it",
+                  flush=True)
+            await self._connect_once()
+
+    async def _connect_once(self):
         import websockets
         ws = await asyncio.wait_for(websockets.connect(
             f"{URL}?key={self.key}", max_size=16 * 1024 * 1024,
             open_timeout=CONNECT_S), CONNECT_S)
         resumed = bool(self._handle)
         await ws.send(json.dumps(self._setup()))
-        first = json.loads(await asyncio.wait_for(ws.recv(), CONNECT_S))
+        try:
+            first = json.loads(await asyncio.wait_for(ws.recv(), CONNECT_S))
+        except Exception:
+            await ws.close()
+            raise
         if "setupComplete" not in first:
             await ws.close()
             raise RuntimeError(f"setup refused: {str(first)[:160]}")
@@ -409,7 +439,9 @@ class LiveTalk:
                 self.ttfts.append(ttft)
                 self.ttfts = self.ttfts[-20:]
             self.fail_streak = 0
-            return {"ok": True, "model": self.model, "error": "", "ttft": ttft}
+            return {"ok": True, "model": self.model, "error": "", "ttft": ttft,
+                    "sound": (sink.t_sound - t0) if sink.t_sound else None,
+                    "called": sink.called}
 
     def _fail(self, why: str) -> dict:
         self.fail_streak += 1
@@ -430,6 +462,7 @@ class _Turn:
         self.active = True            # False once reply() has let go of it
         self.t_first = 0.0            # first anything (sound, words or a call)
         self.t_last = 0.0
+        self.t_sound = 0.0            # first sound or spoken words
         self.called = False
         self.pending = 0              # tool calls not answered yet
         self.resp_t = 0.0             # when the last tool answer went back
@@ -445,6 +478,7 @@ class _Turn:
         self.t_last = now
         if content:
             self.spoke_since = True
+            self.t_sound = self.t_sound or now
         self.ev.set()
 
     def server(self, sc: dict):

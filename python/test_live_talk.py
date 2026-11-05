@@ -215,6 +215,73 @@ async def main():
     res = await lt3.reply([{"text": "Giorgi: hi"}], on_t, on_c, on_a)
     check("...which answers", res["ok"] and "".join(got["text"]) == "Hi.", (res, got))
 
+    # 2026-11-05: gemini-3.8-live refused any thinkingConfig at setup, so
+    # every connect failed and Live never answered. Refused once -> the
+    # session opens without it, and stays without it.
+    lt4 = live_talk.LiveTalk(talker)
+    lt4.model = "fake-live-no-think"
+    setups, tries = [], []
+
+    async def picky_once():
+        s = lt4._setup()["setup"]
+        setups.append(s)
+        tries.append(1)
+        if "thinkingConfig" in s["generationConfig"]:
+            raise RuntimeError("received 1007 (invalid frame payload data) "
+                               "Thinking budget is not supported for this model.")
+        w = FakeWS([[text_msg("Sir, Canberra."), audio_msg(), GEN, 0.1, END]])
+        lt4.ws, lt4._voice = w, lt4._wanted_voice()
+        lt4._reader = asyncio.create_task(lt4._read(w))
+    lt4._connect_once = picky_once
+    got = {"text": [], "audio": [], "calls": []}
+    res = await lt4.reply([{"text": "Giorgi: capital of Australia"}], on_t, on_c, on_a)
+    check("a model that refuses thinkingConfig still answers the same turn",
+          res["ok"] and "".join(got["text"]) == "Sir, Canberra." and len(tries) == 2,
+          (res, got, len(tries)))
+    check("...and later sessions open without it",
+          "fake-live-no-think" in live_talk._NO_THINK
+          and "thinkingConfig" not in lt4._setup()["setup"]["generationConfig"])
+    check("a model that takes it keeps thinkingBudget 0",
+          live_talk.LiveTalk(talker)._setup()["setup"]["generationConfig"]
+          .get("thinkingConfig") == {"thinkingBudget": live_talk.THINK_BUDGET})
+    check("other connect errors are not retried as a thinking refusal",
+          not live_talk._think_refused("received 1008 quota exceeded"))
+
+    # No silent turns: nothing from Google within FIRST_S -> ok False fast,
+    # so the app's REST voice (then Claude) answers instead.
+    check("Live gives a silent turn at most ~4 s", live_talk.FIRST_S <= 4.0, live_talk.FIRST_S)
+    lt5 = live_talk.LiveTalk(talker)
+    mute = FakeWS([[]])
+
+    async def mute_connect():
+        lt5.ws, lt5._voice = mute, lt5._wanted_voice()
+        lt5._reader = asyncio.create_task(lt5._read(mute))
+    lt5._connect = mute_connect
+    keep, live_talk.FIRST_S = live_talk.FIRST_S, 0.3
+    t_m = _t.monotonic()
+    res = await lt5.reply([{"text": "Giorgi: how far is the moon"}], on_t, on_c, on_a)
+    live_talk.FIRST_S = keep
+    check("Live silent -> the turn fails at FIRST_S, not later",
+          not res["ok"] and _t.monotonic() - t_m < 1.0, res)
+
+    # A turn that only reached for a hand and never spoke reports sound=None
+    # (the app then lets the next brain answer instead of staying quiet).
+    lt6 = live_talk.LiveTalk(talker)
+    lt6.tool_runner = None
+    callonly = FakeWS([[{"toolCall": {"functionCalls": [
+        {"id": "c9", "name": "web_search", "args": {"query": "EUR GEL"}}]}}, GEN, END]])
+
+    async def call_connect():
+        lt6.ws, lt6._voice = callonly, lt6._wanted_voice()
+        lt6._reader = asyncio.create_task(lt6._read(callonly))
+    lt6._connect = call_connect
+    keep_tail, live_talk.TOOL_TAIL_S = live_talk.TOOL_TAIL_S, 0.2
+    got = {"text": [], "audio": [], "calls": []}
+    res = await lt6.reply([{"text": "Giorgi: 434 euros in lari"}], on_t, on_c, on_a)
+    live_talk.TOOL_TAIL_S = keep_tail
+    check("a call-only turn says it made no sound",
+          res["ok"] and res.get("sound") is None and res.get("called"), res)
+
     if "--live" in sys.argv:
         import talk_brain
         real = live_talk.LiveTalk(talk_brain.GeminiTalk())
