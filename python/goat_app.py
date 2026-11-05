@@ -724,7 +724,15 @@ _LOWER_LEAD = {"it", "it's", "its", "that", "that's", "the", "there", "there's",
                "eight", "nine", "ten", "here", "here's", "not", "just", "both"}
 
 
+_KA_SIR_RE = re.compile(r"^\s*სირ(?=[\s,.!—–-]|$)")
+
+
 def sir_first(text: str) -> str:
+    # "სირ, with the Euro…" (2026-11-05): "Sir" in Georgian letters inside an
+    # English reply. English rest -> the English word.
+    m = _KA_SIR_RE.match(text)
+    if m and not _GEORGIAN_RE.search(text[m.end():]):
+        text = "Sir" + text[m.end():]
     if text.lower().startswith("sir") or text.startswith("ბატონო"):
         return text
     body = _TRAIL_SIR_RE.sub("", text, count=1)
@@ -786,6 +794,18 @@ HUM_RE = re.compile(r"^\s*(?:(?:h?m+-?h?m+|hm+|um+|uh+|erm*|ah+|ჰმ+)(?!\w)[\
 # every slow turn its "Sir, …" 0.5 s sooner and races nothing.
 BACKCHANNEL_AFTER_S = float(os.environ.get("GOAT_BACKCHANNEL_AFTER", "1.5"))
 BACKCHANNEL_MODE = os.environ.get("GOAT_BACKCHANNEL", "gap").strip().lower()
+# Hands that only LOOK: a turn that used just these and said nothing can be
+# asked again of the next brain without doing anything twice.
+LOOK_ONLY_HANDS = frozenset({"web_search", "find_files", "read_file", "list_folder",
+                             "where_am_i", "browser_history", "trade_status",
+                             "look_at_screen"})
+
+
+def silent_turn(kind: str, spoken: list, acted: list, probe: bool = False) -> bool:
+    """His turn ended with no word from the voice and nothing done that
+    can't be repeated: it must not stay silent (his order 2026-11-05)."""
+    return (kind == "user" and not probe and not "".join(spoken).strip()
+            and set(acted) <= LOOK_ONLY_HANDS)
 DONE_LEAD = {"en": "Done.", "ka": "მზადაა."}
 LEAD_WORD = {"en": "Sir,", "ka": "ბატონო,"}   # cached; said the instant a reply starts
 FAIL_LEAD = {"en": "That one failed.", "ka": "ვერ გამოვიდა."}
@@ -3565,7 +3585,17 @@ class GoatApp:
                     print(f"[live] {res['error']} — REST voice takes the turn"
                           if not started_speaking else
                           f"[live] {res['error']} (after speaking)", flush=True)
-                if res["ok"] or started_speaking or acted:
+                if silent_turn(kind, spoken, acted, probe):
+                    # It looked something up (or nothing) and never said a
+                    # word: the REST voice answers instead of silence.
+                    if res["ok"] or acted:
+                        print(f"[live] silent turn (tools={','.join(acted) or 'none'}"
+                              f"{'; ' + res['error'] if res.get('error') else ''}) "
+                              "— REST voice takes it", flush=True)
+                    acted.clear()
+                    hands.clear()
+                    via_live = False
+                elif res["ok"] or started_speaking or acted:
                     res["ok"] = True
                 else:
                     via_live = False
@@ -3663,6 +3693,14 @@ class GoatApp:
                     nxt = _NextPass(spoken, on_text)
                     res = await self.talker.reply(parts2, nxt, no_look)
                     nxt.flush()
+            if (res["ok"] and not via_live and live() and self._quiet_state != "quiet"
+                    and silent_turn(kind, spoken, acted, probe)):
+                # 2026-11-05 02:12 "how many Georgia is 434 euros": the voice
+                # looked the rate up and said NOTHING until "are you okay?".
+                # A turn that ends silent is a failed turn: Claude covers it.
+                print("[talk] REST voice said nothing — falling back", flush=True)
+                res = {"ok": False, "model": res.get("model", ""), "ttft": None,
+                       "error": "said nothing"}
             self._emit_brains()          # winner model / quota state for the card
             if res["ok"]:
                 self.emit("talkbrain", self.live.label() if via_live

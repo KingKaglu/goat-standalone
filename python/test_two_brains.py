@@ -839,6 +839,60 @@ async def main():
     check("the card names whoever is answering",
           app._voice_label() == "Gemini 3.6 Flash")
 
+    # ---- 19b. no silent turns (his order 2026-11-05) -------------------------
+    # 02:12 "how many Georgia is 434 euros": the voice looked the rate up and
+    # said NOTHING until he asked "are you okay?".
+    real_exec = g.voice_hands.execute
+    g.voice_hands.execute = lambda n, a: "1 EUR = 2.92 GEL"
+    try:
+        rest = FakeTalker(lambda tx: (["Sir, 434 euros is about 1,270 lari."], []))
+        app = make_app(rest)
+        app.live = FakeLive(lambda tx: ([], [("web_search", {"query": "434 EUR to GEL"})]))
+        await app._talk("how many Georgian lari is 434 euros")
+        await app._front_task
+        await settle()
+        check("Live only searched and never spoke -> the REST voice answers the turn",
+              rest.seen and "1,270 lari" in " ".join(app.tts.spoken), app.tts.spoken[-2:])
+
+        mute = FakeTalker(lambda tx: ([], [("web_search", {"query": "EUR GEL"})])
+                          if "returned" not in str(tx) else ([], []))
+        app = make_app(mute)
+        app.live = FakeLive(lambda tx: None)
+        covered = []
+
+        async def _cover(text, hard=False, echo_you=False):
+            covered.append(text)
+        app._work = _cover
+        await app._talk("how many Georgian lari is 434 euros")
+        await app._front_task
+        await settle()
+        check("the REST voice silent too -> Claude covers the turn, never silence",
+              covered == ["how many Georgian lari is 434 euros"], (covered, app.tts.spoken))
+
+        acts = FakeTalker(lambda tx: ([], []))
+        app = make_app(acts)
+        app.live = FakeLive(lambda tx: ([], [("do_now", {"command": "mute"})]))
+        did = []
+
+        async def _do2(cmd, his=""):
+            did.append(cmd)
+        app._voice_do = _do2
+        await app._talk("mute")
+        await app._front_task
+        await settle()
+        check("a silent turn that DID something is not run twice",
+              did == ["mute"] and not acts.seen, (did, acts.seen))
+    finally:
+        g.voice_hands.execute = real_exec
+    check("silent_turn: look-only hands may be asked again",
+          g.silent_turn("user", [], ["web_search"]) and not g.silent_turn("user", ["Sir."], [])
+          and not g.silent_turn("user", [], ["phone"]) and not g.silent_turn("event", [], [])
+          and not g.silent_turn("user", [], [], probe=True))
+    check("'სირ' in an English reply becomes 'Sir'",
+          g.sir_first("სირ, with the euro at about 2.92 lari") == "Sir, with the euro at about 2.92 lari"
+          and g.sir_first("ბატონო, კარგი").startswith("ბატონო"),
+          g.sir_first("სირ, with the euro at about 2.92 lari"))
+
     # ---- 20. soft voice filter (lock off) -----------------------------------
     import voice_id
     app = make_app(FakeTalker(lambda tx: (["Sir."], [])))
