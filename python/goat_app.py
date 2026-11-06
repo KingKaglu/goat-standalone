@@ -4089,8 +4089,9 @@ class GoatApp:
         line = task_router.handoff_line(lang, self._handoff_n)
         self._front_cancel()
         job = task_router.job_text(r, text)
-        print(f"[voice→claude] routed deep: {job[:100]!r}", flush=True)
-        asyncio.create_task(self._give_worker(job, "deep", his=text))
+        depth = "quick" if r.get("depth") == "quick" else "deep"   # audit R2
+        print(f"[voice→claude] routed {depth}: {job[:100]!r}", flush=True)
+        asyncio.create_task(self._give_worker(job, depth, his=text))
         self.emit("voice_note", self._voice_label())
         self._say_now(line)
         # The voice model didn't take this turn; give it the exchange so

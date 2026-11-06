@@ -144,8 +144,21 @@ _THING_RE = re.compile(
     r"excel|word|csv|json|mp[34]|wav|png|jpe?g|gif|zip|text\s+file|"
     r"page|website|site|email|emails|messages?)\b", re.IGNORECASE)
 
+# He's calling it off or doing it himself (audit R1, 2026-11-06: "No, forget
+# it. I'm going to make it by terminal clock. Thank you" became a deep Opus
+# job because it said "terminal"). Chat — unless real work follows the
+# dismissal ("forget it, delete the old downloads instead" is still a job).
+_DISMISS_RE = re.compile(
+    r"^\W*(?:(?:no|nah|nope|ok(?:ay)?|alright|fine|actually|wait)\W+)*"
+    r"(?:forget\s+(?:it|that|about\s+(?:it|that))|never\s*mind|nevermind|"
+    r"no\s+(?:thanks|thank\s+you|need)|thanks|thank\s+you|cancel\s+that|"
+    r"leave\s+it|don'?t\s+(?:bother|worry(?:\s+about\s+it)?)|"
+    r"i'?(?:ll|\s+will|'?m\s+going\s+to|\s+am\s+going\s+to)\s+(?:do|make|handle|fix)\s+it)\b",
+    re.IGNORECASE)
+
 _FILLER_RE = re.compile(
     r"^\W*(?:(?:okay|ok|hey|now|please|so|and|alright|goat|yes|yeah|then|just|also|"
+    r"thanks|thank\s+you|"
     r"uh|um|hmm|well|actually|can\s+you|could\s+you|would\s+you|will\s+you)\W+)*",
     re.IGNORECASE)
 
@@ -162,7 +175,7 @@ def route(text: str, *, job_running: bool = False) -> dict:
     t0 = time.perf_counter()
     t = " ".join((text or "").split())
     out = {"type": CHAT, "size": SMALL, "task_summary": "",
-           "needs_confirmation": False, "why": "talk"}
+           "needs_confirmation": False, "why": "talk", "depth": "quick"}
 
     def done(**kw):
         out.update(kw)
@@ -171,6 +184,8 @@ def route(text: str, *, job_running: bool = False) -> dict:
 
     if not t:
         return done(why="empty")
+    if _DISMISS_RE.match(t) and not _BIG_VERB_RE.search(t):
+        return done(why="calling it off")
     if job_running and _JOB_TALK_RE.search(t):
         return done(why="about the running job")
     if _TERMINAL_CLAUDE_RE.search(t):
@@ -201,7 +216,7 @@ def route(text: str, *, job_running: bool = False) -> dict:
     # Playing a game is Claude's (game tool + autopilot), never a media "play".
     if order and _GAME_RE.search(t) and not _MEDIA_RE.search(t):
         return done(type=TASK, size=BIG, task_summary=_summary(t),
-                    needs_confirmation=False, why="a game")
+                    needs_confirmation=False, why="a game", depth="deep")
     if bulk or multi or (order and (big_verb or machine or code)) or (
             question and his and (machine or bulk or code or trouble)):
         why = ("files in bulk" if bulk else "several steps" if multi
@@ -209,8 +224,14 @@ def route(text: str, *, job_running: bool = False) -> dict:
                else "the machine" if machine else "work")
         # Only a job Claude runs carries the confirm rule; the voice's own
         # email/phone hands have their own "Send it?" step.
+        # Depth (audit R2): every BIG job used to run at his full thinking
+        # dial. Code, diagnosis, several steps and anything brain_route calls
+        # deep stay deep; a single order ("schedule it for every day") is quick.
+        deep = (why in ("code", "a diagnosis", "several steps")
+                or brain_route.classify(t, False) == brain_route.DEEP)
         return done(type=TASK, size=BIG, task_summary=_summary(t),
-                    needs_confirmation=bool(_CONFIRM_RE.search(t)), why=why)
+                    needs_confirmation=bool(_CONFIRM_RE.search(t)), why=why,
+                    depth="deep" if deep else "quick")
     if order:
         return done(type=TASK, size=SMALL, task_summary=_summary(t),
                     why="one step" if _SMALL_HAND_RE.search(t) else "order")

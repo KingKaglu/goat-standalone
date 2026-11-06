@@ -127,5 +127,39 @@ class RouteTests(unittest.TestCase):
         self.assertLess(per, 5.0)
 
 
+class AuditRouterFixes(unittest.TestCase):
+    """2026-11-06 audit R1/R2, from the real log of 2026-11-04/05."""
+
+    def test_dismissals_stay_with_the_voice(self):
+        for s in ("No, forget it. I'm going to make it by terminal clock. Thank you",
+                  "never mind", "thanks", "thank you, that's all",
+                  "no thanks, I'll do it myself", "leave it", "don't bother"):
+            self.assertNotEqual(tr.route(s)["size"], tr.BIG, s)
+
+    def test_work_after_a_dismissal_is_still_work(self):
+        for s in ("forget it, delete the old downloads folder instead",
+                  "thank you, now commit and push the changes"):
+            self.assertEqual(tr.route(s)["size"], tr.BIG, s)
+
+    def test_single_orders_run_quick(self):
+        for s in ("Schedule it for every day",
+                  "clean up my downloads folder",
+                  "Send me the work hour spreadsheet email again. I told you, "
+                  "but you did not schedule it."):
+            r = tr.route(s)
+            self.assertEqual((r["size"], r["depth"]), (tr.BIG, "quick"), s)
+
+    def test_code_and_diagnosis_stay_deep(self):
+        for s in ("fix the build and run the tests",
+                  "refactor the phone server and add tests",
+                  "why is my laptop so slow"):
+            r = tr.route(s)
+            self.assertEqual((r["size"], r["depth"]), (tr.BIG, "deep"), s)
+
+    def test_every_result_has_a_depth(self):
+        for s in CHAT + SMALL + BIG:
+            self.assertIn(tr.route(s).get("depth"), ("quick", "deep"), s)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
