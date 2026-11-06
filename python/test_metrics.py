@@ -51,7 +51,10 @@ def main() -> int:
         {"t": t + 30, "kind": "barge", "what": "confirmed interrupt"},
         {"t": t + 31, "kind": "drop", "reason": "cut-in-echo"},
         {"t": t + 40, "kind": "barge", "what": "echo, not you"},
-        # split candidate: 1.2 s gap, not merged
+        # not a split: 1.2 s after a clip that never became a turn
+        {"t": t + 45, "kind": "heard", "gap": 1.2, "merged": False, "held": False},
+        # split: his previous turn was heard 2 s before, 1.2 s gap, not merged
+        {"t": t + 48, "kind": "heard", "gap": 9.0, "merged": False, "held": False},
         {"t": t + 50, "kind": "heard", "gap": 1.2, "merged": False, "held": False},
         # merged: not a split
         {"t": t + 60, "kind": "heard", "gap": 0.8, "merged": True, "held": False},

@@ -241,6 +241,8 @@ NEW_CHAT_RECAP = 4         # ...and across a New chat, as reference only
 # waits this long for the rest of the sentence before it becomes a turn.
 DANGLING_RE = re.compile(r"(?:\w-|[–—]|\.\.\.|…)\s*$")
 HOLD_DANGLING_S = 1.6
+CAPPED_HANG_MS = 150   # an utterance that ended with less quiet than this hit the length cap
+HOLD_MORE_S = 4.0      # a held fragment waits up to this much longer while he's still talking
 # Merge window (2026-10-17, his order): a new utterance that starts within this
 # long of the previous one ending, while the brain is still on the previous
 # one, is the same thought — the two are joined into ONE turn instead of the
@@ -2350,10 +2352,15 @@ class GoatApp:
             self._utt_echo = False
             print("[route] laptop mic heard the phone's voice — dropped")
             return
+        # Ended by the length cap, not by a pause (audit V4: a 55-word
+        # sentence was cut at 30 s with 32 ms of quiet, and its last 4 words
+        # became a turn of their own): the rest is coming, hold for it.
+        capped = getattr(self.audio, "last_hangover_ms", 1e9) < CAPPED_HANG_MS
+        self._utt_ended_at = time.monotonic()
         if self.loop:
             self._route("laptop", mic=True)
             asyncio.run_coroutine_threadsafe(
-                self._handle_utterance(audio_np, rt, gap), self.loop)
+                self._handle_counted(audio_np, rt, gap, capped=capped), self.loop)
 
     def set_language(self, lang: str):
         """Live language switch from the UI (Qt thread — everything here is
@@ -2631,7 +2638,7 @@ class GoatApp:
             self.emit("status", "speech recognition recovered")
 
     async def _handle_utterance(self, audio_np: np.ndarray, rt=None, gap=None,
-                                source: str = "laptop"):
+                                source: str = "laptop", capped: bool = False):
         vid = getattr(self, "vid", None)
         if vid is not None and vid.enrolling(source):
             await self._enroll_turn(audio_np, rt, source)
@@ -2660,7 +2667,7 @@ class GoatApp:
                 self._set_turn_lang(heard if heard in ("en", "ka")
                                     else self.turn_lang)
                 self._report_stt_state()
-                await self._heard(text, gap, vcheck, source)
+                await self._heard(text, gap, vcheck, source, capped=capped)
                 return
             # The 2026-09-23 first turn fell to the batch ear (1812ms) and the
             # log could not say why — the reason only ever reached the status
@@ -2736,7 +2743,7 @@ class GoatApp:
             text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
             self._set_turn_lang("en")
         self._lat_heard("batch")
-        await self._heard(text, gap, vcheck, source)
+        await self._heard(text, gap, vcheck, source, capped=capped)
 
     # Quiet-mic guard (2026-09-15 night, his report: "GOAT cannot hear me in
     # Georgian"). His capture endpoint had been knocked down to 66% and his
@@ -2921,7 +2928,7 @@ class GoatApp:
                                 f"{voice_id.ENROLL_SPEECH_S:.0f} seconds")
 
     async def _heard(self, text: str | None, gap: float | None = None,
-                     vcheck=None, source: str = "laptop"):
+                     vcheck=None, source: str = "laptop", capped: bool = False):
         """Everything that happens to a transcript once an ear produces one.
 
         Shared by BOTH ears on purpose: when the streaming ear was bolted on
@@ -3080,7 +3087,7 @@ class GoatApp:
                       f"{prev[0]!r} + {text!r}")
                 text = prev[0].rstrip(" -–—.…") + " " + text
                 merged = True
-        dangling = bool(DANGLING_RE.search(text)) and not answering
+        dangling = (bool(DANGLING_RE.search(text)) or capped) and not answering
         metrics.emit("heard", gap=round(gap, 2) if gap is not None else None,
                      merged=merged, held=held is not None or dangling,
                      answering=bool(answering), words=len(text.split()),
@@ -3094,11 +3101,32 @@ class GoatApp:
             return
         await self._talk(text)
 
+    def _more_coming(self) -> bool:
+        """He is still talking, or his last words are still in the ear."""
+        return (getattr(self, "_utt_live", False)
+                or getattr(self, "_ears_open", 0) > 0
+                or time.monotonic() - getattr(self, "_utt_ended_at", 0.0) < 0.3)
+
     async def _release_held(self, text: str):
         await asyncio.sleep(HOLD_DANGLING_S)
+        # audit V4: the rest of a cut sentence arrived 2 s later (still being
+        # said, then transcribed) and missed the fixed 1.6 s hold. Keep
+        # waiting while more of him is on its way, up to HOLD_MORE_S.
+        until = time.monotonic() + HOLD_MORE_S
+        while (getattr(self, "_held", None) == text and self._more_coming()
+               and time.monotonic() < until):
+            await asyncio.sleep(0.1)
         if getattr(self, "_held", None) == text:   # nothing came after it
             self._held = None
             await self._talk(text)
+
+    async def _handle_counted(self, *a, **k):
+        """_handle_utterance, counted, so a held fragment knows to wait."""
+        self._ears_open = getattr(self, "_ears_open", 0) + 1
+        try:
+            await self._handle_utterance(*a, **k)
+        finally:
+            self._ears_open -= 1
 
     async def _talk(self, text: str, echo: bool = True):
         """TALKING brain (middle lane): Gemini Flash out loud, zero Claude

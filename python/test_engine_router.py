@@ -996,6 +996,41 @@ async def main():
     await a._heard("Close the e-mail.")
     check("dangling: a hyphen inside a word is not a cut-off",
           talked == ["Close the e-mail."], talked)
+
+    # Cut by the 30 s length cap (audit V4, 2026-11-06 03:10: 55 words, then
+    # its last 4 as a turn of their own): held, and the hold keeps waiting
+    # while the rest is still being said or transcribed.
+    talked.clear()
+    old_more = g.HOLD_MORE_S
+    g.HOLD_MORE_S = 2.0
+    a._utt_live, a._ears_open, a._utt_ended_at = False, 0, 0.0
+    await a._heard("so the plan for the shop is we open at nine and then", capped=True)
+    check("capped: a sentence cut by the length cap is held", talked == [], talked)
+    a._utt_live = True
+    await asyncio.sleep(0.4)
+    check("capped: still held while he keeps talking past the usual hold",
+          talked == [], talked)
+    a._utt_live, a._ears_open = False, 1
+    await asyncio.sleep(0.3)
+    check("capped: still held while his last words are in the ear", talked == [], talked)
+    a._ears_open = 0
+    await a._heard("close on Sundays.")
+    check("capped: the rest joins it into one turn",
+          talked == ["so the plan for the shop is we open at nine and then "
+                     "close on Sundays."], talked)
+    await asyncio.sleep(0.4)
+    check("capped: answered once", len(talked) == 1, talked)
+    talked.clear()
+    g.HOLD_MORE_S = 0.3
+    a._utt_live = True
+    await a._heard("a fragment", capped=True)
+    await asyncio.sleep(0.8)
+    check("capped: the extra wait is bounded", talked == ["a fragment"], talked)
+    a._utt_live = False
+    talked.clear()
+    await a._heard("Open Spotify.")
+    check("an uncapped finished sentence is not held", talked == ["Open Spotify."], talked)
+    g.HOLD_MORE_S = old_more
     g.HOLD_DANGLING_S = old_hold
 
     # Merge window (2026-10-17): a fragment starting <=1.5s after the last

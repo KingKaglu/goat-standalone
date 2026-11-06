@@ -47,6 +47,7 @@ def emit(kind: str, **fields) -> None:
 
 BARGE_WINDOW_S = 4.0   # a confirmed barge with no turn of his inside this = false
 SPLIT_GAP_S = 3.0      # his next turn this soon, not merged = a split candidate
+SPLIT_PREV_S = 8.0     # ...and his previous turn was heard at most this long before
 
 
 def _pct(xs: list, p: float):
@@ -116,9 +117,18 @@ def summarize(events: list) -> dict:
     s["barge"] = {"confirmed": len(confirmed), "false": false_b,
                   "echo_ducks": sum(1 for e in ev if e["kind"] == "barge"
                                     and str(e.get("what", "")).startswith("echo, not you"))}
-    s["splits"] = sum(1 for h in heard
-                      if h.get("gap") is not None and h["gap"] <= SPLIT_GAP_S
-                      and not h.get("merged") and not h.get("held"))
+    # A split = his turn starting soon after his previous HEARD turn, not
+    # merged into it. The gap alone counts any earlier clip, even one that
+    # was dropped as noise, so the previous turn must really exist.
+    splits = 0
+    for i, h in enumerate(heard):
+        g = h.get("gap")
+        if g is None or g > SPLIT_GAP_S or h.get("merged") or h.get("held") or i == 0:
+            continue
+        prev = heard[i - 1]
+        if h["t"] - prev["t"] <= g + SPLIT_PREV_S and not prev.get("held"):
+            splits += 1
+    s["splits"] = splits
     s["merged"] = sum(1 for h in heard if h.get("merged"))
     s["drops"] = len(drops)
     return s
