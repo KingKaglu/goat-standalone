@@ -4,6 +4,9 @@ harmless (2026-11-06 audit S3).
 
   py -3.13 phone_qr.py [--open]          QR: download the bubble app (/goat.apk)
   py -3.13 phone_qr.py login [--open]    QR: log the phone's browser in
+  py -3.13 phone_qr.py pair              a code for the bubble app: type it into the
+                                         app's token field and Save; the app then has
+                                         its own login (ended by logout-all too)
   py -3.13 phone_qr.py sessions          list browser logins
   py -3.13 phone_qr.py logout-all        end every browser login now
                                          (the bubble app keeps working: it uses
@@ -46,6 +49,11 @@ def main(argv: list) -> int:
         _qr(f"{_base()}/goat.apk?k={ps.make_pair_code()}", "apk-qr2.png", open_it)
     elif cmd == "login":
         _qr(f"{_base()}/?k={ps.make_pair_code()}", "login-qr.png", open_it)
+    elif cmd == "pair":
+        code = ps.make_pair_code()
+        print(f"bubble app pairing code: {' '.join(code[i:i + 4] for i in range(0, 12, 4))}"
+              f"\n(type it without spaces into the app's token field, then Save; "
+              f"one use, {ps.PAIR_TTL_S // 60} minutes)")
     elif cmd == "sessions":
         rows = ps.Sessions(os.path.join(ps.DIR, "sessions.json")).rows()
         for e in rows:

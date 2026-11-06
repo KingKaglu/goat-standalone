@@ -102,9 +102,13 @@ Mark home Wi-Fi Private · GOAT rule → `-Profile Private` · disable (not dele
 Public inbound allow rules. Reversible with `Enable-NetFirewallRule`.
 
 ### 3. Auth hardening
-1. **Bubble app → pairing + sessions.** The app still sends the master token. Next APK: on first
-   run it opens `/?k=<pairing code>` (from the QR), keeps the session cookie, and sends that from
-   BgMic/GoatAccess; the master token then never leaves the laptop and can be rotated freely.
+1. **Bubble app → pairing + sessions — BUILT 2026-11-06, not yet installed.** `phone_qr.py pair`
+   prints a one-time code; typed into the app's token field + Save, the app trades it for its own
+   session and sends that (BgMic, GoatAccess, panel cookie) instead of the master token. No session =
+   the old token way, so the update can't lock the app out. Two builds in
+   `workspace/goat-bubble/out/`: `goat-bubble.apk` (token kept as fallback; what `/goat.apk` serves)
+   and `goat-bubble-paironly.apk` (no token inside — pairing required). Server side verified live;
+   the phone side only compiled (javac + apksigner), not run on the phone.
 2. **`phone_qr.py rotate`**: new master token, retire the old hash, rebuild the APK, end sessions —
    one command for "I think someone saw it".
 3. **Session list in the Control tab** with "end this one" (the store already keeps `via` + last use).

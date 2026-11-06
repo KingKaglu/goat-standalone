@@ -77,7 +77,7 @@ Audited as GOAT actually runs: **two brains on** (Gemini Live voice, then REST G
 | ID | Status | Commit / note |
 |---|---|---|
 | S1, S2, S9 | Fixed | `620a0e8`: 26-char token (old one retired by hash), one per-address limiter on every token check |
-| S3 | Fixed (browsers) | `248f3a5`: hashed server-side sessions, 30 days idle, `logout-all`; one-time pairing codes in QR/links. The bubble app still uses the master token (its config secret). |
+| S3 | Fixed (browsers); app built | `248f3a5`: hashed server-side sessions, 30 days idle, `logout-all`; one-time pairing codes in QR/links. Bubble app: pairing build ready (`phone_qr.py pair`, see PLAN roadmap 3.1); until he installs it and pairs, the app uses the master token. |
 | S4 | Fixed (app layer) | `306073e`: LAN only via Private or trusted networks. Firewall NOT changed (needs admin): see S12. |
 | S5, S6, S7 | Fixed | `fdae7ee`: no shell for model text, `secret_paths`, launchable types refused |
 | S8 | Fixed | `b6f7309`: worker tool hook, his one-shot yes for private files |
