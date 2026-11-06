@@ -68,8 +68,7 @@ DEFAULT = [
 QT = ["test_bubble", "test_presence", "test_palette", "test_scroll",
       "test_statusword", "test_message_pop", "test_home_desk"]
 SLOW = ["test_dsp"]            # ~230 s of filter maths
-# Moves GOAT's own live window (stand_aside / hide_self). Its
-# "stand_aside drops always-on-top" check already fails on 248740c (AUDIT B6).
+# Moves GOAT's own live window (stand_aside / hide_self), so opt-in.
 LIVE = ["test_screen"]
 TIMEOUT_S = 240
 

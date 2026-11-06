@@ -21,8 +21,8 @@ working on GOAT's code. Background: `README.md`, `STATE.md` (dev journal), `AUDI
   Spawn it detached (`Start-Process powershell ... -File python\restart-goat.ps1`).
 - Always `py -3.13` (bare `python` is 3.12 and lacks the deps).
 - Tests: `cd python; py -3.13 run_tests.py` — ~40 offline suites, ~2.5 min, no audio/network/API.
-  `--qt` window tests, `--slow` test_dsp, `--live` test_screen (moves GOAT's live window; its
-  "stand_aside" check already fails on 248740c — AUDIT B6). Never run `test_voice_e2e`,
+  `--qt` window tests, `--slow` test_dsp, `--live` test_screen (moves GOAT's live window).
+  Never run `test_voice_e2e`,
   `test_voice_knowledge`, `test_audio_stall`, `test_aec`, `probe_*` casually: real mic/speaker/APIs.
 - Metrics: `GOAT_METRICS=on` (set for his user since 2026-11-06) → `python/metrics.jsonl`;
   `py -3.13 metrics.py summary` = time to first word, endpoint/ear/voice split, ear job time,

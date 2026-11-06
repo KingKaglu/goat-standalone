@@ -277,8 +277,8 @@ def load_token() -> str:
         retired.add(_sha(old))
         with open(os.path.join(DIR, "retired.json"), "w", encoding="utf-8") as f:
             json.dump(sorted(retired)[-20:], f)
-        print("[phone] login token was too short: replaced. New login: "
-              ".phone/url.txt (or the QR from phone_qr.py)", flush=True)
+        print("[phone] login token was too short: replaced. Log the phone in "
+              "with: py -3.13 python\\phone_qr.py login --open", flush=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(t)
     return t
@@ -926,7 +926,9 @@ class PhoneServer:
     def _write_urls(self):
         try:
             with open(os.path.join(DIR, "url.txt"), "w", encoding="utf-8") as f:
-                f.write("\n".join(self.urls) + f"\ntoken: {self.token}\n")
+                # No second copy of the token (audit S10): it lives in token.txt
+                # only; phones log in with a one-time code (phone_qr.py login).
+                f.write("\n".join(self.urls) + "\nlogin: py -3.13 python\\phone_qr.py login --open\n")
         except OSError:
             pass
 

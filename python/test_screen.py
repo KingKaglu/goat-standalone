@@ -131,9 +131,16 @@ def test_self_window() -> None:
         check("topmost state reads back",
               isinstance(screen_hands.is_topmost(w["hwnd"]), bool))
         before = screen_hands.is_topmost(w["hwnd"])
+        main, _floats = screen_hands._own_windows(w["pid"])
         aside = screen_hands.stand_aside(minimize=False)
-        check("stand_aside drops always-on-top",
-              aside["aside"] and not screen_hands.is_topmost(w["hwnd"]))
+        if main:
+            check("stand_aside drops always-on-top",
+                  aside["aside"] and not screen_hands.is_topmost(main["hwnd"]))
+        else:
+            # Collapsed to the dot (audit B6: this check failed whenever GOAT
+            # was collapsed): the dot is hidden outright, by design.
+            check("stand_aside hides the collapsed dot",
+                  aside["aside"] and not screen_hands._user32.IsWindowVisible(w["hwnd"]))
         back = screen_hands.step_back_in()
         check("step_back_in restores the on-top state exactly",
               back["restored"] and screen_hands.is_topmost(w["hwnd"]) == before)

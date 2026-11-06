@@ -81,13 +81,13 @@ Audited as GOAT actually runs: **two brains on** (Gemini Live voice, then REST G
 | S4 | Fixed (app layer) | `306073e`: LAN only via Private or trusted networks. Firewall NOT changed (needs admin): see S12. |
 | S5, S6, S7 | Fixed | `fdae7ee`: no shell for model text, `secret_paths`, launchable types refused |
 | S8 | Fixed | `b6f7309`: worker tool hook, his one-shot yes for private files |
-| S10 | Open, by choice | `.phone/url.txt` keeps the token line (convenience for the app's settings) |
+| S10 | Fixed | `.phone/url.txt` no longer repeats the token; it says how to log a phone in |
 | S12 (new) | Fixed (his yes, one admin run) | Windows had an *allow all inbound* rule for `python.exe` on **Public** networks (Python's first run) and the GOAT rule was profile Any. Done: home Wi-Fi marked Private, GOAT rule → Private, the two python.exe Public rules disabled (not deleted; undo `Enable-NetFirewallRule`). `phone_server.ensure_firewall` and `setup.ps1` now create the rule Private-only. |
 | V3 / Phase 5 | His choice: A | Confirmed by him after the fact: keep option A (filler after 2.5 s, everything else as he ordered). |
 | B1 | Fixed | `2b89fa3`: `_connect_engine` retries forever, boot without engine, no crash-loop raise |
 | B2, B3, B5 | Fixed | `087f590` (B2 reproduced on the old code: 1600 stale samples queued after cancel) |
 | B4 | Open (low) | Live repeat-failure note not added |
-| B6 (new) | Open | `test_screen` "stand_aside drops always-on-top" fails on 248740c |
+| B6 (new) | Fixed (test bug) | The check looked at the collapsed dot's on-top flag; collapsed, `stand_aside` hides the dot by design. The test now checks the main window when there is one, the dot's visibility otherwise. 65/65 pass. |
 | V1 | Fixed, **root cause corrected** | The endpoint wait wasn't the cost by itself; the ear's job was. Every laptop job asked Whisper to detect the language first: 1310 ms vs 495 ms pinned, on his clips. That kept the job pending past 500 ms → the 1.2 s wait (56/69 endpoints "local-pending"). `cc517c5`: sticky English. |
 | V2 | Measured | Ear job split now logged (`ear` event) |
 | V3 | Option A done | `8dafdb1`: filler after 2.5 s (was 1.5). B/C not applied (they override his standing orders). |
