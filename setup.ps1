@@ -106,7 +106,10 @@ elseif ($CheckOnly -or -not $admin) {
     Row 'Firewall: GOAT phone 8797' MISSING 'needs admin: re-run this script as administrator'
     $todo.Add('Run setup.ps1 once as administrator (phone firewall rule)')
 } else {
-    New-NetFirewallRule -DisplayName 'GOAT phone 8797' -Direction Inbound -Protocol TCP -LocalPort 8797 -Action Allow -Profile Any | Out-Null
+    # Private networks only, home ranges + Tailscale (2026-11-06 audit S12).
+    # Also mark the home Wi-Fi Private in Windows (Settings > Wi-Fi > the network).
+    New-NetFirewallRule -DisplayName 'GOAT phone 8797' -Direction Inbound -Protocol TCP -LocalPort 8797 -Action Allow -Profile Private `
+        -RemoteAddress 192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10 | Out-Null
     Row 'Firewall: GOAT phone 8797' FIXED
 }
 

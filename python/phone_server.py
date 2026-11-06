@@ -536,7 +536,8 @@ def ensure_firewall(port: int):
         if ok:
             return
         cmd = (f"New-NetFirewallRule -DisplayName '{FW_RULE}' -Direction Inbound "
-               f"-Protocol TCP -LocalPort {port} -Action Allow -Profile Any "
+               # Private only (2026-11-06 audit S12): never on public Wi-Fi
+               f"-Protocol TCP -LocalPort {port} -Action Allow -Profile Private "
                "-RemoteAddress 192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10")
         subprocess.run(["powershell", "-NoProfile", "-Command",
                         f"Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait "

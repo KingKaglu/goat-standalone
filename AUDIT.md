@@ -82,7 +82,8 @@ Audited as GOAT actually runs: **two brains on** (Gemini Live voice, then REST G
 | S5, S6, S7 | Fixed | `fdae7ee`: no shell for model text, `secret_paths`, launchable types refused |
 | S8 | Fixed | `b6f7309`: worker tool hook, his one-shot yes for private files |
 | S10 | Open, by choice | `.phone/url.txt` keeps the token line (convenience for the app's settings) |
-| S12 (new) | **Open, needs admin** | Windows has an *allow all inbound* rule for `python.exe` on **Public** networks (from Python's first run), and the GOAT rule is profile Any. Fix: mark home Wi-Fi Private, GOAT rule → Private, disable the two python.exe Public rules. |
+| S12 (new) | Fixed (his yes, one admin run) | Windows had an *allow all inbound* rule for `python.exe` on **Public** networks (Python's first run) and the GOAT rule was profile Any. Done: home Wi-Fi marked Private, GOAT rule → Private, the two python.exe Public rules disabled (not deleted; undo `Enable-NetFirewallRule`). `phone_server.ensure_firewall` and `setup.ps1` now create the rule Private-only. |
+| V3 / Phase 5 | His choice: A | Confirmed by him after the fact: keep option A (filler after 2.5 s, everything else as he ordered). |
 | B1 | Fixed | `2b89fa3`: `_connect_engine` retries forever, boot without engine, no crash-loop raise |
 | B2, B3, B5 | Fixed | `087f590` (B2 reproduced on the old code: 1600 stale samples queued after cancel) |
 | B4 | Open (low) | Live repeat-failure note not added |
