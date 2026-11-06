@@ -86,6 +86,42 @@ as the one that overrides none of his standing orders; B and C remain his call.
 Live after-numbers: `py -3.13 python\metrics.py summary` after a normal session (events before
 t=1793934582 are the baseline, also copied to `python/metrics-baseline-20261106.jsonl`).
 
+## Roadmap (after this audit)
+
+### 1. Tailscale-only phone access (closes the LAN for good)
+1. Confirm the bubble app connects over Tailscale on Wi-Fi *and* mobile data (`Cfg.routes()` already
+   races the ts.net name and the raw 100.x IP).
+2. Turn on Tailscale's "HTTPS Certificates" (admin > DNS) if not already: the server picks up the
+   real cert by itself (`_ts_loop`), so Chrome installs the page as an app.
+3. Set `GOAT_PHONE_LAN=off` (user env). LAN requests get 403; Tailscale and loopback keep working.
+4. Optional: a Tailscale ACL that lets only his phone's node reach `tag:goat:8797`.
+5. Then the firewall rule can be narrowed to `RemoteAddress 100.64.0.0/10` only.
+
+### 2. Firewall (S12, needs one admin run)
+Mark home Wi-Fi Private · GOAT rule → `-Profile Private` · disable (not delete) the two `python.exe`
+Public inbound allow rules. Reversible with `Enable-NetFirewallRule`.
+
+### 3. Auth hardening
+1. **Bubble app → pairing + sessions.** The app still sends the master token. Next APK: on first
+   run it opens `/?k=<pairing code>` (from the QR), keeps the session cookie, and sends that from
+   BgMic/GoatAccess; the master token then never leaves the laptop and can be rotated freely.
+2. **`phone_qr.py rotate`**: new master token, retire the old hash, rebuild the APK, end sessions —
+   one command for "I think someone saw it".
+3. **Session list in the Control tab** with "end this one" (the store already keeps `via` + last use).
+4. **Cert pinning** stays in the APK (it pins `cert.pem`); rotate with the APK when the LAN cert renews.
+5. **Push** (`/push/sub`): already behind auth; cap at 5 subscriptions (done) — no change needed.
+
+### 4. Voice (needs his live sessions)
+1. Read `metrics.py summary` after a normal day: TTFW, false barge-ins, splits, filler rate.
+2. If fillers still fire often: the voice stage (Gemini Live first audio ~0.6-1.2 s) is the next
+   cost; consider prewarming Live on utterance start (already done) + shorter notes per turn (T2).
+3. Phase 5 options B/C if he wants them.
+
+### 5. Clean code (only with his OK)
+Extract `TtsPipeline` → `tts_pipeline.py`, then the phone glue, then the front turn; move the 87
+lazy `getattr(self, ...)` defaults into `__init__` as each part is touched. Replace the private SDK
+call in `_pull_plan_usage` (Q8) once the SDK exposes usage publicly.
+
 ## Decisions I need from you
 1. **Phone reach (Batch 3):** does your phone reach GOAT over **Tailscale**, or over home Wi-Fi by IP? (Tailscale-only is safest; LAN stays available as an opt-in.)
 2. **Restarts:** may I restart GOAT myself (`restart-goat.ps1`) after each batch to verify it live, or will you restart it?
