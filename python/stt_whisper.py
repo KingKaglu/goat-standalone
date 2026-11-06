@@ -290,6 +290,34 @@ NOISY_EN_MAX = 0.35     # below this, not detected English: ask the Live ear
 EN_KA_CLOUD = os.environ.get("GOAT_STT_EN_KA_CLOUD", "on").strip().lower() \
     in ("on", "1", "true", "yes")
 
+# Sticky English (2026-11-06 audit V1/V2). The language check above is a
+# second encoder pass: on his own clips, on this GPU, the "auto" request took
+# 1310 ms where the same clip pinned to English took 495 ms. Every laptop turn
+# paid it, and the 800 ms extra kept the ear's job pending past the 500 ms
+# end-of-turn mark, so EVERY turn waited the long 1.2 s (56 of 69 endpoints
+# that night ended on "local-pending"). Once a turn comes back confidently
+# English, the laptop's streaming ear pins English for STICKY_S; every
+# STICKY_RECHECK-th utterance still runs the full check, and Georgian lately
+# (KA_WARM_S) turns it off. The phone and batch ears always check.
+# GOAT_STT_EN_STICKY=off = check every turn, as before.
+EN_STICKY = os.environ.get("GOAT_STT_EN_STICKY", "on").strip().lower() \
+    in ("on", "1", "true", "yes")
+STICKY_S = 120.0
+STICKY_P_EN = 0.9
+STICKY_RECHECK = 4
+_en_sure_until = 0.0
+_sticky_n = 0
+
+
+def sticky_en() -> bool:
+    """May THIS utterance skip the language check? (one call per utterance)"""
+    global _sticky_n
+    now = time.monotonic()
+    if not EN_STICKY or now >= _en_sure_until or now - _ka_at < KA_WARM_S:
+        return False
+    _sticky_n += 1
+    return _sticky_n % STICKY_RECHECK != 0
+
 
 # Speech nearby in a language he doesn't use with GOAT (2026-10-25, Essen:
 # the phone heard the Germans around him, and the English-pinned ear turned
@@ -313,14 +341,18 @@ def _foreign(got: dict) -> str | None:
 
 
 def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
-                    force: str | None = None, cloud: bool = True):
+                    force: str | None = None, cloud: bool = True,
+                    fast: bool = False):
     """GPU ear, any language: (text, "en"|"ka"|other) — text '' for silence,
     None when the server is broken. force pins the language ("en"/"ka");
     None lets Whisper detect it (bilingual mode). Speech in a FOREIGN
     language comes back as ("", code): someone near him, not him.
     cloud=False (the stream's partials): a clip that may be his Georgian is
     NOT sent to the Georgian ear; it comes back pinned English with "ka?"
-    (or "ka?script", the noisy band) for the caller to settle once."""
+    (or "ka?script", the noisy band) for the caller to settle once.
+    fast=True (sticky_en said so): English pinned, no language check."""
+    if force == "en" and fast:
+        return _pinned(audio, sample_rate, "en")
     if force == "en":
         # Listen first, pin second: one request when it IS English (most
         # turns), a second pinned one only when Whisper guessed otherwise.
@@ -333,10 +365,13 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
             print(f"[stt] {code} speech nearby, not him: "
                   f"{(got.get('text') or '').strip()[:80]!a}", flush=True)
             return "", code
+        p_en = float((got.get("language_probabilities") or {}).get("en", 0.0) or 0.0)
         if str(got.get("detected_language") or "").lower() == "english":
+            if p_en >= STICKY_P_EN and (got.get("text") or "").strip():
+                global _en_sure_until
+                _en_sure_until = time.monotonic() + STICKY_S
             return clean_transcript(got.get("text", ""),
                                     time.monotonic() < _chatting_until), "en"
-        p_en = float((got.get("language_probabilities") or {}).get("en", 0.0) or 0.0)
         # Below EN_PROB_MIN: not English at all — his Georgian (2026-10-25
         # evening: pinned to English it came out as nonsense; Whisper scores
         # it 0.05-0.07 English). Up to NOISY_EN_MAX: not called English, but
@@ -519,6 +554,7 @@ class Stream:
         self.t_commit_sent = 0.0
         self.heard = lang             # the language the newest partial was in
         self._maybe_ka: dict = {}     # n_chunks -> "ka?" / "ka?script" / None
+        self.fast = lang == "en" and sticky_en()   # pinned English this utterance
         if EN_KA_CLOUD and time.monotonic() - _ka_at < KA_WARM_S:
             # he's talking Georgian lately: have the Live ear's session
             # dialled while he speaks (saves ~1.4 s, measured 3.2 -> 1.75 s)
@@ -578,7 +614,8 @@ class Stream:
             # after another on this single worker, and the final transcript
             # came after "no answer in 8s" + a batch redo: 9.3 s of ear
             # (2026-10-26 04:20). result() asks the Georgian ear ONCE.
-            text, heard = transcribe_lang(audio, 16000, self.lang, cloud=False)
+            text, heard = transcribe_lang(audio, 16000, self.lang, cloud=False,
+                                          fast=self.fast)
         except Exception as e:  # noqa: BLE001 — the batch ear still has the audio
             self.error = f"{type(e).__name__}: {e}"
             return None
@@ -618,7 +655,13 @@ class Stream:
                 text = ka
                 self.heard = "ka"
         ms = (time.monotonic() - self.t_commit_sent) * 1000
-        print(f"[stt-local] heard {ms:.0f}ms after his pause: {text[:60]!a}")
+        print(f"[stt-local] heard {ms:.0f}ms after his pause"
+              f"{' (sticky en)' if self.fast else ''}: {text[:60]!a}")
+        try:
+            import metrics
+            metrics.emit("ear", ms=round(ms), mode="pinned" if self.fast else "auto")
+        except Exception:  # noqa: BLE001
+            pass
         return text
 
     def why(self) -> str:

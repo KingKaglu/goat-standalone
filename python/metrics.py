@@ -11,6 +11,7 @@ Events (all carry "t" = unix time):
   drop         reason        a clip that never became a turn
   barge        what          possible / confirmed / echo, not you / ...
   claude_usage model, input, cache_read, cache_create, output
+  ear          ms, mode      laptop ear: pause -> transcript; pinned / auto
 
   py -3.13 metrics.py summary [file]   -> the numbers PLAN.md tracks
 """
@@ -78,6 +79,9 @@ def summarize(events: list) -> dict:
     for key in ("total", "endpoint", "ear", "voice"):
         xs = [float(e[key]) for e in lat if isinstance(e.get(key), (int, float)) and e[key] >= 0]
         s[key] = {"p50": _pct(xs, 0.5), "p90": _pct(xs, 0.9), "n": len(xs)}
+    for mode in ("pinned", "auto"):     # the ear's own job time (stt_whisper)
+        xs = [float(e["ms"]) for e in ev if e["kind"] == "ear" and e.get("mode") == mode]
+        s[f"ear_job_{mode}"] = {"p50": _pct(xs, 0.5), "p90": _pct(xs, 0.9), "n": len(xs)}
     ans = [float(e["ms"]) for e in ev if e["kind"] == "answer_audio"]
     s["ttfw"] = {"p50": _pct(ans, 0.5), "p90": _pct(ans, 0.9), "n": len(ans)}
     s["fillers"] = sum(1 for e in lat if (e.get("filler") or -1) >= 0)

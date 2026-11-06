@@ -44,6 +44,7 @@ DEFAULT = [
     "test_live_talk",
     "test_stt_live",
     "test_stt_local_stream",
+    "test_stt_sticky",
     "test_stt_outage_status",
     "test_stale_voice",
     "test_side_talk",
