@@ -1297,6 +1297,20 @@ def drop_cold_heavy_session():
     return 0
 
 
+def _loop_errors(loop, ctx):
+    """asyncio's last-resort handler (audit B3). Windows' proactor reports a
+    peer that hung up first (WinError 10054/10053) as a full traceback in
+    the log, though nothing is wrong; those become one line. Everything else
+    keeps asyncio's default report."""
+    exc = ctx.get("exception")
+    where = f"{ctx.get('message', '')} {ctx.get('handle', '')}"
+    if (isinstance(exc, (ConnectionResetError, ConnectionAbortedError))
+            and "_ProactorBasePipeTransport" in where):
+        print(f"[net] peer closed a connection first ({type(exc).__name__})", flush=True)
+        return
+    loop.default_exception_handler(ctx)
+
+
 def _default_emit(kind, data):
     if kind == "delta":
         print(data, end="", flush=True)
@@ -1643,7 +1657,15 @@ class TtsPipeline:
                     samples = np.zeros_like(samples)
                     left = max(0, self._queued_end - self.audio.played_samples)
                     self.muted_until = time.monotonic() + left / 16000 + 1.5
-                self.audio.queue_playback(samples)
+                # audit B2: a barge-in (cancel) between the gen check above
+                # and here already cleared the speaker, and this sentence
+                # would play after it. Same lock as cancel's gen bump: either
+                # cancel sees these samples queued and clears them, or this
+                # sees the new gen and drops them.
+                with self._lock:
+                    if gen != self.gen:
+                        continue
+                    self.audio.queue_playback(samples)
 
     def _tap(self, text: str, samples):
         cb = getattr(self, "on_sentence", None)
@@ -5260,7 +5282,7 @@ class GoatApp:
         request: no prompt, no tokens. Throttled to once a minute; never
         raises. Emits "plan" -> UI footer and writes .plan_usage.json."""
         now = time.monotonic()
-        if now - getattr(self, "_plan_at", -999) < 60:
+        if now - getattr(self, "_plan_at", -999) < 60 or getattr(self, "engine_down", False):
             return
         self._plan_at = now
         try:
@@ -5306,8 +5328,11 @@ class GoatApp:
                 json.dump(out, f)
             self.emit("plan", f"{round(a or 0)}|{round(b or 0)}|"
                               f"{out['five_hour_resets']}")
+        except asyncio.TimeoutError:
+            # audit B5: this used to log a bare "TimeoutError:" with no cause
+            print("[plan-usage] the engine didn't answer the usage request in 8 s")
         except Exception as e:  # noqa: BLE001
-            print(f"[plan-usage] {type(e).__name__}: {str(e)[:120]}")
+            print(f"[plan-usage] {type(e).__name__}: {str(e)[:120] or repr(e)}")
 
     async def _plan_watch(self) -> None:
         """Keep the plan meter live. It used to refresh only after a work
@@ -5638,6 +5663,7 @@ class GoatApp:
 
     async def run(self):
         self.loop = asyncio.get_running_loop()
+        self.loop.set_exception_handler(_loop_errors)
         asyncio.create_task(self._start_phone())
         # Away-time, read BEFORE this boot's init overwrites the session
         # file: its mtime is when the LAST session was live.

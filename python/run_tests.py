@@ -28,6 +28,7 @@ DEFAULT = [
     "test_metrics",
     "test_engine_router",
     "test_engine_reconnect",
+    "test_tts_cancel_race",
     "test_two_brains",
     "test_acceptance_handoff",
     "test_brain_route",
