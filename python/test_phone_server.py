@@ -3,6 +3,7 @@ Run: py -3.13 test_phone_server.py"""
 import asyncio
 import time
 import json
+import os
 import ssl
 import sys
 import tempfile
@@ -106,6 +107,11 @@ async def main():
     # nor the real .phone/url.txt: the APK build bakes its address from it
     # (2026-10-18: a test run left port 8798 + a fake ts name in there)
     ps.PhoneServer._write_urls = lambda self: None
+    # nor his real login token (2026-11-06: load_token now REPLACES a short
+    # token file, so a test reading the real one would rotate it)
+    real_load_token, srv_retired = ps.load_token, ps._retired
+    ps.load_token = lambda: "testtokentesttokentesttokn"
+    ps._retired = lambda: set()
     srv = ps.PhoneServer(app, port=PORT)
     urls = await srv.start()
     check("server up with LAN url", any("192.168." in u or "10." in u for u in urls))
@@ -308,6 +314,89 @@ async def main():
             check("service worker served as JS with a fetch handler",
                   "javascript" in r.headers.get("Content-Type", "")
                   and '"fetch"' in body)
+
+    # One rate limiter for every token check (2026-11-06 audit S2: ?k= and
+    # cookies were never limited).
+    srv._limit = ps.Limiter()
+    srv._retired = {ps._sha("oldword")}
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+        for _ in range(8):
+            async with s.get(base + "/ctl", ssl=sslc,
+                             headers={"Cookie": "goat_k=oldword"}) as r:
+                pass
+        check("replaced token refused but never counted as a guess",
+              r.status == 403 and not srv._limit.locked("127.0.0.1"))
+        for i in range(ps.Limiter.PER_IP):
+            async with s.get(base + f"/?k=guess{i}", ssl=sslc) as r:
+                pass
+        check("wrong ?k= links count", srv._limit.locked("127.0.0.1") > 0)
+        async with s.get(base + "/?k=" + srv.token, ssl=sslc,
+                         allow_redirects=False) as r:
+            check("locked address: even the right ?k= is refused", r.status == 429)
+        async with s.post(base + "/login", data={"k": srv.token}, ssl=sslc) as r:
+            check("locked address: login refused", r.status == 429)
+        async with s.get(base + "/goat.apk?k=" + srv.token, ssl=sslc) as r:
+            check("locked address: apk refused", r.status == 401)
+    srv._limit = ps.Limiter()
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+        for i in range(ps.Limiter.PER_IP):
+            async with s.get(base + "/ctl", ssl=sslc,
+                             headers={"Cookie": f"goat_k=guess{i}"}) as r:
+                pass
+        check("wrong cookies count", srv._limit.locked("127.0.0.1") > 0)
+    srv._limit = ps.Limiter()
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+        async with s.get(base + "/?k=" + srv.token, ssl=sslc,
+                         allow_redirects=False) as r:
+            check("right ?k= logs in", r.status == 303
+                  and "goat_k" in r.headers.get("Set-Cookie", ""))
+
+    # Limiter on its own, with a fake clock.
+    now = [1000.0]
+    lim = ps.Limiter(clock=lambda: now[0])
+    for _ in range(4):
+        lim.fail("a")
+    check("4 wrong: not locked", lim.locked("a") == 0)
+    lim.fail("a")
+    check("5 wrong: locked 60 s", 59 < lim.locked("a") <= 60)
+    check("other address unaffected", lim.locked("b") == 0)
+    now[0] += 61
+    for _ in range(5):
+        lim.fail("a")
+    check("second lock doubles", 119 < lim.locked("a") <= 120)
+    now[0] += 200
+    for _ in range(3):
+        lim.fail("a")
+    now[0] += 61                 # window passed: count starts over
+    lim.fail("a")
+    check("old fails forgotten after the window", lim.locked("a") == 0)
+    lim.ok("a")
+    check("right token clears the record", "a" not in lim._ip)
+
+    # load_token: short tokens are replaced, the old one kept only as a hash.
+    tdir = tempfile.mkdtemp()
+    old_dir, ps.DIR = ps.DIR, tdir
+    ps._retired = srv_retired
+    try:
+        with open(os.path.join(tdir, "token.txt"), "w", encoding="utf-8") as f:
+            f.write("short")
+        t = real_load_token()
+        check("short token replaced by a 26-char one",
+              len(t) == ps.TOKEN_LEN and set(t) <= set(ps._TOKEN_ABC))
+        with open(os.path.join(tdir, "token.txt"), encoding="utf-8") as f:
+            check("new token saved", f.read().strip() == t)
+        check("old token kept only as its hash",
+              ps._retired() == {ps._sha("short")}
+              and "short" not in open(os.path.join(tdir, "retired.json")).read())
+        check("a strong token is kept", real_load_token() == t)
+        with open(os.path.join(tdir, "token.txt"), "w", encoding="utf-8") as f:
+            f.write("my-own-long-pass-phrase-here")
+        check("his own long token is kept",
+              real_load_token() == "my-own-long-pass-phrase-here")
+        os.remove(os.path.join(tdir, "token.txt"))
+        check("missing token made", len(real_load_token()) == ps.TOKEN_LEN)
+    finally:
+        ps.DIR = old_dir
 
     # Real-cert address: SNI with the Tailscale name gets that certificate,
     # a bare IP keeps the self-signed one.

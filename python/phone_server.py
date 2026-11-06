@@ -29,6 +29,7 @@ import asyncio
 import base64
 import threading
 import datetime
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -76,6 +77,8 @@ _STOP_LEFT = _re.compile(
     r"\b(?:stop|wait|enough|hold on|shut up|be quiet|quiet|pause|cancel)\b|"
     r"\bno no\b|გაჩერდი|მოიცა|გაჩუმდი|კმარა|შეწყვიტე", _re.I)
 _TOKEN_ABC = "abcdefghjkmnpqrstuvwxyz23456789"   # no 0/o/1/l/i: typed on a phone
+TOKEN_LEN = 26     # 26 symbols of 31 = ~128 bits
+TOKEN_MIN = 20     # a token he writes into token.txt himself must be this long
 ROOT = os.path.dirname(HERE)
 SHOT = os.path.join(HERE, "live-shot.png")       # screen_tools.SHOT_PATH
 VITALS_S = 3.0
@@ -123,20 +126,97 @@ def local_ips() -> list:
     return out
 
 
+def _sha(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
 def load_token() -> str:
+    """The login token in .phone/token.txt, made if missing. A short one is
+    replaced (2026-11-06 audit S1: the token was a short word, and the word
+    was in a public commit). The replaced token is remembered by hash only,
+    so a phone still holding it is told to log in again instead of being
+    counted as a guesser and locked out."""
     path = os.path.join(DIR, "token.txt")
+    old = ""
     try:
         with open(path, encoding="utf-8") as f:
-            t = f.read().strip().lower()
-        if len(t) >= 4:    # he picks his own (2026-10-17: "kaglu")
-            return t
+            old = f.read().strip().lower()
+        if len(old) >= TOKEN_MIN:
+            return old
     except OSError:
         pass
-    t = "".join(secrets.choice(_TOKEN_ABC) for _ in range(10))
+    t = "".join(secrets.choice(_TOKEN_ABC) for _ in range(TOKEN_LEN))
     os.makedirs(DIR, exist_ok=True)
+    if old:
+        retired = _retired()
+        retired.add(_sha(old))
+        with open(os.path.join(DIR, "retired.json"), "w", encoding="utf-8") as f:
+            json.dump(sorted(retired)[-20:], f)
+        print("[phone] login token was too short: replaced. New login: "
+              ".phone/url.txt (or the QR from phone_qr.py)", flush=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(t)
     return t
+
+
+def _retired() -> set:
+    """Hashes of tokens that were replaced (see load_token)."""
+    try:
+        with open(os.path.join(DIR, "retired.json"), encoding="utf-8") as f:
+            return set(json.load(f))
+    except (OSError, ValueError):
+        return set()
+
+
+class Limiter:
+    """One rate limit for every place a token is checked: the login form,
+    ?k= links and cookies (2026-11-06 audit S2: ?k= and cookies were
+    unlimited). Per address: PER_IP wrong tokens inside WINDOW_S lock it out,
+    for LOCK_S doubling on each repeat, up to LOCK_MAX_S. While locked even
+    the right token is refused, or the lock would only slow a guesser down.
+    No global lock: with a ~128-bit token guessing is hopeless anyway, and a
+    global lock would let anyone on the network lock him out."""
+    PER_IP = 5
+    WINDOW_S = 60.0
+    LOCK_S = 60.0
+    LOCK_MAX_S = 3600.0
+    FORGET_S = 6 * 3600.0
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self._ip = {}   # ip -> {"n", "t0", "until", "strikes", "last"}
+
+    def locked(self, ip: str) -> float:
+        """Seconds left on this address's lock (0 = not locked)."""
+        e = self._ip.get(ip)
+        if not e:
+            return 0.0
+        return max(0.0, e["until"] - self.clock())
+
+    def fail(self, ip: str) -> None:
+        now = self.clock()
+        self._prune(now)
+        e = self._ip.setdefault(ip, {"n": 0, "t0": now, "until": 0.0,
+                                     "strikes": 0, "last": now})
+        if now - e["t0"] > self.WINDOW_S:
+            e["n"], e["t0"] = 0, now
+        e["n"] += 1
+        e["last"] = now
+        if e["n"] >= self.PER_IP:
+            lock = min(self.LOCK_MAX_S, self.LOCK_S * (2 ** e["strikes"]))
+            e["until"], e["strikes"], e["n"] = now + lock, e["strikes"] + 1, 0
+            print(f"[phone] {ip}: {self.PER_IP} wrong login tokens — locked "
+                  f"out for {lock:.0f}s", flush=True)
+
+    def ok(self, ip: str) -> None:
+        self._ip.pop(ip, None)
+
+    def _prune(self, now: float) -> None:
+        if len(self._ip) < 256:
+            return
+        for ip in [ip for ip, e in self._ip.items()
+                   if e["until"] <= now and now - e["last"] > self.FORGET_S]:
+            del self._ip[ip]
 
 
 def ensure_cert(ips: list) -> tuple:
@@ -499,7 +579,8 @@ class PhoneServer:
         self.token = ""
         self.urls = []
         self.clients = {}      # ws -> {"q": asyncio.Queue, "live": bool}
-        self._fails = {}       # ip -> [count, first_fail_time]
+        self._limit = Limiter()
+        self._retired = set()  # hashes of replaced tokens (load_token)
         self._runner = None
         self._vitals_task = None
         self._ts_task = None
@@ -537,6 +618,7 @@ class PhoneServer:
         self.loop.call_later(BOOT_GRACE_S + 1, self._sync_route)
         ips = local_ips()
         self.token = load_token()
+        self._retired = _retired()
         crt, key = await asyncio.to_thread(ensure_cert, ips)
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(crt, key)
@@ -628,9 +710,33 @@ class PhoneServer:
             self._runner = None
 
     # ---- http ----
+    def _check(self, request, k: str) -> str:
+        """Every token comparison goes through here, so every one is rate
+        limited. "ok" | "bad" | "locked" | "none" (nothing offered, or a
+        replaced token: not a guess, just a phone that must log in again)."""
+        k = (k or "").strip().lower()
+        if not k:
+            return "none"
+        ip = request.remote or "?"
+        if self._limit.locked(ip):
+            return "locked"
+        if hmac.compare_digest(k.encode(), self.token.encode()):
+            self._limit.ok(ip)
+            return "ok"
+        if _sha(k) in self._retired:
+            return "none"
+        self._limit.fail(ip)
+        return "bad"
+
     def _authed(self, request) -> bool:
-        c = request.cookies.get(COOKIE, "")
-        return bool(c) and hmac.compare_digest(c.encode(), self.token.encode())
+        return self._check(request, request.cookies.get(COOKIE, "")) == "ok"
+
+    def _locked_page(self, request):
+        from aiohttp import web
+        left = self._limit.locked(request.remote or "?")
+        return web.Response(text=_LOGIN.replace(
+            "%MSG%", f"Too many tries. Wait {max(1, round(left / 60))} min."),
+            content_type="text/html", status=429)
 
     def _logged_in(self):
         from aiohttp import web
@@ -652,30 +758,29 @@ class PhoneServer:
 
     async def _page(self, request):
         from aiohttp import web
-        k = request.query.get("k", "").strip().lower()
-        if k and hmac.compare_digest(k.encode(), self.token.encode()):
+        link = self._check(request, request.query.get("k", ""))
+        if link == "ok":
             return self._logged_in()
+        if link == "locked":
+            return self._locked_page(request)
         if not self._authed(request):
-            return web.Response(text=_LOGIN.replace("%MSG%", ""),
-                                content_type="text/html")
+            if self._limit.locked(request.remote or "?"):
+                return self._locked_page(request)
+            return web.Response(text=_LOGIN.replace(
+                "%MSG%", "Wrong token." if link == "bad" else ""),
+                content_type="text/html", status=401 if link == "bad" else 200)
         return web.FileResponse(PAGE, headers={"Cache-Control": "no-store"})
 
     async def _login(self, request):
         from aiohttp import web
-        ip = request.remote or "?"
-        n, t0 = self._fails.get(ip, (0, 0.0))
-        if n >= 5 and time.monotonic() - t0 < 60:
-            return web.Response(text=_LOGIN.replace(
-                "%MSG%", "Too many tries. Wait a minute."),
-                content_type="text/html", status=429)
+        if self._limit.locked(request.remote or "?"):
+            return self._locked_page(request)
         form = await request.post()
-        k = str(form.get("k", "")).strip().lower()
-        if k and hmac.compare_digest(k.encode(), self.token.encode()):
-            self._fails.pop(ip, None)
+        got = self._check(request, str(form.get("k", "")))
+        if got == "ok":
             return self._logged_in()
-        if n >= 5:
-            n, t0 = 0, 0.0
-        self._fails[ip] = (n + 1, t0 or time.monotonic())
+        if got == "locked":
+            return self._locked_page(request)
         return web.Response(text=_LOGIN.replace("%MSG%", "Wrong token."),
                             content_type="text/html", status=401)
 
@@ -783,9 +888,8 @@ class PhoneServer:
     async def _apk(self, request):
         """The Android bubble app (workspace/goat-bubble), for logged-in phones."""
         from aiohttp import web
-        k = request.query.get("k", "")
-        if not self._authed(request) and not (
-                k and hmac.compare_digest(k.encode(), self.token.encode())):
+        if not self._authed(request) and \
+                self._check(request, request.query.get("k", "")) != "ok":
             return web.Response(status=401, text="log in first")
         apk = os.path.join(os.path.dirname(DIR), "workspace", "goat-bubble",
                            "out", "goat-bubble.apk")
