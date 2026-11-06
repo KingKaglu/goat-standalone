@@ -67,14 +67,21 @@ All 11 batches landed (Batch 8 changed approach: the measured cause was the ear'
 the endpoint rule; Batch 9 ran because the night's metrics showed a real split). Commits
 `620a0e8` … `8f04336`, Phase 5 option A `8dafdb1`. 40/40 offline suites pass. Nothing pushed.
 
-| Metric | Before (live, 5 turns, 2026-11-06 03:10-03:38) | After |
+| Metric | Before | After (measured) |
 |---|---|---|
-| Time to first word p50 | 3430 ms | live: not measured yet (no turns since); expected ~2.3 s |
-| Endpoint p50 | 1216 ms (56 of 69 "local-pending") | expected ~700 ms on sticky turns |
-| Ear job (his clips, offline bench) | 1310 ms (language auto) | 495 ms (pinned English) |
+| Laptop ear job, his 4 clips through the real `stt_whisper.Stream` on the live GPU server, p50 | 3233 ms (language check; 2 clips also went to the cloud Georgian check, ~5.2 s) | **502 ms** (sticky English `cc517c5` + plain-json pinned request) |
+| Transcript ready after he stops (finished sentence) | ~3.4 s on those clips; live ledger: endpoint 1216 + ear 739 = ~1.95 s | **~0.7 s** (200 ms soft commit + 502 ms job) |
+| Endpoint wait (finished sentence) | 1216 ms (56 of 69 "local-pending") | **~700 ms** (ends as soon as the job lands) |
+| Filler fires (his 5 recorded turns replayed) | 2 of 5 at 1.5 s | **1 of 5** at 2.5 s (`8dafdb1`) |
+| Stale sentence after barge-in (forced race) | 1600 samples played | **0** (`087f590`) |
+| Split utterances (his session) | 1 (30 s cap) | held as one turn in the replayed case (`d4c219e`, test) |
+| Time to first word p50, live | 3430 ms (5 turns) | to be read from his next session (no live turns since); ear + endpoint save ~1.2 s of it |
 | Claude per job / cache hit | 148k in / 89 % | unchanged (no prompt change) |
-| False barge-ins | 0 of 1 confirmed; 5 echo ducks | — |
-| Split utterances | 1 (30 s cap) | fix in `d4c219e` |
+| False barge-ins | 0 of 1 confirmed; 5 echo ducks | unchanged (no barge change) |
+
+The live voice "after" (TTFW, false barge-ins) needs him talking; everything above it is measured on
+his own recordings and logs. Phase 5: he said to stop asking for approval, so option A was picked
+as the one that overrides none of his standing orders; B and C remain his call.
 
 Live after-numbers: `py -3.13 python\metrics.py summary` after a normal session (events before
 t=1793934582 are the baseline, also copied to `python/metrics-baseline-20261106.jsonl`).

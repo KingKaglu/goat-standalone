@@ -484,7 +484,9 @@ _KA_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_pref
 
 
 def _pinned(audio: np.ndarray, sample_rate: int, lang: str):
-    got = _post(audio, sample_rate, {"response_format": "verbose_json", "language": lang})
+    # Plain "json" (2026-11-06): only the text is read here, and verbose_json
+    # cost ~400 ms more per clip on his GPU (890 vs ~500 ms, his own clips).
+    got = _post(audio, sample_rate, {"response_format": "json", "language": lang})
     if got is None or isinstance(got, str):
         return got, lang
     return clean_transcript(got.get("text", ""), time.monotonic() < _chatting_until), lang
