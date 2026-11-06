@@ -796,7 +796,11 @@ HUM_RE = re.compile(r"^\s*(?:(?:h?m+-?h?m+|hm+|um+|uh+|erm*|ah+|ჰმ+)(?!\w)[\
 # the ear (plain talk) or >2 s (the model deliberating), never between, and
 # the filler now stands down once any answer text exists — so 1.5 gives
 # every slow turn its "Sir, …" 0.5 s sooner and races nothing.
-BACKCHANNEL_AFTER_S = float(os.environ.get("GOAT_BACKCHANNEL_AFTER", "1.5"))
+# 2.5 (2026-11-06, audit Phase 5, option A — "no filler"): the ear's language
+# check is gone from most turns (cc517c5), so a normal answer now starts
+# before 2.5 s; the filler is left for the genuinely slow ones. A hand called
+# before any word still says "Sir, checking." at once (_front_turn on_call).
+BACKCHANNEL_AFTER_S = float(os.environ.get("GOAT_BACKCHANNEL_AFTER", "2.5"))
 BACKCHANNEL_MODE = os.environ.get("GOAT_BACKCHANNEL", "gap").strip().lower()
 # Hands that only LOOK: a turn that used just these and said nothing can be
 # asked again of the next brain without doing anything twice.
