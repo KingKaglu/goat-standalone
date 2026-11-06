@@ -101,6 +101,131 @@ def allowed_remote(addr) -> bool:
     return ip.is_private and not ip.is_unspecified
 
 
+def is_lan(addr) -> bool:
+    """A private home-network address (not this laptop, not the tailnet)."""
+    try:
+        ip = ipaddress.ip_address((addr or "").split("%")[0])
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip in _TAILNET or (
+            ip.version == 6 and ip in ipaddress.ip_network("fd7a:115c:a1e0::/48")):
+        return False
+    return ip.is_private and not ip.is_unspecified
+
+
+def _net_profiles() -> list:
+    """[(network, interface, network name, category)] for every address of
+    this laptop, category as Windows has it: Private / Public /
+    DomainAuthenticated. Blocking (one PowerShell call): run in a thread."""
+    import psutil
+    nowin = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-NetConnectionProfile | Select-Object InterfaceAlias,Name,"
+             "@{n='Category';e={[string]$_.NetworkCategory}} | ConvertTo-Json"],
+            capture_output=True, text=True, timeout=20, creationflags=nowin)
+        rows = json.loads(r.stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        rows = []
+    if isinstance(rows, dict):
+        rows = [rows]
+    prof = {str(p.get("InterfaceAlias")): (str(p.get("Name") or ""),
+                                           str(p.get("Category") or ""))
+            for p in rows}
+    out = []
+    for alias, addrs in psutil.net_if_addrs().items():
+        name, cat = prof.get(alias, ("", ""))
+        for a in addrs:
+            if a.family not in (socket.AF_INET, socket.AF_INET6) or not a.netmask:
+                continue
+            try:
+                ip = a.address.split("%")[0]
+                if a.family == socket.AF_INET6:
+                    bits = bin(int(ipaddress.IPv6Address(a.netmask))).count("1")
+                    net = ipaddress.ip_network(f"{ip}/{bits}", strict=False)
+                else:
+                    net = ipaddress.ip_network(f"{ip}/{a.netmask}", strict=False)
+            except ValueError:
+                continue
+            out.append((net, alias, name, cat))
+    return out
+
+
+class LanGate:
+    """Home Wi-Fi yes, café Wi-Fi no (2026-11-06 audit S4: any device on ANY
+    network the laptop joined could reach the login page). A LAN address
+    gets in only through a network Windows calls Private (or a domain), or
+    one he trusted by name (.phone/lan.json, `phone_qr.py trust-lan`).
+    The tailnet and this laptop are never affected.
+    GOAT_PHONE_LAN=on lets every private address in (the old rule),
+    off keeps the LAN out entirely (Tailscale only)."""
+    REFRESH_S = 60.0
+    OK_CATEGORIES = ("Private", "DomainAuthenticated")
+
+    def __init__(self, path: str, probe=_net_profiles, mode: str | None = None):
+        self.path, self.probe = path, probe
+        self.mode = (mode or os.environ.get("GOAT_PHONE_LAN", "trusted")).strip().lower()
+        self._nets: list = []
+        self.t = 0.0
+
+    def trusted(self) -> set:
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                return set(json.load(f).get("trusted", []))
+        except (OSError, ValueError, AttributeError):
+            return set()
+
+    def refresh(self) -> None:
+        try:
+            self._nets = self.probe()
+        except Exception as e:  # noqa: BLE001 — keep the last good view
+            print(f"[phone] network check failed: {e}", flush=True)
+        self.t = time.monotonic()
+
+    def allows(self, addr) -> bool:
+        if self.mode in ("on", "1", "true", "yes"):
+            return True
+        if self.mode in ("off", "0", "false", "no"):
+            return False
+        try:
+            ip = ipaddress.ip_address((addr or "").split("%")[0])
+        except ValueError:
+            return False
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        trusted = self.trusted()
+        for net, _alias, name, cat in self._nets:
+            if ip.version == net.version and ip in net:
+                return cat in self.OK_CATEGORIES or (bool(name) and name in trusted)
+        return False
+
+    def describe(self) -> list:
+        trusted = self.trusted()
+        seen, rows = set(), []
+        for _net, alias, name, cat in self._nets:
+            if (alias, name) in seen or not name:
+                continue
+            seen.add((alias, name))
+            ok = cat in self.OK_CATEGORIES or name in trusted
+            rows.append(f"{alias}: {name} ({cat}{', trusted' if name in trusted else ''})"
+                        f" -> phone {'allowed' if ok else 'refused'}")
+        return rows
+
+
+def trust_lan(names: list) -> set:
+    """Add network names to .phone/lan.json; returns the trusted set."""
+    path = os.path.join(DIR, "lan.json")
+    gate = LanGate(path)
+    t = gate.trusted() | {n for n in names if n}
+    os.makedirs(DIR, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"trusted": sorted(t)}, f, ensure_ascii=False)
+    return t
+
+
 def local_ips() -> list:
     """Every IPv4 address of this laptop that a phone could reach."""
     found = []
@@ -710,6 +835,9 @@ class PhoneServer:
         self._limit = Limiter()
         self._retired = set()  # hashes of replaced tokens (load_token)
         self.sessions = Sessions(os.path.join(DIR, "sessions.json"))
+        self._lan = LanGate(os.path.join(DIR, "lan.json"))
+        self._lan_task = None
+        self._lan_said = {}    # ip -> when its refusal was last logged
         self._runner = None
         self._vitals_task = None
         self._ts_task = None
@@ -748,6 +876,9 @@ class PhoneServer:
         ips = local_ips()
         self.token = load_token()
         self._retired = _retired()
+        await asyncio.to_thread(self._lan.refresh)   # before the first request
+        for row in self._lan.describe():
+            print(f"[phone] network {row}", flush=True)
         crt, key = await asyncio.to_thread(ensure_cert, ips)
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(crt, key)
@@ -786,6 +917,7 @@ class PhoneServer:
         asyncio.create_task(asyncio.to_thread(ensure_firewall, self.port))
         self._vitals_task = asyncio.create_task(self._vitals_loop())
         self._ts_task = asyncio.create_task(self._ts_loop())
+        self._lan_task = asyncio.create_task(self._lan_loop())
         self._write_urls()
         print(f"[phone] ready on {', '.join(self.urls) or 'no LAN address'}")
         return self.urls
@@ -829,11 +961,24 @@ class PhoneServer:
                     print(f"[phone] installable app at https://{got[0]}:{self.port}")
             await asyncio.sleep(TS_RECHECK_S if got else 120)
 
+    async def _lan_loop(self):
+        """Keep the network view current: joining another Wi-Fi must close
+        the door within a minute, without a restart."""
+        before = self._lan.describe()
+        while True:
+            await asyncio.sleep(LanGate.REFRESH_S)
+            await asyncio.to_thread(self._lan.refresh)
+            now = self._lan.describe()
+            if now != before:
+                for row in now:
+                    print(f"[phone] network {row}", flush=True)
+                before = now
+
     async def stop(self):
-        for t in (self._vitals_task, self._ts_task):
+        for t in (self._vitals_task, self._ts_task, self._lan_task):
             if t is not None:
                 t.cancel()
-        self._vitals_task = self._ts_task = None
+        self._vitals_task = self._ts_task = self._lan_task = None
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
@@ -897,6 +1042,15 @@ class PhoneServer:
         async def gate(request, handler):
             if not allowed_remote(request.remote):
                 return web.Response(status=403, text="home network only")
+            if is_lan(request.remote) and not self._lan.allows(request.remote):
+                ip = request.remote or "?"
+                if len(self._lan_said) > 500:
+                    self._lan_said.clear()
+                if time.monotonic() - self._lan_said.get(ip, -1e9) > 600:
+                    self._lan_said[ip] = time.monotonic()
+                    print(f"[phone] refused {ip}: this network isn't trusted "
+                          "(Private in Windows, or phone_qr.py trust-lan)", flush=True)
+                return web.Response(status=403, text="this network isn't trusted")
             return await handler(request)
         return gate
 

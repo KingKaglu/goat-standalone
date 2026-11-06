@@ -116,6 +116,14 @@ async def main():
     ps.load_token = lambda: "testtokentesttokentesttokn"
     ps._retired = lambda: set()
     srv = ps.PhoneServer(app, port=PORT)
+    # A fake view of the laptop's networks (2026-11-06 audit S4): his home
+    # Wi-Fi is "Public" in Windows but trusted by name; a cafe isn't.
+    import ipaddress as _ip
+    fake_nets = [(_ip.ip_network("192.168.8.0/24"), "Wi-Fi", "HOME", "Public"),
+                 (_ip.ip_network("10.1.0.0/16"), "Wi-Fi 2", "CAFE", "Public"),
+                 (_ip.ip_network("172.20.0.0/16"), "Ethernet", "OFFICE", "Private")]
+    srv._lan = ps.LanGate(os.path.join(ps.DIR, "lan.json"), probe=lambda: fake_nets)
+    ps.trust_lan(["HOME"])
     urls = await srv.start()
     check("server up with LAN url", any("192.168." in u or "10." in u for u in urls))
     base = f"https://127.0.0.1:{PORT}"
@@ -399,6 +407,41 @@ async def main():
     now[0] += 31 * 86400
     check("31 days idle: expired", not a.valid(sid))
     check("short or empty cookie is not a session", not a.valid("") and not a.valid("x" * 10))
+
+    # Which networks may reach the server (2026-11-06 audit S4).
+    check("is_lan: home address", ps.is_lan("192.168.8.20"))
+    check("is_lan: tailnet and loopback are not LAN",
+          not ps.is_lan("100.90.1.2") and not ps.is_lan("127.0.0.1")
+          and not ps.is_lan("fd7a:115c:a1e0::5"))
+    g = srv._lan
+    check("trusted home Wi-Fi allowed (Public in Windows)", g.allows("192.168.8.20"))
+    check("untrusted cafe Wi-Fi refused", not g.allows("10.1.2.3"))
+    check("a Private network allowed", g.allows("172.20.4.5"))
+    check("an address on no network of ours refused", not g.allows("192.168.99.9"))
+    check("GOAT_PHONE_LAN=on lets every LAN in",
+          ps.LanGate(g.path, probe=lambda: fake_nets, mode="on").allows("10.1.2.3"))
+    check("GOAT_PHONE_LAN=off keeps the LAN out",
+          not ps.LanGate(g.path, probe=lambda: fake_nets, mode="off").allows("192.168.8.20"))
+
+    class _Req:
+        def __init__(self, remote):
+            self.remote = remote
+
+    async def _ok(_req):
+        return "handled"
+    mw = srv._gate
+    r = await mw(_Req("10.1.2.3"), _ok)
+    check("middleware: cafe client gets 403 before any handler",
+          getattr(r, "status", None) == 403)
+    check("middleware: home client reaches the handler",
+          await mw(_Req("192.168.8.20"), _ok) == "handled")
+    check("middleware: tailnet always reaches the handler",
+          await mw(_Req("100.90.1.2"), _ok) == "handled")
+    check("middleware: internet refused", getattr(await mw(_Req("8.8.8.8"), _ok),
+                                                  "status", None) == 403)
+    real = ps._net_profiles()
+    check("real network probe answers", isinstance(real, list) and all(
+        len(row) == 4 for row in real))
 
     # Limiter on its own, with a fake clock.
     now = [1000.0]
