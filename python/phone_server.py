@@ -168,6 +168,134 @@ def _retired() -> set:
         return set()
 
 
+SESSION_TTL_S = 30 * 86400   # a browser login lasts 30 days past its last use
+SESSION_TOUCH_S = 3600       # "last use" is written at most once an hour
+SESSION_MAX = 20
+PAIR_TTL_S = 600             # a pairing code works once, within 10 minutes
+PAIR_LEN = 12                # 12 of 31 symbols = ~59 bits; one use, rate limited
+
+
+class Sessions:
+    """Browser logins (2026-11-06 audit S3: the cookie WAS the master token,
+    for 400 days, with no way to revoke one phone). Now a login hands the
+    browser a random session id; only its sha256 is kept, in
+    .phone/sessions.json, so the file can't be replayed. A session dies 30
+    days after it was last used, or at once with `phone_qr.py logout-all`.
+    The file is re-read when it changes, so the CLI acts on the live server.
+    The master token itself still works where the bubble app sends it (its
+    config secret) and on the login form."""
+
+    def __init__(self, path: str, clock=time.time):
+        self.path, self.clock = path, clock
+        self._d: dict = {}
+        self._mtime = None
+
+    def _load(self):
+        try:
+            m = os.path.getmtime(self.path)
+        except OSError:
+            m = None
+        if m == self._mtime:
+            return
+        self._mtime = m
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                d = json.load(f)
+            self._d = d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            self._d = {}
+
+    def _save(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self._d, f)
+        os.replace(tmp, self.path)
+        self._mtime = os.path.getmtime(self.path)
+
+    def new(self, via: str = "") -> str:
+        self._load()
+        now = self.clock()
+        self._d = {h: e for h, e in self._d.items()
+                   if now - e.get("seen", 0) < SESSION_TTL_S}
+        sid = secrets.token_urlsafe(32)
+        self._d[_sha(sid)] = {"made": now, "seen": now, "via": via[:60]}
+        if len(self._d) > SESSION_MAX:
+            keep = sorted(self._d.items(), key=lambda kv: kv[1].get("seen", 0))
+            self._d = dict(keep[-SESSION_MAX:])
+        self._save()
+        return sid
+
+    def valid(self, sid: str) -> bool:
+        if not sid or len(sid) < 32:
+            return False
+        self._load()
+        h = _sha(sid)
+        e = self._d.get(h)
+        if e is None:
+            return False
+        now = self.clock()
+        if now - e.get("seen", 0) >= SESSION_TTL_S:
+            del self._d[h]
+            self._save()
+            return False
+        if now - e.get("seen", 0) > SESSION_TOUCH_S:
+            e["seen"] = now
+            self._save()
+        return True
+
+    def clear(self) -> int:
+        self._load()
+        n = len(self._d)
+        self._d = {}
+        self._save()
+        return n
+
+    def rows(self) -> list:
+        self._load()
+        return sorted(self._d.values(), key=lambda e: -e.get("seen", 0))
+
+
+def make_pair_code() -> str:
+    """A one-time login code for a link or QR, so the master token never
+    sits in a URL, a photo or browser history. Usable once, for 10 min."""
+    path = os.path.join(DIR, "pair.json")
+    now = time.time()
+    try:
+        with open(path, encoding="utf-8") as f:
+            codes = {h: t for h, t in json.load(f).items() if t > now}
+    except (OSError, ValueError, AttributeError):
+        codes = {}
+    code = "".join(secrets.choice(_TOKEN_ABC) for _ in range(PAIR_LEN))
+    codes[_sha(code)] = now + PAIR_TTL_S
+    os.makedirs(DIR, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(codes, f)
+    return code
+
+
+def take_pair_code(code: str) -> bool:
+    """True once for a live code; the code is spent either way it's found."""
+    if not code or len(code) != PAIR_LEN:
+        return False
+    path = os.path.join(DIR, "pair.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            codes = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(codes, dict):
+        return False
+    t = codes.pop(_sha(code), None)
+    if t is None:
+        return False
+    now = time.time()
+    codes = {h: x for h, x in codes.items() if x > now}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(codes, f)
+    return t > now
+
+
 class Limiter:
     """One rate limit for every place a token is checked: the login form,
     ?k= links and cookies (2026-11-06 audit S2: ?k= and cookies were
@@ -581,6 +709,7 @@ class PhoneServer:
         self.clients = {}      # ws -> {"q": asyncio.Queue, "live": bool}
         self._limit = Limiter()
         self._retired = set()  # hashes of replaced tokens (load_token)
+        self.sessions = Sessions(os.path.join(DIR, "sessions.json"))
         self._runner = None
         self._vitals_task = None
         self._ts_task = None
@@ -710,10 +839,11 @@ class PhoneServer:
             self._runner = None
 
     # ---- http ----
-    def _check(self, request, k: str) -> str:
+    def _check(self, request, k: str, pair: bool = False) -> str:
         """Every token comparison goes through here, so every one is rate
         limited. "ok" | "bad" | "locked" | "none" (nothing offered, or a
-        replaced token: not a guess, just a phone that must log in again)."""
+        replaced token: not a guess, just a phone that must log in again).
+        pair=True also takes a one-time pairing code (links and QR codes)."""
         k = (k or "").strip().lower()
         if not k:
             return "none"
@@ -723,13 +853,23 @@ class PhoneServer:
         if hmac.compare_digest(k.encode(), self.token.encode()):
             self._limit.ok(ip)
             return "ok"
+        if pair and take_pair_code(k):
+            self._limit.ok(ip)
+            return "ok"
         if _sha(k) in self._retired:
             return "none"
         self._limit.fail(ip)
         return "bad"
 
     def _authed(self, request) -> bool:
-        return self._check(request, request.cookies.get(COOKIE, "")) == "ok"
+        c = request.cookies.get(COOKIE, "")
+        if len(c) >= 40:
+            # A browser session id (256 bits: not guessable). An expired or
+            # revoked one just means "log in again" — never a lockout.
+            return (not self._limit.locked(request.remote or "?")
+                    and self.sessions.valid(c))
+        # The bubble app sends the master token itself as its cookie.
+        return self._check(request, c) == "ok"
 
     def _locked_page(self, request):
         from aiohttp import web
@@ -738,10 +878,14 @@ class PhoneServer:
             "%MSG%", f"Too many tries. Wait {max(1, round(left / 60))} min."),
             content_type="text/html", status=429)
 
-    def _logged_in(self):
+    def _logged_in(self, request):
+        """A fresh session for this browser. The browser may keep the cookie
+        long; the server ends it 30 days after its last use (Sessions)."""
         from aiohttp import web
+        sid = self.sessions.new(via=f"{request.remote} "
+                                    f"{request.headers.get('User-Agent', '')[:40]}")
         r = web.Response(status=303, headers={"Location": "/"})
-        r.set_cookie(COOKIE, self.token, max_age=400 * 86400, secure=True,
+        r.set_cookie(COOKIE, sid, max_age=400 * 86400, secure=True,
                      httponly=True, samesite="Strict")
         return r
 
@@ -758,9 +902,9 @@ class PhoneServer:
 
     async def _page(self, request):
         from aiohttp import web
-        link = self._check(request, request.query.get("k", ""))
+        link = self._check(request, request.query.get("k", ""), pair=True)
         if link == "ok":
-            return self._logged_in()
+            return self._logged_in(request)
         if link == "locked":
             return self._locked_page(request)
         if not self._authed(request):
@@ -776,9 +920,9 @@ class PhoneServer:
         if self._limit.locked(request.remote or "?"):
             return self._locked_page(request)
         form = await request.post()
-        got = self._check(request, str(form.get("k", "")))
+        got = self._check(request, str(form.get("k", "")), pair=True)
         if got == "ok":
-            return self._logged_in()
+            return self._logged_in(request)
         if got == "locked":
             return self._locked_page(request)
         return web.Response(text=_LOGIN.replace("%MSG%", "Wrong token."),
@@ -889,7 +1033,7 @@ class PhoneServer:
         """The Android bubble app (workspace/goat-bubble), for logged-in phones."""
         from aiohttp import web
         if not self._authed(request) and \
-                self._check(request, request.query.get("k", "")) != "ok":
+                self._check(request, request.query.get("k", ""), pair=True) != "ok":
             return web.Response(status=401, text="log in first")
         apk = os.path.join(os.path.dirname(DIR), "workspace", "goat-bubble",
                            "out", "goat-bubble.apk")

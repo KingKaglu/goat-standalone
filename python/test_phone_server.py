@@ -109,6 +109,9 @@ async def main():
     ps.PhoneServer._write_urls = lambda self: None
     # nor his real login token (2026-11-06: load_token now REPLACES a short
     # token file, so a test reading the real one would rotate it)
+    # ...and nothing in his real .phone/ at all (sessions, pairing codes,
+    # certificates go to a throwaway folder)
+    ps.DIR = tempfile.mkdtemp()
     real_load_token, srv_retired = ps.load_token, ps._retired
     ps.load_token = lambda: "testtokentesttokentesttokn"
     ps._retired = lambda: set()
@@ -132,6 +135,9 @@ async def main():
                           ssl=sslc) as r:
             body = await r.text()
             check("right token -> app page", r.status == 200 and 'id="orb"' in body)
+        sid = next((c.value for c in s.cookie_jar if c.key == "goat_k"), "")
+        check("browser gets a session id, not the master token",
+              len(sid) >= 40 and sid != srv.token and srv.sessions.valid(sid))
         async with s.ws_connect(base + "/ws", ssl=sslc,
                                 origin=f"https://127.0.0.1:{PORT}") as ws:
             m = json.loads((await ws.receive()).data)
@@ -350,6 +356,49 @@ async def main():
                          allow_redirects=False) as r:
             check("right ?k= logs in", r.status == 303
                   and "goat_k" in r.headers.get("Set-Cookie", ""))
+
+    # Sessions and pairing codes (2026-11-06 audit S3).
+    srv._limit = ps.Limiter()
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+        code = ps.make_pair_code()
+        async with s.get(base + "/?k=" + code, ssl=sslc, allow_redirects=False) as r:
+            check("pairing code logs in", r.status == 303)
+        sid = next((c.value for c in s.cookie_jar if c.key == "goat_k"), "")
+        async with s.get(base + "/ctl", ssl=sslc) as r:
+            check("its session works", r.status == 200)
+        check("a pairing code works once", not ps.take_pair_code(code))
+        n = srv.sessions.clear()
+        async with s.get(base + "/ctl", ssl=sslc) as r:
+            check("logout-all ends it", n >= 1 and r.status == 403)
+        for _ in range(8):
+            async with s.get(base + "/ctl", ssl=sslc) as r:
+                pass
+        check("an ended session is never counted as a guess",
+              not srv._limit.locked("127.0.0.1"))
+    srv._limit = ps.Limiter()
+    async with aiohttp.ClientSession() as s:
+        async with s.get(base + "/ctl", ssl=sslc,
+                         headers={"Cookie": "goat_k=" + srv.token}) as r:
+            check("bubble app's master-token cookie still works", r.status == 200)
+        async with s.get(base + "/goat.apk?k=" + ps.make_pair_code(), ssl=sslc) as r:
+            check("pairing code opens the apk route", r.status == 404)  # not built here
+    with open(os.path.join(ps.DIR, "pair.json"), "w", encoding="utf-8") as f:
+        json.dump({ps._sha("abcdefghjkmn"): time.time() - 1}, f)
+    check("expired pairing code refused", not ps.take_pair_code("abcdefghjkmn"))
+    now = [5_000_000.0]
+    spath = os.path.join(ps.DIR, "s-test.json")
+    a = ps.Sessions(spath, clock=lambda: now[0])
+    sid = a.new("test")
+    b = ps.Sessions(spath, clock=lambda: now[0])
+    check("a session is seen by another process (CLI and server)", b.valid(sid))
+    check("only its hash is on disk", sid not in open(spath).read())
+    now[0] += 29 * 86400
+    check("29 days idle: still valid", a.valid(sid))
+    now[0] += 29 * 86400
+    check("used on day 29, so day 58 is still valid (sliding)", a.valid(sid))
+    now[0] += 31 * 86400
+    check("31 days idle: expired", not a.valid(sid))
+    check("short or empty cookie is not a session", not a.valid("") and not a.valid("x" * 10))
 
     # Limiter on its own, with a fake clock.
     now = [1000.0]
