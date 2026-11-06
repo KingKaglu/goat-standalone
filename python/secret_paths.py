@@ -75,5 +75,33 @@ def is_secret(path: str) -> bool:
     return bool(NAME_RE.match(os.path.basename(real)))
 
 
+# Shell commands are text, not a path: look for these anywhere in them too,
+# whatever the quoting or slashes (a crude net, behind the path check).
+_MARKERS = (".goat-secrets", ".credentials.json", ".git-credentials",
+            "\\.ssh\\", "/.ssh/", "\\.phone\\", "/.phone/", "\\voiceid\\",
+            "/voiceid/", ".android-keys", "id_rsa", "id_ed25519",
+            "\\login data", "/login data", "\\user data\\default\\cookies")
+_TOKEN_RE = re.compile(r'"([^"]+)"|\'([^\']+)\'|([^\s"\'|;&<>()]+)')
+_ENV_RE = re.compile(r"\$env:(\w+)|\$\{env:(\w+)\}", re.IGNORECASE)
+
+
+def mentions_secret(text: str) -> str | None:
+    """The first secret path a shell command names, or None."""
+    t = str(text or "")
+    low = t.lower().replace("/", "\\")
+    for m in _MARKERS:
+        if m.replace("/", "\\") in low:
+            return m.strip("\\/")
+    # PowerShell's $env:USERPROFILE as cmd's %USERPROFILE%, then real paths
+    t = _ENV_RE.sub(lambda m: f"%{m.group(1) or m.group(2)}%", t)
+    for m in _TOKEN_RE.finditer(t):
+        tok = next(g for g in m.groups() if g is not None).strip(",")
+        if not tok or not ("\\" in tok or "/" in tok or tok.startswith((".", "~", "%"))):
+            continue
+        if is_secret(tok):
+            return tok
+    return None
+
+
 REFUSAL = ("ERROR: that's a private file (keys, logins or tokens) — "
            "I don't read or open those, and I never send them anywhere")

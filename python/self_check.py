@@ -72,6 +72,7 @@ CORE = [
     "stt_gladia.py",
     "endpoint.py",
     "metrics.py",
+    "secret_paths.py",
     "phone_server.py",
     "voice_id.py",
     "body_sense.py",

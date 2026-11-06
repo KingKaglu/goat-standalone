@@ -37,6 +37,7 @@ DEFAULT = [
     "test_voice_latency",
     "test_voice_hands",
     "test_voice_hands_safety",
+    "test_secret_guard",
     "test_desk_hands",
     "test_live_talk",
     "test_stt_live",
