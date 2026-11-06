@@ -5,7 +5,7 @@ silero-vad
 livekit
 claude-agent-sdk>=0.2.159   # 0.2.159 bundles CLI 2.1.281, the first that knows claude-opus-5-5
 httpx
-edge-tts
+edge-tts==7.3.1   # tts_edge.py uses its private internals (drm, constants): test before bumping
 soundfile
 PySide6==6.11.3   # 6.12.0 crashed the window (access violation in pyside6.abi3.dll), 2026-11-01
 psutil
@@ -20,7 +20,6 @@ winrt-Windows.Foundation.Collections
 winrt-Windows.Globalization
 winrt-Windows.Media.Control       # phone Control tab: now playing
 pycaw                             # volume (phone Control tab, music ducking)
-comtypes
 pywebpush
 dxcam>=0.0.5           # game capture via Desktop Duplication (game_pilot)
 # Imported by the app but missing from this list before 2026-11-01:
@@ -31,3 +30,6 @@ segno                  # phone QR code
 soundcard              # audio_io loopback
 websocket-client       # screen_browser
 websockets             # live_talk / stt_live / stt_realtime
+# Imported by phone_server but only installed through other packages before 2026-11-06:
+aiohttp                # phone server (HTTPS + WebSocket)
+cryptography           # phone server certificates
