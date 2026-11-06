@@ -1245,6 +1245,8 @@ def saved_session_id():
 # and re-cached all of it (7 calls, ~343k tokens' worth) just to read the
 # usage file. The prompt cache is gone after an hour, so a cold session pays
 # its whole size again; past COLD_ROTATE_CTX a fresh one (~31k) is cheaper.
+ENGINE_BACKOFF_S = (2, 4, 8, 15, 30, 60)   # _connect_engine retries, seconds
+ENGINE_CRASH_COOL_S = 30                    # after 3+ crashes in 5 min
 CACHE_COLD_S = 3600
 COLD_ROTATE_CTX = 40_000
 
@@ -1811,6 +1813,7 @@ class GoatApp:
         self.usage_in = 0
         self.usage_out = 0
         self.claude_out = False               # True once Claude quota is spent
+        self.engine_down = False              # Claude's engine can't connect (_connect_engine)
         self.claude_reset = ""                # reset clock from the limit error
         self.claude_reset_at = 0.0            # same, as a time.time() epoch
         self._limit_hit_at = 0.0
@@ -3510,6 +3513,11 @@ class GoatApp:
                      "(find/read/write_file/save_chat_log), work_hours, phone, "
                      "web_search, browser_history, trade_status. Use them instead of saying "
                      "you need Claude.")
+        if getattr(self, "engine_down", False) and not self.claude_out:
+            extra = ((extra + "\n") if extra else "") + (
+                "Claude's engine is RECONNECTING right now (network or engine "
+                "trouble), so do NOT hand_to_worker: use your own hands, or tell "
+                "him in one line that Claude will be back shortly.")
         eff = getattr(self, "_live_effort", None) or self.effort
         blocks.append(self._watch.status_note(self._worker_label(), eff, extra))
         if kind == "user":
@@ -4014,7 +4022,7 @@ class GoatApp:
         model round trip. True = handled. Chat, small tasks, talk about the
         running job, and everything while Claude is out of usage return False
         and the voice takes the turn as before."""
-        if not TASK_ROUTER or self.claude_out:
+        if not TASK_ROUTER or self.claude_out or getattr(self, "engine_down", False):
             return False
         try:
             r = task_router.route(text, job_running=self.busy or self._watch.running())
@@ -4264,6 +4272,12 @@ class GoatApp:
         target = self._worker_target()
         name = _friendly_model_name(target)
         self._watch.start(task, his, name.title(), depth)
+        if getattr(self, "engine_down", False):
+            # B1: the engine is reconnecting; a query now would hang or raise.
+            self._watch.finish("failed", "Claude's engine is reconnecting (network or "
+                               "engine trouble) — the job didn't start; ask again in a minute")
+            self.emit("work_fail", "Claude's engine is reconnecting")
+            return
         if self.claude_out:
             self._watch.finish("limit", "Claude is out of usage" + (
                 f" until about {self.claude_reset}" if self.claude_reset else ""))
@@ -5754,8 +5768,15 @@ class GoatApp:
         else:
             await self._warm_up()
         stt_ok = await stt_task
-        await connect_task
-        self_update.mark_engine_up()
+        try:
+            await connect_task
+            self_update.mark_engine_up()
+        except Exception as e:  # noqa: BLE001 — B1: boot on; the loop reconnects
+            print(f"[engine] boot connect failed: {type(e).__name__}: {str(e)[:160]}",
+                  flush=True)
+            self.engine_down = True
+            self.emit("status", "Claude's engine is offline — I'll keep trying; "
+                                "talking still works")
         if not stt_ok:
             # Boot self-check, spoken: without this the window looks alive
             # while every word he says silently goes nowhere.
@@ -5816,14 +5837,20 @@ class GoatApp:
                 "[boot-briefing] Greet him as Sir. Giorgi just started you after about "
                 f"{away_h:.0f} hours away. It is {now:%A}, {now:%H:%M}.",
                 echo=False)
-        else:
+        elif not self.engine_down:
             await self._warm_brain()   # the briefing already warms it
 
         retried_text = None  # retry each wall-hit once, so one oversized
         crashes = 0          # message can't ping-pong fresh sessions forever
         last_crash = 0.0
+        said_crashing = False
         try:
             while True:
+                if self.engine_down:
+                    # Booted without an engine: keep trying in here, where
+                    # the ears and the voice keep running meanwhile.
+                    options.resume = saved_session_id()
+                    await self._connect_engine(options)
                 try:
                     wants_fresh = await self._consume()
                 except Exception as e:  # noqa: BLE001 — SELF-HEAL: one SDK/
@@ -5835,23 +5862,30 @@ class GoatApp:
                         crashes = 0  # last incident is old news — fresh slate
                     last_crash = now
                     crashes += 1
+                    print(f"[engine] hiccup {crashes}: {type(e).__name__}: "
+                          f"{str(e)[:160]}", flush=True)
                     if crashes > 3:
-                        self.emit("delta", "")
-                        self.tts.say("My engine keeps crashing — I need a "
-                                     "manual restart, Giorgi.")
-                        raise
+                        # A crash loop used to `raise` here — which ended the
+                        # voice and the ears too (B1). Now: say it once, cool
+                        # down, and keep trying; talking never stops.
+                        if not said_crashing:
+                            said_crashing = True
+                            self.emit("delta", "")
+                            self.tts.say("Sir, my working brain keeps crashing. I can "
+                                         "still talk; I'll keep reconnecting it.")
+                        cool = ENGINE_CRASH_COOL_S
+                    else:
+                        said_crashing = False
+                        cool = crashes          # 1s, 2s, 3s
                     self.emit("status",
-                              f"engine hiccup ({type(e).__name__}) — "
-                              f"reconnecting {crashes}/3")
+                              f"engine hiccup ({type(e).__name__}) — reconnecting")
                     try:
                         await self.client.disconnect()
                     except Exception:  # noqa: BLE001
                         pass
-                    await asyncio.sleep(crashes)  # 1s, 2s, 3s backoff
+                    await asyncio.sleep(cool)
                     options.resume = saved_session_id()
-                    self.client = _new_client(options)
-                    await self.client.connect()
-                    self.model = options.model
+                    await self._connect_engine(options)
                     self.busy = False
                     self.suppressed = False
                     self._hold_deltas = False
@@ -5874,20 +5908,19 @@ class GoatApp:
                     self._effort_dirty = False
                     options.effort = self.effort
                     options.resume = saved_session_id()
-                    self.client = _new_client(options)
-                    await self.client.connect()
-                    self.model = options.model
+                    await self._connect_engine(options)
                     self.busy = False
                     self.suppressed = False
                     self.emit("status", f"thinking at {self.effort} — ready")
                     await self._warm_brain()
                     continue
                 # Context full: fresh session, retry the wall-hit message.
-                await self.client.disconnect()
+                try:
+                    await self.client.disconnect()
+                except Exception:  # noqa: BLE001 — an old client's leftovers
+                    pass
                 options.resume = None
-                self.client = _new_client(options)
-                await self.client.connect()
-                self.model = options.model
+                await self._connect_engine(options)
                 if self._rotate_only:
                     # Proactive rotation, not a wall hit: nothing to retry —
                     # the next work order carries the handoff.
@@ -5917,6 +5950,43 @@ class GoatApp:
         finally:
             self.shutdown_audio()
             await self.client.disconnect()
+
+    async def _connect_engine(self, options, fresh: bool = True) -> None:
+        """(Re)open Claude's engine, retrying until it answers (2026-11-06
+        audit B1: one failed connect inside the self-heal used to leave
+        run(), whose finally: shut the ears and the voice down — a network
+        blip made GOAT deaf and mute with the window still up). While it is
+        down the voice keeps talking; jobs wait (engine_down)."""
+        attempt = 0
+        while True:
+            try:
+                if fresh or attempt:
+                    self.client = _new_client(options)
+                await self.client.connect()
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — retried below, never fatal
+                try:
+                    await self.client.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                wait = ENGINE_BACKOFF_S[min(attempt, len(ENGINE_BACKOFF_S) - 1)]
+                if not self.engine_down:
+                    self.engine_down = True
+                    self.emit("status", f"Claude's engine can't connect "
+                                        f"({type(e).__name__}) — retrying; talking still works")
+                print(f"[engine] connect failed ({type(e).__name__}: {str(e)[:120]}); "
+                      f"retry in {wait}s", flush=True)
+                attempt += 1
+                await asyncio.sleep(wait)
+        self.model = options.model
+        self_update.mark_engine_up()
+        if self.engine_down:
+            self.engine_down = False
+            print(f"[engine] connected after {attempt} retr{'y' if attempt == 1 else 'ies'}",
+                  flush=True)
+            self.emit("status", "reconnected — working brain back")
 
     def shutdown_audio(self):
         """Best-effort teardown of everything with an OS handle — safe to

@@ -27,6 +27,7 @@ DEFAULT = [
     "self_check",           # preflight: compile + import gate
     "test_metrics",
     "test_engine_router",
+    "test_engine_reconnect",
     "test_two_brains",
     "test_acceptance_handoff",
     "test_brain_route",
