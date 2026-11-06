@@ -72,6 +72,33 @@ Audited as GOAT actually runs: **two brains on** (Gemini Live voice, then REST G
 | Q6 | Low | Tests | `python/test_*.py` (~60 scripts) | No single runner. Preflight compiles only `CORE`. Baseline today: preflight PASS; engine_router 136/0; brain_route 44/0; voice_latency 56/0; phone_server ALL PASS; task_router and action_policy OK. | Phase 3: `run_tests.py` for the no-cost suites. | — | S | FACT |
 | Q7 | Low | Observability | `python/start-goat-app.vbs` (log rotation) | The log rotates on every launch and keeps one `.old`, so about 290 lines of history: too little to measure anything. | Phase 3: metrics in their own `metrics.jsonl` (gitignored). | — | S | FACT |
 
+## Outcome (Phase 4-6, 2026-11-06)
+
+| ID | Status | Commit / note |
+|---|---|---|
+| S1, S2, S9 | Fixed | `620a0e8`: 26-char token (old one retired by hash), one per-address limiter on every token check |
+| S3 | Fixed (browsers) | `248f3a5`: hashed server-side sessions, 30 days idle, `logout-all`; one-time pairing codes in QR/links. The bubble app still uses the master token (its config secret). |
+| S4 | Fixed (app layer) | `306073e`: LAN only via Private or trusted networks. Firewall NOT changed (needs admin): see S12. |
+| S5, S6, S7 | Fixed | `fdae7ee`: no shell for model text, `secret_paths`, launchable types refused |
+| S8 | Fixed | `b6f7309`: worker tool hook, his one-shot yes for private files |
+| S10 | Open, by choice | `.phone/url.txt` keeps the token line (convenience for the app's settings) |
+| S12 (new) | **Open, needs admin** | Windows has an *allow all inbound* rule for `python.exe` on **Public** networks (from Python's first run), and the GOAT rule is profile Any. Fix: mark home Wi-Fi Private, GOAT rule → Private, disable the two python.exe Public rules. |
+| B1 | Fixed | `2b89fa3`: `_connect_engine` retries forever, boot without engine, no crash-loop raise |
+| B2, B3, B5 | Fixed | `087f590` (B2 reproduced on the old code: 1600 stale samples queued after cancel) |
+| B4 | Open (low) | Live repeat-failure note not added |
+| B6 (new) | Open | `test_screen` "stand_aside drops always-on-top" fails on 248740c |
+| V1 | Fixed, **root cause corrected** | The endpoint wait wasn't the cost by itself; the ear's job was. Every laptop job asked Whisper to detect the language first: 1310 ms vs 495 ms pinned, on his clips. That kept the job pending past 500 ms → the 1.2 s wait (56/69 endpoints "local-pending"). `cc517c5`: sticky English. |
+| V2 | Measured | Ear job split now logged (`ear` event) |
+| V3 | Option A done | `8dafdb1`: filler after 2.5 s (was 1.5). B/C not applied (they override his standing orders). |
+| V4 | Fixed | `d4c219e`: a sentence cut by the 30 s cap is held; holds wait while he's still talking |
+| V5 | Open (low) | clip splitting at 16 words unchanged |
+| R1, R2 | Fixed | `fd277c2` |
+| T1 | Measured | Baseline: one job, 148k input tokens over its steps, 89 % cache hit |
+| T2 | Open | TALK_SYSTEM 14k chars, untouched (Phase 5 kept the prompt) |
+| Q4, Q5, Q6, Q7 | Fixed | `8f04336`, `28f5369` |
+| Q1, Q2, Q3 | Open, by choice | No refactors without his OK |
+| Q8 (new) | Open (low) | `_pull_plan_usage` reads the meter through a private SDK call (`client._query._send_control_request`); an SDK update can break the meter (it fails quietly) |
+
 ## Most urgent
 1. **S1 + S2 + S4 together:** the phone token is public, has no rate limit on `?k=`, and the server is reachable from any LAN you're on. Rotating the token (S1) closes the immediate hole by itself and takes minutes.
 2. **B1:** a network blip during reconnect leaves GOAT deaf and mute.

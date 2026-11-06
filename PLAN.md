@@ -62,6 +62,23 @@ Built from `AUDIT.md`. Ordered: security → bugs → voice → router/tokens �
 Phase 5 (your choice of options) covers **V3 fillers / "Sir," lead, V5 clip splitting, T2 voice prompt size**.
 **Not planned without your OK:** Q1/Q2 refactors (e.g. moving `TtsPipeline` out of `goat_app.py`). I'll propose these only if a batch needs them.
 
+## What happened (2026-11-06)
+All 11 batches landed (Batch 8 changed approach: the measured cause was the ear's language check, not
+the endpoint rule; Batch 9 ran because the night's metrics showed a real split). Commits
+`620a0e8` … `8f04336`, Phase 5 option A `8dafdb1`. 40/40 offline suites pass. Nothing pushed.
+
+| Metric | Before (live, 5 turns, 2026-11-06 03:10-03:38) | After |
+|---|---|---|
+| Time to first word p50 | 3430 ms | live: not measured yet (no turns since); expected ~2.3 s |
+| Endpoint p50 | 1216 ms (56 of 69 "local-pending") | expected ~700 ms on sticky turns |
+| Ear job (his clips, offline bench) | 1310 ms (language auto) | 495 ms (pinned English) |
+| Claude per job / cache hit | 148k in / 89 % | unchanged (no prompt change) |
+| False barge-ins | 0 of 1 confirmed; 5 echo ducks | — |
+| Split utterances | 1 (30 s cap) | fix in `d4c219e` |
+
+Live after-numbers: `py -3.13 python\metrics.py summary` after a normal session (events before
+t=1793934582 are the baseline, also copied to `python/metrics-baseline-20261106.jsonl`).
+
 ## Decisions I need from you
 1. **Phone reach (Batch 3):** does your phone reach GOAT over **Tailscale**, or over home Wi-Fi by IP? (Tailscale-only is safest; LAN stays available as an opt-in.)
 2. **Restarts:** may I restart GOAT myself (`restart-goat.ps1`) after each batch to verify it live, or will you restart it?
