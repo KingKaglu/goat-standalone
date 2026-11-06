@@ -47,6 +47,7 @@ import close_guard
 import endpoint
 import local_hands
 import live_view
+import metrics
 import reflex
 import screen_policy
 import screen_tools
@@ -1945,6 +1946,7 @@ class GoatApp:
                     or now - getattr(self.audio, "_play_last_t", 0.0) < 1.0):
                 return     # room noise while GOAT is silent: not a barge story
             kind = msg.split(" (")[0][:24]      # the numbers vary: key on the kind
+            metrics.emit("barge", what=kind)
             if kind != getattr(self, "_barge_last", ("", 0.0))[0] or \
                     now - self._barge_last[1] > 2.0:
                 self._barge_last = (kind, now)
@@ -2115,8 +2117,9 @@ class GoatApp:
         t0 = getattr(self, "_t_answer_t0", 0.0) or getattr(self, "_t_speech_end", 0.0)
         self._t_answer_t0 = 0.0
         if t0:
-            print(f"[latency] answer itself starts at "
-                  f"{(time.monotonic() - t0) * 1000:.0f}ms", flush=True)
+            ms = (time.monotonic() - t0) * 1000
+            print(f"[latency] answer itself starts at {ms:.0f}ms", flush=True)
+            metrics.emit("answer_audio", ms=round(ms))
 
     def _lat_filler(self):
         t0 = getattr(self, "_t_speech_end", 0.0)
@@ -2151,6 +2154,10 @@ class GoatApp:
               + (f" [first text at {tok:.0f}ms, text->audio {total - tok:.0f}ms]"
                  if tok >= 0 else ""))
         self.emit("latency", f"{total:.0f}")
+        metrics.emit("latency", total=round(total), endpoint=round(hang),
+                     ear=round(ear - hang) if ear >= 0 else -1,
+                     voice=round(rest), filler=round(filler), token=round(tok),
+                     ear_kind=self._lat_ear)
         # This turn's clock is spent: a later turn that starts no clock of
         # its own (typed, or a clip over my voice) must not measure from it
         # (2026-10-26 11:09: "heard->turn 28353ms" was 11:08:37's heard).
@@ -2178,8 +2185,11 @@ class GoatApp:
             # Whisper's habit of ending every fragment on a full stop
             # ("I want to." is not a finished sentence).
             if rt.pending:
+                self._ep_state = "local-pending"   # metrics: why the long wait
                 return False
-            return endpoint.sounds_finished(rt.last_partial.rstrip(". "))
+            state = endpoint.sounds_finished(rt.last_partial.rstrip(". "))
+            self._ep_state = f"local-{state}"
+            return state
         state = (None if rt is None
                  else endpoint.sounds_finished(getattr(rt, "last_partial", "")))
         if state is None and self.language != "en":
@@ -2187,7 +2197,9 @@ class GoatApp:
             # first pause there was "nothing yet" and the short 500 ms cut
             # fired — his Georgian arrived as 1.1-1.5 s stubs ("გოგი
             # ხარობა") and the rest was lost. Unknown = not finished.
+            self._ep_state = "rt-none"
             return False
+        self._ep_state = f"rt-{state}"
         return state
 
     def _gpu_ear(self) -> bool:
@@ -2248,6 +2260,9 @@ class GoatApp:
         began = getattr(self, "_utt_began", now)
         gap = (began - prev_end) if prev_end is not None else None
         self._prev_utt_end = now - getattr(self.audio, "last_hangover_ms", 0.0) / 1000.0
+        metrics.emit("endpoint", hang_ms=round(getattr(self.audio, "last_hangover_ms", 0.0)),
+                     state=getattr(self, "_ep_state", None))
+        self._ep_state = None
         if self.mic_muted or self.phone_live:
             return   # phone live: the laptop mic would hear him twice
         if getattr(self, "_utt_echo", False):
@@ -2855,6 +2870,7 @@ class GoatApp:
             # full model turn. Whole-utterance match only, so a real sentence
             # that merely contains the words still gets through.
             print("[stt] dropped phantom phrase:", repr(text))
+            metrics.emit("drop", reason="phantom")
             return
         # The quiet-mic guard reads the LAPTOP capture level; it says nothing
         # about audio that came from the phone. And a phone turn starts with
@@ -2874,6 +2890,7 @@ class GoatApp:
             run = self.phone.his_run(text)
             if not run:
                 print("[phone] dropped: my own voice", repr(text))
+                metrics.emit("drop", reason="phone-echo")
                 return
             # ...or a real request riding on it: keep just his words.
             print(f"[phone] his words inside my echo: {run!r}")
@@ -2893,6 +2910,7 @@ class GoatApp:
             run = self.phone.his_run(text)
             if not run:
                 print(f"[barge] cut-in was my own voice, carrying on: {text!r}")
+                metrics.emit("drop", reason="cut-in-echo")
                 return
             print(f"[phone] his words inside my echo: {run!r}")
             text = run
@@ -2903,8 +2921,10 @@ class GoatApp:
             # His stops, my name, an order and an answer to my question
             # still cut me off.
             print(f"[barge] murmur under my voice, carrying on: {text!r}")
+            metrics.emit("drop", reason="murmur")
             return
         if not phone and self._mishearing(text):
+            metrics.emit("drop", reason="mishearing")
             return
         if self._voice_command(text, source):
             return
@@ -2925,6 +2945,7 @@ class GoatApp:
                 and not WAKE_RE.search(text) and not NAME_SLIP_RE.match(text)):
             # Idle and not addressed — JARVIS doesn't answer the TV.
             print(f"[wake] not addressed, ignored: {text!r}")
+            metrics.emit("drop", reason="not-addressed")
             self.emit("status", "heard — say my name to wake me")
             return
         self._asleep = False
@@ -2944,6 +2965,7 @@ class GoatApp:
             if verdict == "ignore":
                 self._side_until = now + side_talk.SIDE_QUIET_S
                 print(f"[side-talk] ignored: {text!r}")
+                metrics.emit("drop", reason="side-talk")
                 self.emit("status", "on a call? say \"GOAT\" to talk to me")
                 return
             if verdict == "pass":
@@ -2964,6 +2986,7 @@ class GoatApp:
         # "Still on the previous one" = the brain answering him: the voice
         # with two brains (Claude's long job is not a reason to merge).
         answering = self.talk_busy if self.two_brains else self.busy
+        merged = False
         if (prev is not None and held is None and gap is not None
                 and gap <= MERGE_WINDOW_S and answering
                 and not (STOP_RE.search(text) and len(text.split()) <= 5)):
@@ -2975,7 +2998,13 @@ class GoatApp:
                 print(f"[merge] {gap:.2f}s after the last one: "
                       f"{prev[0]!r} + {text!r}")
                 text = prev[0].rstrip(" -–—.…") + " " + text
-        if DANGLING_RE.search(text) and not answering:
+                merged = True
+        dangling = bool(DANGLING_RE.search(text)) and not answering
+        metrics.emit("heard", gap=round(gap, 2) if gap is not None else None,
+                     merged=merged, held=held is not None or dangling,
+                     answering=bool(answering), words=len(text.split()),
+                     source=source)
+        if dangling:
             # "This is-" (live 2026-10-01): the ear committed him mid-sentence
             # and the brain answered a fragment. A transcript that trails off
             # waits HOLD_DANGLING_S for the rest before it becomes a turn.
@@ -5368,6 +5397,11 @@ class GoatApp:
         """Accumulate session Claude token totals for the UI meter, and detect
         the out-of-usage error. Returns True when the quota is exhausted."""
         u = msg.usage or {}
+        metrics.emit("claude_usage", model=getattr(self, "model", ""),
+                     input=u.get("input_tokens") or 0,
+                     cache_read=u.get("cache_read_input_tokens") or 0,
+                     cache_create=u.get("cache_creation_input_tokens") or 0,
+                     output=u.get("output_tokens") or 0)
         self.usage_in += (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
         self.usage_out += u.get("output_tokens") or 0
         self.emit("usage", f"{self.usage_in}|{self.usage_out}")

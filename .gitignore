@@ -42,6 +42,8 @@ ui-config.json
 # Raw mic captures from STT debugging — voice recordings never leave the machine
 python/stt-debug/
 python/screen-actions.jsonl
+# GOAT_METRICS=on debug log (timings, token counts — stays on this machine)
+python/metrics.jsonl
 python/live-shot.png
 python/live-shot.png.tmp
 
