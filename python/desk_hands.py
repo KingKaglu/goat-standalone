@@ -99,6 +99,9 @@ def write_file(args: dict) -> str:
                 "anything else goes to Claude")
     if any(b in path.lower() for b in _NO_WRITE):
         return "ERROR: that folder is off limits for the voice — Claude's job"
+    import secret_paths
+    if secret_paths.is_secret(path):        # 2026-11-06 audit S6
+        return secret_paths.REFUSAL
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if mode == "append" and os.path.exists(path):

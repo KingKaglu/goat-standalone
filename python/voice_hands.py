@@ -42,6 +42,7 @@ import urllib.request
 import zipfile
 
 from goat_paths import GOAT_ROOT
+import secret_paths
 
 HOME = os.path.expanduser("~")
 # Where his things live. Program/system trees and dependency folders are
@@ -75,7 +76,12 @@ CONTENT_ROOTS = [os.path.join(GOAT_ROOT, "workspace"),
                  os.path.join(HOME, "Downloads"), os.path.join(HOME, "OneDrive")]
 READ_CAP = 6000            # what the voice can usefully read out from
 NEVER_OPEN = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".msi", ".js", ".reg",
-              ".scr", ".com", ".jar", ".hta", ".wsf", ".psm1"}
+              ".scr", ".com", ".jar", ".hta", ".wsf", ".psm1",
+              # 2026-11-06 audit S7: these launch programs too
+              ".lnk", ".url", ".pif", ".cpl", ".msc", ".vbe", ".jse", ".wsh",
+              ".ws", ".scf", ".appref-ms", ".settingcontent-ms", ".application",
+              ".library-ms", ".msp", ".mst", ".msix", ".appx", ".appinstaller",
+              ".gadget", ".inf", ".chm", ".xll", ".py", ".pyw"}
 STOP = {"the", "a", "an", "my", "me", "file", "files", "folder", "about", "and",
         "of", "on", "in", "for", "to", "laptop", "computer", "pc", "find", "search",
         "open", "with", "that", "this", "is", "it", "goat", "please", "idea"}
@@ -246,7 +252,7 @@ def find_files(query: str) -> str:
             time.sleep(0.25)
     elif time.time() - _index_t > INDEX_TTL_S:
         warm()                              # refresh in the background
-    names = _name_hits(words)
+    names = [h for h in _name_hits(words) if not secret_paths.is_secret(h[0])]
     lines = []
     if names:
         lines.append("By name:")
@@ -254,7 +260,8 @@ def find_files(query: str) -> str:
     inside = []
     if len(names) < 3:
         # few or no names match: look inside his documents too
-        inside = [h for h in _content_hits(words) if h[0] not in {p for p, _ in names}]
+        inside = [h for h in _content_hits(words) if h[0] not in {p for p, _ in names}
+                  and not secret_paths.is_secret(h[0])]
     if inside:
         lines.append("Mentioned inside:")
         lines += ["  " + _fmt(p, mt) for p, mt in inside]
@@ -266,6 +273,8 @@ def find_files(query: str) -> str:
 
 def read_file(path: str) -> str:
     path = (path or "").strip().strip('"')
+    if secret_paths.is_secret(path):
+        return secret_paths.REFUSAL
     if not os.path.isfile(path):
         return f"ERROR: no such file: {path}"
     ext = os.path.splitext(path)[1].lower()
@@ -283,6 +292,8 @@ def read_file(path: str) -> str:
 
 def list_folder(path: str) -> str:
     path = (path or "").strip().strip('"') or os.path.join(HOME, "Desktop")
+    if secret_paths.is_secret(path):
+        return secret_paths.REFUSAL
     try:
         names = sorted(os.listdir(path), key=str.lower)
     except Exception as e:  # noqa: BLE001
@@ -297,6 +308,8 @@ def open_path(path: str) -> str:
     path = (path or "").strip().strip('"')
     if not os.path.exists(path):
         return f"ERROR: no such file or folder: {path}"
+    if secret_paths.is_secret(path):
+        return secret_paths.REFUSAL
     if os.path.splitext(path)[1].lower() in NEVER_OPEN:
         return "ERROR: that's a program or script — running it is Claude's job"
     try:
@@ -535,12 +548,25 @@ def _ago(t: float) -> str:
     return f"{s} s ago" if s < 90 else f"{s // 60} min ago" if s < 5400 else f"{s // 3600} h ago"
 
 
+def _claude_exe() -> str | None:
+    """The terminal Claude's own claude.exe, run WITHOUT a shell (2026-11-06
+    audit S5: shell=True sent the voice's words through cmd.exe, where a
+    quote and an & in them could start another program). A .cmd/.bat shim
+    would go through cmd.exe again, so only a real .exe is used."""
+    import shutil
+    exe = shutil.which("claude")
+    return exe if exe and exe.lower().endswith(".exe") else None
+
+
 def _sessions() -> list:
     """Claude Code sessions he runs himself (GOAT's own worker excluded)."""
+    exe = _claude_exe()
+    if exe is None:
+        return []
     try:
-        out = subprocess.run(["claude", "agents", "--json"], capture_output=True,
+        out = subprocess.run([exe, "agents", "--json"], capture_output=True,
                              text=True, encoding="utf-8", errors="replace",
-                             timeout=40, shell=True,
+                             timeout=40,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
         rows = json.loads(out[out.index("["):]) if "[" in out else []
     except Exception:  # noqa: BLE001
@@ -640,9 +666,12 @@ def _resume(rows: list, msg: str) -> str:
         return ("the terminal Claude is still working, so it can't take a new message "
                 "right now — it's on it")
     r = idle[0]
+    exe = _claude_exe()
+    if exe is None:
+        return "ERROR: couldn't find claude.exe to send it (only a .cmd shim is installed)"
     try:
-        subprocess.Popen(["claude", "--bg", "--resume", r["sessionId"], msg],
-                         cwd=r.get("cwd") or HOME, shell=True,
+        subprocess.Popen([exe, "--bg", "--resume", str(r["sessionId"]), msg],
+                         cwd=r.get("cwd") or HOME,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except Exception as e:  # noqa: BLE001

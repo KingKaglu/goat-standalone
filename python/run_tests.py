@@ -36,6 +36,7 @@ DEFAULT = [
     "test_phone_cut",
     "test_voice_latency",
     "test_voice_hands",
+    "test_voice_hands_safety",
     "test_desk_hands",
     "test_live_talk",
     "test_stt_live",
