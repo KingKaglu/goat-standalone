@@ -386,8 +386,15 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
         if p_en < NOISY_EN_MAX and EN_KA_CLOUD:
             noisy = p_en >= EN_PROB_MIN
             if not cloud:
-                text, _ = _pinned(audio, sample_rate, "en")
-                return text, ("ka?script" if noisy else "ka?")
+                if noisy:                   # may be English after all: its fallback
+                    text, _ = _pinned(audio, sample_rate, "en")
+                    return text, "ka?script"
+                # Plainly not English (p_en < 0.10): a second, English-pinned
+                # decode only made Georgian nonsense, ~0.3 s on every one of
+                # his Georgian partials (2026-11-08 bench, 3 clips: auto 0.78 s
+                # + pinned 0.26-0.32 s). The Georgian ear writes the real text.
+                return clean_transcript(got.get("text", ""),
+                                        time.monotonic() < _chatting_until), "ka?"
             ka = _georgian(audio, sample_rate, script_only=noisy)
             if ka is not None:
                 return ka, "ka"
@@ -445,7 +452,18 @@ def _ka_result(text):
     return text
 
 
-def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
+def _live_job(audio: np.ndarray):
+    """The Live Georgian ear on one clip -> (text or None, seconds)."""
+    import stt_live
+    t0 = time.monotonic()
+    return stt_live.transcribe(audio, 16000), time.monotonic() - t0
+
+
+LIVE_WAIT_S = 20.0   # a raced Live job never holds the turn longer (its own cap is ~18 s)
+
+
+def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False,
+              live=None):
     """Georgian text from the cloud ear, or None when it can't be had.
 
     Gemini Live's own transcription first (stt_live): on his 2026-10-25
@@ -453,18 +471,21 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
     ახლა?" in 2.2-4.5 s, where Gladia wrote "რომ ხარობრაშ შვიმი" and
     "გოტმით ხარი რომ ელი საათი ახლა" in 5-9 s. Gladia stays the fallback.
     script_only: the clip may be English — Georgian letters or None, and
-    no Gladia (pinned to Georgian, it would write English as Georgian)."""
+    no Gladia (pinned to Georgian, it would write English as Georgian).
+    live: a Future of _live_job already running on this clip (Stream started
+    it as he paused): its answer is used instead of asking Live again."""
     try:
-        import stt_live
-        t0 = time.monotonic()
-        text = stt_live.transcribe(audio, sample_rate)
+        if live is not None:
+            text, secs = live.result(timeout=LIVE_WAIT_S)
+        else:
+            text, secs = _live_job(audio) if sample_rate == 16000 else (None, 0.0)
         if script_only and not (text and re.search(r"[Ⴀ-ჿ]", text)):
-            print(f"[stt] Live ear says not Georgian ({time.monotonic() - t0:.1f}s): "
+            print(f"[stt] Live ear says not Georgian ({secs:.1f}s): "
                   f"{(text or '')[:60]!a}", flush=True)
             return None
         if text:
             note_georgian()
-            print(f"[stt] Georgian via Live in {time.monotonic() - t0:.1f}s: "
+            print(f"[stt] Georgian via Live in {secs:.1f}s: "
                   f"{text[:60]!a}", flush=True)
             return clean_transcript(text, True)
     except Exception as e:  # noqa: BLE001 — Gladia below
@@ -583,6 +604,15 @@ class Stream:
         self.heard = lang             # the language the newest partial was in
         self._maybe_ka: dict = {}     # n_chunks -> "ka?" / "ka?script" / None
         self.fast = lang == "en" and sticky_en()   # pinned English this utterance
+        # Georgian lately: the Live ear hears each pause's audio AS he pauses,
+        # side by side with Whisper, instead of only after Whisper's language
+        # check and the end of the turn (2026-11-08 log: every Georgian turn
+        # was Whisper ~1.1 s, then the 1.2 s endpoint, then Live 1-3.8 s, in a
+        # row; 4-10 s from his pause to his words).
+        self._ka_warm = (lang == "en" and EN_KA_CLOUD and not self.fast
+                         and time.monotonic() - _ka_at < KA_WARM_S)
+        self._live = None             # (n_chunks, Future of _live_job)
+        self._said_en = False         # a partial came back plainly English
         if EN_KA_CLOUD and time.monotonic() - _ka_at < KA_WARM_S:
             # he's talking Georgian lately: have the Live ear's session
             # dialled while he speaks (saves ~1.4 s, measured 3.2 -> 1.75 s)
@@ -629,6 +659,17 @@ class Stream:
         fut = _POOL.submit(self._run, n)
         with self._lock:
             self._latest = (n, fut)
+        if self._ka_warm and not self._said_en:
+            lv = self._live          # one Live job at a time per utterance
+            if lv is None or lv[1].done():
+                self._start_live(n)
+
+    def _start_live(self, n: int):
+        try:
+            self._live = (n, _KA_POOL.submit(_live_job, np.concatenate(self._chunks[:n])))
+        except Exception:  # noqa: BLE001 — result() asks the Georgian ear itself
+            self._live = None
+        return self._live
 
     def _run(self, n: int):
         with self._lock:
@@ -659,6 +700,8 @@ class Stream:
                 if heard in ("en", "ka"):
                     self.heard = heard
             self._maybe_ka[n] = heard if str(heard).startswith("ka?") else None
+            if heard == "en":
+                self._said_en = True
         return text
 
     async def result(self):
@@ -666,22 +709,52 @@ class Stream:
         j = self._latest
         if j is None:
             return None
+        live = None
+        if self._ka_warm:
+            lv = self._live
+            if lv is None or lv[0] != j[0]:
+                lv = None if self._said_en and not self._maybe_ka.get(j[0]) \
+                    else self._start_live(j[0])
+            live = lv[1] if lv else None
+        whisper = asyncio.wrap_future(j[1])
+        if live is not None:
+            # Race: Georgian letters from Live settle it without waiting for
+            # Whisper (which can sit behind an earlier partial on its one worker).
+            done, _ = await asyncio.wait({whisper, asyncio.wrap_future(live)},
+                                         timeout=STREAM_RESULT_S,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if live.done() and not live.cancelled() and live.exception() is None:
+                ka_text, secs = live.result()
+                if ka_text and re.search(r"[Ⴀ-ჿ]", ka_text):
+                    note_georgian()
+                    print(f"[stt] Georgian via Live (raced) in {secs:.1f}s: "
+                          f"{ka_text[:60]!a}", flush=True)
+                    return self._heard(clean_transcript(ka_text, True), "ka")
         try:
-            text = await asyncio.wait_for(asyncio.wrap_future(j[1]), STREAM_RESULT_S)
+            text = await asyncio.wait_for(whisper, STREAM_RESULT_S)
         except (asyncio.TimeoutError, concurrent.futures.CancelledError):
             self.error = self.error or f"no answer in {STREAM_RESULT_S:.0f}s"
-            return None
+            text = None
         if text is None:
-            return None
+            if live is None:
+                return None
+            # Whisper failed but Live is still listening: its Georgian, if any
+            ka = await asyncio.to_thread(_georgian, np.concatenate(self._chunks[:j[0]]),
+                                         16000, True, live)
+            return self._heard(ka, "ka") if ka else None
         mode = self._maybe_ka.get(j[0])
         if mode:
             # the final words may be his Georgian: the Georgian ear, once
             audio = np.concatenate(self._chunks[:j[0]])
             ka = await asyncio.to_thread(_georgian, audio, 16000,
-                                         mode == "ka?script")
+                                         mode == "ka?script", live)
             if ka is not None:
                 text = ka
                 self.heard = "ka"
+        return self._heard(text, self.heard)
+
+    def _heard(self, text: str, heard: str) -> str:
+        self.heard = heard
         ms = (time.monotonic() - self.t_commit_sent) * 1000
         print(f"[stt-local] heard {ms:.0f}ms after his pause"
               f"{' (sticky en)' if self.fast else ''}: {text[:60]!a}")
