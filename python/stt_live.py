@@ -78,14 +78,36 @@ def _bg_loop():
     return _loop
 
 
+# 2026-11-05 gemini-3.8-live began refusing ANY thinkingConfig at setup
+# ("1007 Thinking budget is not supported"); live_talk learned it then, this
+# ear didn't, so every Live Georgian turn failed and fell to the 3 s REST ear
+# (2026-11-08). Refused once = never sent again this run.
+_think_ok = [True]
+
+
 async def _dial(key: str):
+    try:
+        return await _dial_once(key, _think_ok[0])
+    except Exception as e:  # noqa: BLE001
+        err = str(e).lower()
+        if _think_ok[0] and "thinking" in err and "not supported" in err:
+            _think_ok[0] = False
+            print(f"[stt-live-ka] {MODEL} refuses thinkingConfig — dialling without it",
+                  flush=True)
+            return await _dial_once(key, False)
+        raise
+
+
+async def _dial_once(key: str, think: bool):
     import websockets
     ws = await websockets.connect(f"{URL}?key={key}", max_size=8 * 1024 * 1024,
                                   open_timeout=5)
+    gen = {"responseModalities": ["AUDIO"]}
+    if think:
+        gen["thinkingConfig"] = {"thinkingBudget": 0}
     await ws.send(json.dumps({"setup": {
         "model": f"models/{MODEL}",
-        "generationConfig": {"responseModalities": ["AUDIO"],
-                             "thinkingConfig": {"thinkingBudget": 0}},
+        "generationConfig": gen,
         "systemInstruction": {"parts": [{"text": "Listen only. Reply with one word: ok."}]},
         # His two languages named: without it short Georgian came back as
         # Hindi, Spanish or Latin letters ("Romelisatia"); with it "რომელი

@@ -352,7 +352,10 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
     (or "ka?script", the noisy band) for the caller to settle once.
     fast=True (sticky_en said so): English pinned, no language check."""
     if force == "en" and fast:
-        return _pinned(audio, sample_rate, "en")
+        got = _pinned(audio, sample_rate, "en")
+        if got[0] and _ASKS_KA.search(got[0]):
+            note_georgian()                 # "talk to me in Georgian": he's switching
+        return got
     if force == "en":
         # Listen first, pin second: one request when it IS English (most
         # turns), a second pinned one only when Whisper guessed otherwise.
@@ -367,7 +370,9 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
             return "", code
         p_en = float((got.get("language_probabilities") or {}).get("en", 0.0) or 0.0)
         if str(got.get("detected_language") or "").lower() == "english":
-            if p_en >= STICKY_P_EN and (got.get("text") or "").strip():
+            if _ASKS_KA.search(got.get("text") or ""):
+                note_georgian()
+            elif p_en >= STICKY_P_EN and (got.get("text") or "").strip():
                 global _en_sure_until
                 _en_sure_until = time.monotonic() + STICKY_S
             return clean_transcript(got.get("text", ""),
@@ -418,6 +423,28 @@ _ka_at = 0.0         # when he last spoke Georgian
 KA_WARM_S = 300.0    # he spoke Georgian this recently: dial Live as he starts
 
 
+def note_georgian() -> None:
+    """Georgian is in the air (he spoke it, asked for it, or the voice answered
+    in it): stop pinning English. 2026-11-08 bug: _ka_at was only set when
+    the Live ear wrote the Georgian, so after a REST/Gladia Georgian turn the
+    sticky English pin stayed on and his next three Georgian sentences came
+    out as English nonsense ("Wowun Jobe Shinkatuli Semenis Enginy")."""
+    global _ka_at, _en_sure_until
+    _ka_at = time.monotonic()
+    _en_sure_until = 0.0
+
+
+# an English sentence that asks for Georgian ("talk to me in Georgian")
+_ASKS_KA = re.compile(r"\b(georgian|kartuli|qartuli)\b|ქართ", re.I)
+
+
+def _ka_result(text):
+    """Georgian text from any ear: remember it, pass it on."""
+    if text and re.search(r"[Ⴀ-ჿ]", text):
+        note_georgian()
+    return text
+
+
 def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
     """Georgian text from the cloud ear, or None when it can't be had.
 
@@ -436,8 +463,7 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
                   f"{(text or '')[:60]!a}", flush=True)
             return None
         if text:
-            global _ka_at
-            _ka_at = time.monotonic()
+            note_georgian()
             print(f"[stt] Georgian via Live in {time.monotonic() - t0:.1f}s: "
                   f"{text[:60]!a}", flush=True)
             return clean_transcript(text, True)
@@ -469,11 +495,11 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False):
                 # ASCII escapes keep this diagnostic from raising under the
                 # Windows console's cp1252 encoding and dropping good text.
                 print(f"[stt] Georgian via REST Gemini: {text[:60]!a}", flush=True)
-                return clean_transcript(text, True)
+                return _ka_result(clean_transcript(text, True))
         except Exception:  # noqa: BLE001 — too slow or failed: Gladia
             pass
     try:
-        return glad.result(timeout=30)
+        return _ka_result(glad.result(timeout=30))
     except Exception as e:  # noqa: BLE001 — English pinning is the fallback
         print(f"[stt] Georgian ear failed: {e!r}", flush=True)
         return None

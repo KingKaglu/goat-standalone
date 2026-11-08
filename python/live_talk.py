@@ -27,6 +27,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 from collections import deque
 
@@ -492,6 +493,14 @@ class _Turn:
         text = (sc.get("outputTranscription") or {}).get("text")
         if text:
             self._mark()
+            if re.search(r"[Ⴀ-ჿ]", text):
+                # the voice answers in Georgian: his next words likely are too,
+                # so the ear stops pinning English (2026-11-08)
+                try:
+                    import stt_whisper
+                    stt_whisper.note_georgian()
+                except Exception:  # noqa: BLE001
+                    pass
             self.on_text(text)
 
     def call(self, name: str, args: dict):
