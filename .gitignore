@@ -34,6 +34,7 @@ stt/bin/
 stt/bin-cuda/
 stt/*.bin
 stt/*.wav
+stt/fastconformer-ka/
 tts/piper/
 tts/*.onnx
 tts/*.onnx.json

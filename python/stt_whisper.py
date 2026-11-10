@@ -466,23 +466,44 @@ def _live_job(audio: np.ndarray):
 LIVE_WAIT_S = 20.0   # a raced Live job never holds the turn longer (its own cap is ~18 s)
 
 # The local Georgian ear (stt_fastconformer, 2026-11-10 audit A1/A4). Measured
-# on 30 FLEURS clips (340 s of read Georgian) on his laptop, same clips for all:
-#                 WER     CER    median time   empty answers
-#   Live ear      11.7 %  6.6 %  4958 ms       1
-#   local ear     17.6 %  5.5 %   339 ms       0      (clips of 7-18 s)
-# On the 22 clips without numerals or Latin words: 12.7 % against 13.9 % WER,
-# 7.9 % against 3.4 % CER. It writes numbers as words and knows no English.
-# So it goes first where the clip is plainly Georgian, the cloud ears stay as
-# its fallback, and Georgian works with no network at all.
-# On when its model files are there; GOAT_STT_KA_LOCAL=off = cloud ears only.
-KA_LOCAL = os.environ.get("GOAT_STT_KA_LOCAL", "on").strip().lower() \
-    in ("on", "1", "true", "yes")
+# on 30 FLEURS clips (340 s of read Georgian, 7-18 s each) on his laptop:
+#                 WER        CER       median time   empty answers
+#   Live ear      6-12 %     2-7 %     4.1-5.0 s     0-1 per run (3 runs)
+#   local ear     17.6 %     5.5 %     0.34 s        0
+#   REST Gemini   40.7 %     34 %      2.1 s         8
+# With room noise at 10 dB: Live 12 %, local 26 %. The local ear writes
+# numbers as words and knows no English. So Live stays the first Georgian
+# ear, and the local one is what answers when Live has nothing after
+# KA_LOCAL_AFTER_S or is unreachable: before REST Gemini and Gladia, and with
+# no network at all. On Giorgi's own turns Live took 0.9-4.0 s, median 1.7 s
+# (13 turns in metrics), and the old chain could keep him waiting 20 s for
+# Live alone.
+# GOAT_STT_KA_LOCAL: "fallback" (default), "first" (the local ear before
+# Live: fastest and fully offline, less exact), "off" (cloud ears only).
+# Whatever it says, nothing changes until the model files are installed.
+KA_LOCAL = os.environ.get("GOAT_STT_KA_LOCAL", "fallback").strip().lower()
+if KA_LOCAL in ("on", "1", "true", "yes"):
+    KA_LOCAL = "fallback"
+elif KA_LOCAL not in ("fallback", "first"):
+    KA_LOCAL = "off"
+KA_LOCAL_AFTER_S = 3.0   # Live's patience when the local ear can take over
+
+
+def _local_mode() -> str:
+    """"first", "fallback" or "off" for this clip: off without the model."""
+    if KA_LOCAL not in ("first", "fallback"):
+        return "off"
+    try:
+        import stt_fastconformer
+        return KA_LOCAL if stt_fastconformer.available() else "off"
+    except Exception:  # noqa: BLE001
+        return "off"
 
 
 def _warm_local() -> None:
     """Georgian is likely: load the local ear's model in the background
     (about two seconds, once) so his sentence does not wait for it."""
-    if not KA_LOCAL:
+    if KA_LOCAL == "off":
         return
     try:
         import stt_fastconformer
@@ -494,7 +515,7 @@ def _warm_local() -> None:
 def _local_georgian(audio: np.ndarray, sample_rate: int):
     """Georgian text from the local ear, or None: switched off, no model,
     failed, or it heard no Georgian (the cloud ears get the clip then)."""
-    if not KA_LOCAL:
+    if KA_LOCAL == "off":
         return None
     try:
         import stt_fastconformer
@@ -525,18 +546,22 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False,
     live: a Future of _live_job already running on this clip (Stream started
     it as he paused): its answer is used instead of asking Live again.
 
-    The local Georgian ear answers first when its model is installed
-    (_local_georgian); everything below is then its fallback. Not for
-    script_only clips: it writes English speech in Georgian letters too, so
-    it cannot say which language a doubtful clip is."""
-    if not script_only:
+    The local Georgian ear (_local_georgian) takes over when Live has no
+    answer in KA_LOCAL_AFTER_S, or goes first ("first" mode); see KA_LOCAL.
+    Not for script_only clips: it writes English speech in Georgian letters
+    too, so it cannot say which language a doubtful clip is."""
+    local = "off" if script_only else _local_mode()
+    if local == "first":
         text = _local_georgian(audio, sample_rate)
         if text:
             note_georgian()
             return clean_transcript(text, True)
     try:
+        if live is None and local == "fallback" and sample_rate == 16000:
+            live = _KA_POOL.submit(_live_job, audio)     # so its wait can be capped
         if live is not None:
-            text, secs = live.result(timeout=LIVE_WAIT_S)
+            text, secs = live.result(
+                timeout=KA_LOCAL_AFTER_S if local == "fallback" else LIVE_WAIT_S)
         else:
             text, secs = _live_job(audio) if sample_rate == 16000 else (None, 0.0)
         if script_only and not (text and re.search(r"[Ⴀ-ჿ]", text)):
@@ -548,8 +573,13 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False,
             print(f"[stt] Georgian via Live in {secs:.1f}s: "
                   f"{text[:60]!a}", flush=True)
             return clean_transcript(text, True)
-    except Exception as e:  # noqa: BLE001 — Gladia below
+    except Exception as e:  # noqa: BLE001 — the local ear, then REST and Gladia
         print(f"[stt] Live Georgian ear failed: {e!r}", flush=True)
+    if local == "fallback":
+        text = _local_georgian(audio, sample_rate)
+        if text:
+            note_georgian()
+            return clean_transcript(text, True)
     if script_only:
         return None
     # Live is resting or failed: REST Gemini and Gladia together. REST writes

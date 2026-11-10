@@ -103,7 +103,8 @@ def georgian_chain():
     stt_gladia.available = lambda: state["gladia_on"]
     stt_gladia.transcribe_lang = gladia
     keep_local, keep_mod = w.KA_LOCAL, sys.modules.get("stt_fastconformer")
-    w.KA_LOCAL = False                    # the cloud chain on its own first
+    keep_after = w.KA_LOCAL_AFTER_S
+    w.KA_LOCAL = "off"                    # the cloud chain on its own first
     try:
         # the local Georgian ear, as a fake module (no model file in a test)
         local = types.SimpleNamespace(text=KA, ok=True, asked=0, warm_async=lambda: None)
@@ -118,9 +119,9 @@ def georgian_chain():
         state.update(live="ლაივი")
         check("local ear switched off: it is not asked",
               w._georgian(SEC, 16000) == "ლაივი" and local.asked == 0)
-        w.KA_LOCAL = True
+        w.KA_LOCAL = "first"
         order.clear()
-        check("local ear on: it answers first, no cloud ear asked",
+        check("mode 'first': the local ear answers, no cloud ear asked",
               w._georgian(SEC, 16000) == KA and order == [] and local.asked == 1, order)
         local.text = ""
         check("local ear heard nothing: the Live ear gets the clip",
@@ -141,7 +142,36 @@ def georgian_chain():
         state.update(live="hello there")
         check("script_only (maybe English): the local ear is never asked",
               w._georgian(SEC, 16000, script_only=True) is None and local.asked == 0)
-        w.KA_LOCAL = False
+
+        # the default: Live first, the local ear when Live has nothing in time
+        w.KA_LOCAL = "fallback"
+        state.update(live="ლაივი", rest="რესტი", gladia="გლადია")
+        local.asked = 0
+        order.clear()
+        check("mode 'fallback': Live answers, the local ear is not asked",
+              w._georgian(SEC, 16000) == "ლაივი" and local.asked == 0 and order == ["live"],
+              (order, local.asked))
+        state.update(live=None)
+        order.clear()
+        check("Live has nothing: the local ear, before REST and Gladia",
+              w._georgian(SEC, 16000) == KA and order == ["live"], order)
+
+        def slow_live(audio, sr):
+            time.sleep(1.0)
+            return "გვიან"
+        stt_live.transcribe = slow_live
+        w.KA_LOCAL_AFTER_S = 0.2
+        t0 = time.monotonic()
+        got = w._georgian(SEC, 16000)
+        check("Live too slow: the local ear answers at the deadline",
+              got == KA and time.monotonic() - t0 < 0.8, (got, time.monotonic() - t0))
+        stt_live.transcribe = live
+        local.text = ""
+        order.clear()
+        check("Live and the local ear both empty: REST and Gladia as before",
+              w._georgian(SEC, 16000) == "რესტი" and "rest" in order, order)
+        local.text = KA
+        w.KA_LOCAL = "off"
 
         import stt
         check("engine 'fastconformer': Georgian mode only",
@@ -176,7 +206,7 @@ def georgian_chain():
     finally:
         (stt_live.transcribe, stt_live.transcribe_rest,
          stt_gladia.available, stt_gladia.transcribe_lang) = keep
-        w.KA_LOCAL = keep_local
+        w.KA_LOCAL, w.KA_LOCAL_AFTER_S = keep_local, keep_after
         if keep_mod is None:
             sys.modules.pop("stt_fastconformer", None)
         else:
