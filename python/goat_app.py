@@ -4092,6 +4092,10 @@ class GoatApp:
         self._handoff_n = getattr(self, "_handoff_n", -1) + 1
         line = task_router.handoff_line(lang, self._handoff_n)
         self._front_cancel()
+        if r.get("refers_back"):
+            # "pass that to Claude": the job is what came before (2026-11-10).
+            hist = getattr(getattr(self, "talker", None), "history", None) or []
+            r = dict(r, task_summary=task_router.backref_job(text, hist))
         job = task_router.job_text(r, text)
         depth = "quick" if r.get("depth") == "quick" else "deep"   # audit R2
         print(f"[voice→claude] routed {depth}: {job[:100]!r}", flush=True)

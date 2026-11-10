@@ -156,6 +156,51 @@ _DISMISS_RE = re.compile(
     r"i'?(?:ll|\s+will|'?m\s+going\s+to|\s+am\s+going\s+to)\s+(?:do|make|handle|fix)\s+it)\b",
     re.IGNORECASE)
 
+# He tells GOAT to give something to Claude (2026-11-10: "გადაეცი, რომ
+# გააუმჯობესოს ქართული ხმის ჩაწერა", "კარგი, გადაეცი.", "გადაეცი კლოპს." all
+# went to the voice as chat, and it twice said it had passed it on without
+# calling hand_to_worker). Explicit hand-offs go straight to Claude, with the
+# recent conversation when "it/that" points back.
+_ASK_CLAUDE_EN_RE = re.compile(
+    r"\b(?:(?:pass|give|hand|send|forward)\s+(?:(?:it|this|that|these|the\s+\w+|"
+    r"that\s+\w+|this\s+\w+)\s+)?(?:on\s+|over\s+)?to\s+claude|"
+    r"(?:tell|ask|let|have|get)\s+claude\s+(?:to|that|do|handle|fix|work)|"
+    r"claude\s+(?:should|can|must)\s+(?:do|handle|fix|work))\b", re.IGNORECASE)
+_KA_CLAUDE = r"(?:კლოდ|კლოპ|კლაუდ|claude)\w*"
+_KA_HANDOFF_VERB = r"(?:გადაე?ცი|გადაეცით|გადასცე|უთხარი|უთხარით|მიეცი|მიაწოდე|დაავალე|გააკეთებინე)"
+_ASK_CLAUDE_KA_RE = re.compile(
+    rf"{_KA_HANDOFF_VERB}\w*\W+{_KA_CLAUDE}|{_KA_CLAUDE}\W+{_KA_HANDOFF_VERB}|"
+    rf"{_KA_HANDOFF_VERB}\W*,?\s*რომ\b", re.IGNORECASE)
+# The whole turn is just "pass it on" ("კარგი, გადაეცი.").
+_KA_BARE_HANDOFF_RE = re.compile(
+    rf"^\W*(?:(?:კარგი|ჰო|ხო|კი|ახლა|აბა|ოკ|ოკეი|ok(?:ay)?|მაშინ|ეხლა)\W+)*"
+    rf"{_KA_HANDOFF_VERB}(?:\W+(?:ეს|ის|ამას|მაგას|იმას|ახლა|ეხლა|გთხოვ))*\W*$",
+    re.IGNORECASE)
+
+
+def asks_for_claude(text: str) -> bool:
+    """He explicitly wants this given to Claude (English or Georgian)."""
+    t = " ".join((text or "").split())
+    return bool(_ASK_CLAUDE_EN_RE.search(t) or _ASK_CLAUDE_KA_RE.search(t)
+                or _KA_BARE_HANDOFF_RE.match(t))
+
+
+def backref_job(his: str, history) -> str:
+    """A hand-off that points back ("pass that to Claude"): his words plus his
+    last few turns and the voice's replies, so Claude knows what "that" is."""
+    lines = []
+    for h in list(history or [])[-6:]:
+        who = "Giorgi" if h.get("role") == "user" else "voice"
+        txt = " ".join(str(h.get("text", "")).split())[:400]
+        if txt:
+            lines.append(f"{who}: {txt}")
+    job = f'Giorgi asked for this to go to Claude: "{his.strip()}".'
+    if lines:
+        job += (" What he means is in the recent conversation (he may speak "
+                "Georgian):\n" + "\n".join(lines))
+    return job
+
+
 _FILLER_RE = re.compile(
     r"^\W*(?:(?:okay|ok|hey|now|please|so|and|alright|goat|yes|yeah|then|just|also|"
     r"thanks|thank\s+you|"
@@ -188,6 +233,10 @@ def route(text: str, *, job_running: bool = False) -> dict:
         return done(why="calling it off")
     if job_running and _JOB_TALK_RE.search(t):
         return done(why="about the running job")
+    if asks_for_claude(t) and not _TERMINAL_CLAUDE_RE.search(t):
+        return done(type=TASK, size=BIG, task_summary="", refers_back=True,
+                    needs_confirmation=bool(_CONFIRM_RE.search(t)),
+                    why="asked for Claude", depth="deep")
     if _TERMINAL_CLAUDE_RE.search(t):
         # His own Claude Code sessions: the voice's terminal_claude hand
         # reads and types into them in one step ("terminal" isn't a job).

@@ -156,6 +156,28 @@ class AuditRouterFixes(unittest.TestCase):
             r = tr.route(s)
             self.assertEqual((r["size"], r["depth"]), (tr.BIG, "deep"), s)
 
+    def test_hand_offs_to_claude_go_to_claude(self):
+        # 2026-11-10: his Georgian "pass it to Claude" stayed with the voice,
+        # which twice said it had passed it on without doing so.
+        for s in ("გადაეცი, რომ გააუმჯობესოს ქართული ხმის ჩაწერა, ანუ ჩემი მოსმენა ქართულად.",
+                  "კარგი, გადაეცი.", "გადაეცი", "არ გადაგიცია არაფერი, გადაეცი კლოდს.",
+                  "უთხარი კლოდს რომ ვიდეო გააკეთოს",
+                  "Okay, pass that issue to Claude.", "give it to Claude",
+                  "tell Claude to fix the ear"):
+            r = tr.route(s)
+            self.assertEqual((r["size"], r["why"], r.get("refers_back")),
+                             (tr.BIG, "asked for Claude", True), s)
+        for s in ("გადაეცი მარიამს რომ მოვალ", "რას აკეთებს კლოდი?",
+                  "what is Claude doing", "is Claude working?", "როგორ ხარ?"):
+            self.assertNotEqual(tr.route(s)["why"], "asked for Claude", s)
+
+    def test_backref_job_carries_the_conversation(self):
+        job = tr.backref_job("კარგი, გადაეცი.", [
+            {"role": "user", "text": "improve my Georgian listening"},
+            {"role": "model", "text": "I passed it on"}])
+        self.assertIn("improve my Georgian listening", job)
+        self.assertIn("კარგი, გადაეცი.", job)
+
     def test_every_result_has_a_depth(self):
         for s in CHAT + SMALL + BIG:
             self.assertIn(tr.route(s).get("depth"), ("quick", "deep"), s)
