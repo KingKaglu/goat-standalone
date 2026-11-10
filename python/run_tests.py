@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT = [
     "self_check",           # preflight: compile + import gate
+    "test_smoke",           # the hearing path's contracts (ear, chain, phone clip)
     "test_metrics",
     "test_engine_router",
     "test_engine_reconnect",
