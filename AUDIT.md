@@ -1,3 +1,187 @@
+# GOAT audit, 2026-11-10 (Phases 1, 2 and 2B plan; read-only)
+
+Scope: HEAD `08e6e4c` on branch `refactor/audit-cleanup`, the running config (`ui-config.json`: `lang=en`, worker `opus 5.5` at `high`), `python/metrics.jsonl` (2026-11-06 to 11-09, 1,455 events), the two app logs and `restart-goat.log`. No app code was changed. The only new file is `scripts/stt_bench.py`. The 2026-11-06 audit is kept unchanged below this one; items it fixed are not repeated.
+
+**How much was read.** In full: `stt_whisper.py`, `stt_live.py`, `stt_gladia.py`, `endpoint.py`, `run_tests.py`, `requirements.txt`. The voice and phone paths: `goat_app.py` 2174-3300 and 5701-5850, `phone_server.py` 60-130, 860-1460, 1516-1940, 1978-2110, `phone.html` 1080-1240 and 1600-1940, `stt_realtime.py` 1-200, the voice prompt in `talk_brain.py`. Only scanned by script or grep: `ui_qt.py`, `screen_*`, `game_*`, `reflex*.py`, `local_llm.py`, `voice_hands.py`, `task_router.py`, `tts_*.py`, `live_talk.py`, `audio_io.py` (constants only). Not available to read: the Android bubble app (`workspace/goat-bubble`, gitignored). So the bug and race review is solid for the hearing path and thin elsewhere.
+
+**Basis:** FACT = seen in code, log, metrics or a run today. ASSUMPTION = plausible, not proven. Every number names its source.
+
+## 1. Architecture
+
+**Entry points.** `GOAT.bat` / `start-goat.vbs` → `python/start-goat-app.vbs` → `ui_qt.py` (PySide6 window) → `goat_app.GoatApp.run()` on an asyncio loop. `python/restart-goat.ps1` = preflight (`self_check.py`), kill, relaunch, roll back if the engine never comes up. `phone_qr.py` = phone login codes. `run_tests.py`, `metrics.py summary`.
+
+**Modules by job.**
+
+| Job | Files |
+|---|---|
+| Audio in/out, echo cancel, VAD, endpoint timing | `audio_io.py` (livekit AEC3, Silero VAD through onnxruntime), `endpoint.py` (does the text sound finished), `dsp.py` |
+| Hearing (STT) | `stt_whisper.py` (local whisper.cpp server + the Georgian chain), `stt_live.py` (Gemini Live and REST transcription), `stt_gladia.py` (ElevenLabs Scribe batch + Gladia), `stt_realtime.py` (ElevenLabs Scribe realtime) |
+| Turn logic | `goat_app.py` (`_handle_utterance` → `_heard` → `_talk`), `side_talk.py`, `reflex.py`, `task_router.py`, `close_guard.py` |
+| Voice brain | `live_talk.py` (Gemini Live, speaks its own audio), `talk_brain.py` (REST fallback, prompt, tools), `voice_hands.py` |
+| Worker brain | Claude Agent SDK client in `goat_app.run()`, `screen_tools.py`, `brain_route.py` (one-brain mode only) |
+| Speaking (TTS) | `tts_edge.py` (edge-tts), `tts_piper.py` (offline fallback), `TtsPipeline` in `goat_app.py` |
+| Phone | `phone_server.py` (aiohttp, HTTPS + WebSocket on :8797), `phone.html`, `phone_hands.py`, `phone_ctl.py`, `phone_qr.py` |
+
+**Text turn, laptop.** Window input → `GoatApp.submit_text` (`goat_app.py:2539`) → `_talk` (`:3135`) → stop/close-guard checks → `reflex.match` (device command, no model) → else `_route_big` (`task_router`, big jobs straight to Claude) → else `_front_start` (voice brain answers or calls `hand_to_worker`) → reply text → `TtsPipeline` → speaker.
+
+**Text turn, phone.** `phone.html` form → WebSocket `{"type":"text"}` → `PhoneServer._command` (`phone_server.py:1984`) → the same `submit_text(origin="phone")`. Shared from there on. Reply text and audio go back over the socket.
+
+**Voice turn, laptop.**
+1. Mic → `audio_io.DuplexAudio`: 16 kHz mono, 10 ms blocks, AEC3, Silero VAD (threshold 0.35), 300 ms pre-roll.
+2. Speech start → `_on_utt_start` (`goat_app.py:2295`) opens a streaming ear: in English mode `stt_whisper.Stream` (local Whisper), in `ka`/`auto` mode `stt_realtime` (ElevenLabs).
+3. Endpointing: 200 ms of quiet → soft commit (the ear transcribes what it has). The turn ends after 500 ms if the partial text sounds finished, 1200 ms if not **or if the transcript isn't back yet** (`_sentence_state`, `:2265`). Cap 30 s.
+4. STT → `_handle_utterance` (`:2644`) awaits the stream; batch fallback if it missed.
+5. `_heard` (`:2934`): voice lock, phantom-phrase filter, echo checks, name gate, hold of a dangling sentence (1.6 s), merge window (1.5 s).
+6. `_talk` → reflex / router / voice brain / Claude, as for text.
+7. TTS: Gemini Live's own audio, else edge-tts sentence by sentence, else Piper.
+
+**Voice turn, phone.**
+1. `getUserMedia` with the browser's echo cancel, noise suppression and auto gain **off** (`phone.html:1808-1812`), AudioWorklet tap, resampled in JS to 16 kHz mono (`:1652-1668`).
+2. The page's **own** echo canceller and its **own** energy VAD (`frame()`, `:1712-1788`): starts on 3 loud frames, ends after 800 ms of quiet or 20 s.
+3. While he talks: 100 ms chunks as base64 JSON (`:1637-1641`). At the end: the whole clip again as binary int16 (`:1795-1797`).
+4. Laptop: `PhoneServer._utterance` (`phone_server.py:1642`) lifts the gain, applies echo/overlap rules, then calls the same `GoatApp._handle_utterance(source="phone")`.
+5. Reply audio returns over the socket and plays through Web Audio.
+
+The phone and the laptop share everything from `_handle_utterance` on. They do **not** share VAD, endpointing, gain or echo cancelling: those exist a second time in `phone.html` (and, by the code comments, a third time in the bubble app).
+
+## 2. Which STT engine, exactly
+
+**The phone does not use the browser's speech recognition.** There is no `SpeechRecognition` / `webkitSpeechRecognition` anywhere in `phone.html` (grep, FACT). It sends raw audio and the laptop transcribes it.
+
+GOAT runs in **English mode** (`ui-config.json` `lang: "en"`), although he mostly speaks Georgian. In that mode:
+
+| | Laptop | Phone page |
+|---|---|---|
+| First engine | whisper.cpp server, CUDA build, `ggml-large-v3-turbo-q8_0.bin` on the RTX 3050, port 3781 | the same server |
+| Server flags | `-t 4 -nt -bs 5 -nf -l en` (`stt_whisper.py:133-135`), language overridden per request | same |
+| Audio | 16 kHz mono float → 16-bit WAV per request | 16 kHz mono int16, resampled in the page |
+| Streaming or batch | Batch requests on growing audio: one at each 200 ms pause (`Stream`), newest wins | **Batch only**, after the whole clip arrived: with the GPU ear on, no stream is opened for the phone (`phone_server.py:1561-1567`) |
+| Language | `auto` + language probabilities; pinned `en` with no check when "sticky English" holds (`stt_whisper.py:312-319`) | always `auto` (never sticky) |
+| Vocabulary prompt | none on the GPU ear (`stt_whisper.py:62-63`) | none |
+| Georgian | Whisper can't write it. If its English score is under 0.35 the clip goes to **Gemini Live input transcription** (`gemini-3.8-live`, `languageCodes ka-GE, en-US`, 200 ms PCM chunks, `stt_live.py:101-122`), raced against Whisper once Georgian was heard in the last 5 min. Then REST `gemini-3.5-flash-lite` (4 s wait), then Gladia `solaria-1` pinned `ka` | same chain, but one after the other, no race |
+| Text fixes | `stt-fixes.json` (55 entries) applied to every transcript | same |
+
+Other paths that exist but are not what runs today: ElevenLabs Scribe v2 realtime (`ka`/`auto` modes; out of credits since 2026-10-24, `python/.stt-rt-broke.json`), Scribe v2 batch with 90 keyterms (`stt_gladia.py:125-152`), CPU Whisper `base.en`/`small` (`GOAT_STT_GPU=off`).
+
+Offline, English still works (local Whisper). **Georgian has no offline engine at all.**
+
+## 3. Run and test
+
+- Start `GOAT.bat`; restart `python\restart-goat.ps1`; always `py -3.13`.
+- Tests: `cd python; py -3.13 run_tests.py`: 40 script suites, no pytest, 109 s today. Flags `--qt`, `--slow`, `--live`.
+- **Baseline today (main checkout, with his uncommitted edits): 38 of 40 pass.**
+  - `test_voice_id`: 2 failures ("his held-out clips: none rejected", "barge-in: his voice not vetoed"). It reads his real voiceprint in `voiceid/`.
+  - `test_side_talk`: 1 failure (42 % of lines dropped mid-call, limit 40 %). The same test passes 37/37 in a clean worktree, so it depends on machine state (it loads his file index), not only on code.
+- There is no test of recognition quality in any language, and no test that drives `phone.html`'s VAD (two small JS tests cover barge and park).
+
+## 4. Baselines
+
+| What | Value | Source |
+|---|---|---|
+| Startup | **26 s median** from "preflight passed" to "engine up" (27 restarts, range 17-39 s). Includes the kill, a fixed 8 s wait and 3 s polling, so it is an upper bound | `restart-goat.log` |
+| Time to first word, warm, laptop | **p50 2.71 s, p90 4.97 s** (146 turns) | `metrics.jsonl`, `latency` events |
+| of which endpoint wait | p50 1216 ms, p90 1216 ms | same |
+| of which ear after the endpoint | p50 32 ms, p90 1664 ms | same |
+| of which voice brain to first audio | p50 1245 ms, p90 3216 ms | same |
+| STT job, English pinned | p50 775 ms, p90 1734 ms from his pause (77 jobs) | `ear` events |
+| STT job, language auto | p50 1462 ms, p90 3139 ms (164 jobs) | `ear` events |
+| Whisper server alone | 508 ms for a 3 s clip, auto language | `stt_bench.py` run today |
+| Georgian ear (Gemini Live) | 0.9-4.0 s, median 1.7 s (13 turns), **on top of** the Whisper pass | `goat-app.log`, `[stt] Georgian via Live` |
+| Phone | **no data**: all 202 `heard` events are `source=laptop` | `metrics.jsonl` |
+| Voice brain prompt | 14,244 chars of rules + 14,000 chars of memory + 8,807 chars of tool schemas ≈ 37,000 chars per Live session and per REST fallback request, plus up to 24 history messages. Not counted in tokens | `talk_brain.py:132-178`, `:253`, measured |
+| Worker (Claude) per job | fresh input p50 58 tokens, cache read p50 202k (p90 2.7M), cache write p50 27k, output p50 2.1k; cache hit 95 % (55 jobs) | `claude_usage` events |
+| False barge-ins | 59 "echo, not you" against 58 confirmed interrupts | `barge` events |
+| Split turns | 17 split candidates, 3 merged | `metrics.py summary` |
+
+Hardware: i5-12450H, **8 GB RAM**, RTX 3050 Laptop **4 GB VRAM**. This limits which local models can sit beside Whisper turbo.
+
+## 5. Problems, by priority
+
+Risk = risk of the fix. Line numbers are at `08e6e4c`.
+
+### P0
+
+| ID | Area | File:line | Evidence | Risk | Expected gain |
+|---|---|---|---|---|---|
+| A1 | Georgian quality and latency | `stt_whisper.py:359-401`, `:465-526`; `ui-config.json` | Every Georgian sentence first goes through an English-first Whisper pass that cannot write Georgian, then to a chat model's side transcript (Gemini Live, free-tier quota, `stt_live.py:43-48`), then REST Gemini, then Gladia, which his own notes call garbage (`stt_live.py:278-280`). No engine built for Georgian is in the chain. Log: 0.9-4.0 s for the Live step alone. | Medium: touches the hearing path. Behind one interface with the old chain kept as fallback it is reversible by config | The benchmark decides. This is the main item |
+| A2 | Latency, endpoint | `goat_app.py:2274-2276`, `audio_io.py:54-68` | The long 1.2 s wait is still the normal case: endpoint p50 = 1216 ms; 142 of 295 endpoints ended in state `local-pending` (transcript not back at the 500 ms mark). The 11-06 fix only covers runs of confident English: 164 of 241 ear jobs were still `auto`, p50 1462 ms. FACT (metrics) | Medium: ending turns earlier can cut him off; the merge window is the net. It is a tuned value, so only with before/after numbers | Up to ~700 ms on about half of all turns |
+| A3 | Phone parity | `phone_server.py:1561-1567`, `:1704-1706`; `phone.html:1712-1788` | (a) No streaming ear for phone clips when the GPU ear is on: the clip is transcribed only after it has fully arrived. (b) Phone Georgian runs Whisper then Live in sequence, never the race the laptop has (`stt_whisper.py:720-732` is `Stream` only), never sticky English. (c) VAD, endpointing (fixed 800 ms, 20 s cap against 500/1200 ms, 30 s), gain and echo cancel are separate JS code. (d) No phone turn in four days of metrics, so none of this is measured. FACT (code) | Medium-high for (c): moving endpointing to the laptop changes how the phone feels; (a)(b) are small | Phone and laptop behave the same; est. 0.5-1 s on phone turns (ASSUMPTION until measured) |
+| A4 | Blocking, silent wait | `stt_live.py:333`, `stt_whisper.py:497-526`, `stt_gladia.py:167-196` | Worst case for one Georgian clip when the cloud is slow: Live up to 14 s, then REST Gemini and Gladia together for up to 30 s more (about 44 s in all), with nothing said to him. FACT (timeouts in code); frequency unknown | Low: one overall deadline | Bounded wait and a spoken "didn't catch that" instead of silence |
+
+### P1
+
+| ID | Area | File:line | Evidence | Risk | Expected gain |
+|---|---|---|---|---|---|
+| B1 | Conversation quality, memory | `talk_brain.py:98`, `:253` | The voice gets the first 14,000 characters of `workspace/memory.md`. The file is 42,602 characters, so it never sees the last 67 %. FACT (measured) | Low-medium: sending all of it triples that part of the prompt; better to pick what to send | The voice stops "forgetting" things Claude wrote down |
+| B2 | Security, privacy | `phone_server.py:1340` | A personal email address is hard-coded as the web-push contact, in a public repo. FACT | Low: read it from the secrets file | Personal data out of the code (it stays in git history unless rewritten) |
+| B3 | Security | `phone_server.py:1019-1020` | The bubble app still logs in by sending the master token as its cookie on every request (open since the 11-06 audit, S3) | Medium: needs an app build | A stolen phone session can't become full access |
+| B4 | Latency | `stt_live.py:307` | REST Georgian transcription builds a new HTTP client per call. The repo's own measurement of that cost is 0.25-0.8 s (`stt_whisper.py:106-110`) | Low | 0.25-0.8 s on every REST Georgian turn |
+| B5 | Phone audio quality | `phone.html:1652-1668` | 48 kHz → 16 kHz by averaging 3 samples, no real low-pass filter, so content above 8 kHz folds back into the speech band. ASSUMPTION that it hurts recognition: the phone clips in the benchmark will show it | Low if the laptop resamples (`dsp.resample_poly` exists) | Cleaner phone audio; measured in 2B |
+| B6 | Phone, network | `phone.html:1121`, `:1797-1799`, `:1637-1641` | Reconnect is a fixed 1.5 s retry. If the socket is down when he stops talking, the clip is dropped ("not connected"), not kept and resent. Audio is sent twice (base64 chunks + full clip) | Low | No lost sentence after a network blip; less upload |
+| B7 | Phone, screen lock | `phone.html:1931-1935`, `:1848` | Hidden page = mic off, by design; the mic watchdog does not run while hidden. Hands-free with the screen off is only possible in the bubble app | n/a | Listed so the checklist tests it; no change proposed |
+| B8 | Conversation quality | `talk_brain.py:171`, `:158` | The prompt orders every reply to open with "Sir," and every hand-off to say a fixed line. `ui-config.json` holds GOAT's own note that these hand-off lines left him "waiting blind". These are his standing orders | Behaviour change: his decision | Less robotic replies |
+| B9 | Tokens | `talk_brain.py:132-178` | ~37,000 characters ride on every REST fallback request; the rules contain dated incident stories. Open since 11-06 (T2). A "quick" Claude job still reads ~200k cached tokens (p50) | Medium: prompt edits change behaviour | Smaller prompt; exact saving needs token counts |
+| B10 | Tests | `run_tests.py`, `test_side_talk.py`, `test_voice_id.py` | 2 of 40 suites red before any change; one depends on machine state | Low | A green baseline to refactor against |
+| B11 | Logging | all of `python/` | 290 `print()` calls, no `logging`, no timestamps in `goat-app.log`, log replaced on every launch | Low-medium (many lines) | Problems can be dated and traced |
+| B12 | Barge-in | `audio_io.py` | As many echo false alarms (59) as real interrupts (58). Tuned thresholds: not touched without a recording-based test | n/a now | Listed only |
+
+### P2
+
+| ID | Area | File:line | Evidence | Risk | Expected gain |
+|---|---|---|---|---|---|
+| C1 | Dead code, no reference anywhere in the repo (name scan over .py/.html/.ps1/.vbs/.json) | `goat_app.py:2428` `set_talk_brain`, `:2592` `_ack`, `:4437` `_work_status_line`; `local_llm.py:169` `note_exchange`; `tts_edge.py:390` `_get_live`; `ui_qt.py:771` `paint_scene`, `:963` `Backdrop.set_dim`, `:1109` `GoatMark`, `:1506` `VoiceOrb`, `:2057` `Clickable.set_on`, `:2062` `ActionCard`, `:5621` `GoatWindow._act_talk` | Zero references besides the definition | Low; each one re-checked by hand before removal | Roughly 300-500 lines (not counted yet) |
+| C2 | Used by tests only | `dsp.py:136` `wav_bytes16`; `goat_app.py:844` `is_escalation`, `:855` `outcome_line`; `tts_piper.py:17` `synth_to_16k` | Only test files reference them | Don't delete without his OK (tests would go too) | small |
+| C3 | Old experiments, **listed, not to delete** | one-brain mode (`GOAT_TWO_BRAINS=off`, `brain_route.py`), `GOAT_STT_KA` experiment (`goat_app.py:321`), ElevenLabs realtime ear (`stt_realtime.py`, no credits), CPU Whisper path, `set_talk_brain` stub, `make_icon.py`, six `probe_*.py`, three `voice-knowledge-*.json` data files | Reachable by a switch or run by hand | n/a | Decision for him |
+| C4 | Duplicates | Georgian-letters regex written out 16 times; three junk-phrase filters (`stt_whisper.py:95`, `:233`, `goat_app._PHANTOM`); two secrets readers (`stt_gladia.py:78`, `talk_brain.py:117`); two vocabulary lists (`stt_whisper.py:76`, `stt_gladia.py:103`); two gain lifts (`phone_server.py:1704`, `audio_io.py:99-103`); three copies of the echo matching loop (`phone_server.py:1828-1869`); 24 local `from aiohttp import web` | FACT | Low | One place to change each rule |
+| C5 | Dependencies | `requirements.txt` | `scipy` is imported only by tests. `pywin32` (`desk_hands.py`) and `py_vapid` (`phone_server.py`) are imported but not declared. `silero-vad` is needed only for its model file (`voice_id.py:128`) | Low | A clean install works |
+| C6 | Code health | — | `ui_qt.py` 6,577 lines, `goat_app.py` 5,766, `phone_server.py` 2,109, `phone.html` 1,902 in one file; 62 `GOAT_*` environment switches spread over the modules; 338 `except Exception`, 122 of them `pass`; 93 lazy `getattr(self, "_x", default)`; 19 hard-coded user paths | Medium-high for big moves | Only what Phase 3 touches |
+| C7 | Security, low | `stt_live.py:103`, `:308` | The Gemini key travels in the URL query. Normal for that API, but an exception text could carry it into the log; today's handlers print only the error type or 120 chars | Low | Header instead of query |
+
+### Security checks that passed
+
+- All 21 routes: token or session check in every handler that returns data or acts (`_authed` / `_check`); only the manifest, icons and service worker are open, and they hold no data. The network gate middleware runs before all of them (`phone_server.py:1041-1058`).
+- WebSocket: auth, then Origin must match the host (`:1090-1094`). A request with no Origin header passes; that is how non-browser clients connect, and it still needs the cookie.
+- TLS on the only listener (`:913`). Self-signed for bare IPs (the phone must trust it once), a real certificate for the Tailscale name. Binds all interfaces and relies on the gate plus the Private-only firewall rule.
+- Upload: file names are generated on the server, only a cleaned extension is kept, 40 MB cap (`:1386-1400`). No path from the client is ever joined.
+- No shell command is built from phone input in `phone_server.py`; phone text becomes a normal turn, so it has the same power as his voice.
+- Git history: 0 hits for API-key and private-key patterns over all commits. `.goat-secrets.json`, `.phone/`, `voiceid/`, `workspace/`, metrics and mic captures are gitignored.
+
+## 6. Phase 2B: Georgian STT benchmark
+
+`scripts/stt_bench.py` is written and self-tested (scoring maths, audio preparation, one real clip through the local server). It reports WER, CER, exact matches, p50/p90 latency and real-time factor per engine, overall and per tag (phone, laptop, mixed, names, numbers …), and saves every hypothesis.
+
+Built in: `current` (today's real chain), `whisper-auto`, `whisper-ka` (forced language), `gemini-live`, `gemini-rest` (+ vocabulary in the prompt), `scribe`, `scribe-ka`, `scribe-vocab` (keyterms), `gladia`, `onnx-ka`, `nemo-ka`, `hf-whisper`. Options: `--prep raw,norm,highpass,denoise,pad`, `--clip-ms 0,100,200` (VAD cutting word edges), `--llm-fix` (correction pass, timed), `--vocab file`.
+
+**Candidates, from the vendors' pages on 2026-11-10** (third-party figures marked):
+
+| Engine | Where | Georgian quality claimed | Streaming | License / cost per audio hour | Fits this laptop |
+|---|---|---|---|---|---|
+| Current chain | local + Google free tier | not measured | partial | free, quota-limited | yes |
+| `nvidia/stt_ka_fastconformer_hybrid_large_pc` | local | WER 5.73 % Common Voice, 13.44 % FLEURS (model card) | no; NeMo lists a separate 80 ms streaming Georgian checkpoint | CC-BY-4.0, free | 115M parameters: yes. Through NeMo it needs `nemo_toolkit` (large install); an ONNX export runs on the already installed onnxruntime through the small `onnx-asr` package (CTC head only) |
+| `BuzzASR/georgian` | local | WER 34.5 % Common Voice 25, 43.7 % FLEURS (model card) | no | MIT, free | ~2B parameters, ~3 GB in half precision: only with Whisper turbo unloaded, or slowly on CPU with 8 GB RAM |
+| ElevenLabs Scribe v2 | API | his own earlier test, mostly synthesized speech: 7.3 % WER (`stt_gladia.py:13-19`) | batch; realtime is a separate model | $0.22/h batch, $0.39/h realtime, keyterms +$0.05/h (+$0.08/h realtime) | yes; his account has no credits |
+| Gemini 3.5 Flash-Lite audio | API | not published | no | $0.30 per 1M tokens, 25 tokens per second of audio ≈ **$0.03/h**; currently on the free tier | yes |
+| Google Chirp 3 (`ka-GE`) | API | preview language | yes | about $0.96/h (third-party figure, unverified) | yes; needs a Google Cloud project |
+| OpenAI `gpt-4o-transcribe` / mini | API | Georgian support not confirmed | unclear | $0.36/h / $0.18/h (third-party figures, unverified) | yes; needs an OpenAI key |
+| Soniox | API | **no Georgian** in its language list | — | — | excluded |
+
+Known limit to test, not assume: the NVIDIA model is Georgian-only, so English words inside Georgian sentences will probably come out in Georgian letters.
+
+Sources: [NVIDIA model card](https://huggingface.co/nvidia/stt_ka_fastconformer_hybrid_large_pc), [ONNX export](https://huggingface.co/OpenVoiceOS/stt_ka_fastconformer_hybrid_large_pc_onnx), [BuzzASR/georgian](https://huggingface.co/BuzzASR/georgian), [ElevenLabs API pricing](https://elevenlabs.io/pricing/api), [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), [Chirp 3](https://docs.cloud.google.com/speech-to-text/docs/models/chirp-3), [Soniox languages](https://docs.soniox.com/stt/concepts/supported-languages).
+
+**Needed from him before anything is measured:** the recordings, and a yes or no on each install and each paid engine (see the questions in the session).
+
+## 7. Proposed Phase 3 order (for approval; nothing started)
+
+1. Smoke tests for the critical paths (transcribe contract, phone clip → `_handle_utterance`, endpoint decision), and a green baseline (B10).
+2. One STT interface, `transcribe(audio) -> text`, engine and fallback chosen by config; today's chain moved behind it unchanged (A1, C4).
+3. The benchmark winner as the Georgian engine, today's chain as the fallback, one overall deadline (A1, A4, B4).
+4. Phone on the same path: streaming ear for phone clips, same language logic, resampling on the laptop (A3 a-b, B5, B6). Moving the phone's VAD and endpointing to the laptop (A3 c) is a separate, larger step that needs his yes.
+5. Endpoint wait (A2), only with before/after metrics.
+6. B1, B2, then C1 and C5. B3, B8, B9, B11, C2, C3, C6 only if he says so.
+
+---
+
 # GOAT audit — Phase 1 (2026-11-06, read-only)
 
 Scope: `python/` at HEAD `248740c`, plus the running config (`ui-config.json`: `lang=en`, `work_model=opus 5.5`, `effort=high`) and the two live logs (`goat-app.log`, `goat-app.log.old`, about 290 lines in total, because the log rotates on every launch).
