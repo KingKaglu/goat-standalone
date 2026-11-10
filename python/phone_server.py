@@ -64,6 +64,11 @@ BOOT_GRACE_S = 12   # after a restart, wait this long for the phone to return (w
 DIR = os.path.join(os.path.dirname(HERE), ".phone")   # gitignored
 PAGE = os.path.join(HERE, "phone.html")
 COOKIE = "goat_k"
+# Who a push service may write to about this sender (VAPID "sub": a mailto: or
+# https: address). Kept out of the code because the repo is public; set
+# GOAT_PUSH_CONTACT to your own address.
+PUSH_CONTACT = (os.environ.get("GOAT_PUSH_CONTACT", "").strip()
+                or "mailto:goat-push@example.com")
 SR = 16000
 MIN_SAMPLES = SR // 4
 MAX_SAMPLES = SR * 60
@@ -1337,7 +1342,7 @@ class PhoneServer:
                     webpush(sub, json.dumps({"title": title, "body": body[:180],
                                              "tag": tag}),
                             vapid_private_key=os.path.join(DIR, "vapid.pem"),
-                            vapid_claims={"sub": "mailto:giorgigzirishvili2004@gmail.com"},
+                            vapid_claims={"sub": PUSH_CONTACT},
                             ttl=3600)
                     keep.append(sub)
                 except WebPushException as e:
