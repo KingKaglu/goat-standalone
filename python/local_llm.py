@@ -166,17 +166,6 @@ def _mark_down(ttl: float = _AVAIL_TTL_BAD):
         _avail[2] = ttl
 
 
-def note_exchange(user: str, reply: str):
-    """Feed the fast brain's history an exchange that Fable answered, so it
-    keeps conversational continuity across brains. Capped — this is
-    context, not an archive."""
-    if not user or not reply:
-        return
-    with _lock:
-        _history.append({"role": "user", "content": user[:500]})
-        _history.append({"role": "assistant", "content": reply[:500]})
-
-
 def reset():
     with _lock:
         _history.clear()

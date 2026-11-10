@@ -387,10 +387,6 @@ def _get_lives():
     return _lives
 
 
-def _get_live():
-    return _get_lives()[0]
-
-
 def prime():
     """Open (or re-open) the live sockets in the background. Non-blocking —
     GOAT calls it when he STARTS talking, so the dial hides under his voice."""

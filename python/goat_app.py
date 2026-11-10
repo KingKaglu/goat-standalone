@@ -2426,11 +2426,6 @@ class GoatApp:
         preference file, so the switch goes through the window."""
         self.emit("ui_character", name)
 
-    def set_talk_brain(self, name: str):
-        """Retired 2026-09-23 (one brain). Kept so an old saved UI config
-        calling it is harmless."""
-        return
-
     def set_effort(self, level: str):
         """Thinking depth for the work lane (low…max). Thread-safe: the live
         session can't be re-efforted, so this only flags the reopen and the
@@ -2589,13 +2584,6 @@ class GoatApp:
         self.tts.mark_reply()
         self.emit("delta", "")
         self.tts.say(line)
-
-    def _ack(self, pool: dict):
-        """Rotate through a pool so the same words don't repeat every time —
-        a butler that says one identical sentence forever is a machine."""
-        options = pool.get(self.turn_lang) or pool["en"]
-        self._ack_i = (getattr(self, "_ack_i", -1) + 1) % len(options)
-        self._say_now(options[self._ack_i])
 
     @staticmethod
     def _first_sentence(text: str, cap: int = 160) -> str:
@@ -4386,42 +4374,6 @@ class GoatApp:
             return
         await asyncio.to_thread(self.fable.probe, MODEL_FABLE, WORKSPACE)
         self._emit_brains()
-
-    def _work_status_line(self) -> str:
-        """One live line about the WORK lane, fed to the talking brain every
-        talk turn so "what is the working brain doing?" gets a real answer
-        (his ask 2026-07-18 — before this, Gemini had no window into the
-        left lane and the question fell through to the silent work lane)."""
-        name = _friendly_model_name(self.model)
-        if self.claude_out:
-            return ("the working brain (Claude) is OUT OF USAGE"
-                    + (f" — resets around {self.claude_reset}"
-                       if self.claude_reset else "")
-                    + "; coding/repo jobs wait until then")
-        if self.busy and self._compacting:
-            return (f"{name} is tidying its own context between jobs — "
-                    "a few seconds, then it's free")
-        if self.busy:
-            mins = int((time.monotonic() - self._work_started) // 60)
-            age = f"about {mins} min in" if mins else "just started"
-            line = (f"{name} is busy right now ({age}) on: "
-                    f"\"{self._current_task[:160]}\"")
-            if self._last_tool:
-                line += f" — latest step: {self._last_tool}"
-            tail = self._reply_acc.strip()
-            if tail:
-                line += f" — its latest note: …{tail[-200:]}"
-            return line
-        if self._work_done_at:
-            mins = int((time.monotonic() - self._work_done_at) // 60)
-            ago = f"about {mins} min ago" if mins else "just now"
-            verdict = "FAILED" if self._work_failed else "finished"
-            line = (f"idle — its last job {verdict} {ago}: "
-                    f"\"{self._current_task[:120]}\"")
-            if self._last_work_summary:
-                line += f" — outcome: {self._last_work_summary[:220]}"
-            return line
-        return "idle — no job given to it yet this session"
 
     async def _work(self, text: str, hard: bool = False, echo_you: bool = False):
         """WORK lane (left panel): run the chosen Claude model WITH tools,
