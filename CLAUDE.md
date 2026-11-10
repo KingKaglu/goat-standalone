@@ -55,6 +55,12 @@ working on GOAT's code. Background: `README.md`, `STATE.md` (dev journal), `AUDI
 `GOAT_METRICS`, `GOAT_PHONE_LAN`, `GOAT_STT_EN_STICKY` (skip the slow language check on confident
 English turns), `GOAT_BACKCHANNEL_AFTER` (default 2.5 s).
 
+Added 2026-11-10 (second audit, `AUDIT.md` section 8): `GOAT_STT_ENGINE` / `GOAT_STT_FALLBACK`
+(`stt.py`, the one door for clips without a streaming transcript; default `chain`),
+`GOAT_STT_KA_LOCAL` = `fallback` | `first` | `off` (the local Georgian ear, `stt_fastconformer.py`;
+model files in `stt/fastconformer-ka/`, not in git), `GOAT_PUSH_CONTACT` (push contact address).
+Benchmark: `py -3.13 scripts\stt_bench.py --list`.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ (repo root) with god nodes, community structure, and cross-file relationships.

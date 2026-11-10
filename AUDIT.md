@@ -180,6 +180,68 @@ Sources: [NVIDIA model card](https://huggingface.co/nvidia/stt_ka_fastconformer_
 5. Endpoint wait (A2), only with before/after metrics.
 6. B1, B2, then C1 and C5. B3, B8, B9, B11, C2, C3, C6 only if he says so.
 
+## 8. Results (2026-11-10, after Phase 2B and Phase 3)
+
+### Benchmark
+
+Test set: the first 30 clips of FLEURS Georgian (test split, CC-BY-4.0): 340 s of read speech, 7–18 s per clip, several speakers, 16 kHz. **Not his voice, not his phone mic, no mixed Georgian and English, no names of his**: his own recordings were not available, so those four things stay unmeasured. Machine: his laptop, GOAT not running. Command: `py -3.13 scripts\stt_bench.py <folder> --goat <checkout> --engines ...`.
+
+| Engine | WER % | CER % | Empty answers | p50 ms | p90 ms | Cost per audio hour | Offline |
+|---|---:|---:|---:|---:|---:|---|---|
+| Gemini Live transcript (today's Georgian ear), 3 runs (raw 11.7 %; the two phone-resampler variants 7.8 % and 5.7 %: its answers vary from run to run) | 5.7–11.7 | 1.7–6.6 | 0–1 of 30 | 4068–4958 | 5428–5937 | free tier | no |
+| GOAT's whole chain as shipped before (`current`) | 11.9 | 6.3 | 1 | 5910 | 10532 | free tier | no |
+| FastConformer ka, int8, CPU | 17.6 | 5.5 | 0 | 306–339 | 438–497 | free | yes |
+| FastConformer ka, full precision, CPU | 18.0 | 5.7 | 0 | 140–155 | 215–250 | free | yes |
+| FastConformer + LLM correction (Gemini Flash-Lite) | 14.5 | 4.7 | 0 | 140 + 816 | – | about $0.03 | no |
+| REST Gemini Flash-Lite (today's second ear) | 40.7 | 34.0 | 8 | 2064 | 4775 | about $0.03 | no |
+| Whisper large-v3-turbo, pinned to Georgian | 108.4 | 84.6 | 0 | 5162 | 5345 | free | yes |
+| Whisper large-v3-turbo, auto language | 121.6 | 102.5 | 0 | 1310 | 5399 | free | yes |
+
+Not run: ElevenLabs Scribe (the key answers 401; $0.22 per audio hour batch), Gladia (paid, not approved), BuzzASR/georgian and the NeMo transducer head (their packages could not be installed in this session; BuzzASR's own card reports 34–44 % WER, far behind FastConformer's 5.7–13.4 %), Chirp 3 and OpenAI (no accounts).
+
+On the 22 clips whose reference has no numerals or Latin words: Live 12.7 % WER / 7.9 % CER, FastConformer 13.9 % / 3.4 %. FastConformer writes numbers as words ("ათი" for "10"), which costs it on the other 8.
+
+What else was tested (FastConformer unless said otherwise):
+
+| Test | Result |
+|---|---|
+| Forced language | Whisper pinned to Georgian is no better than auto: both over 100 % WER. Whisper cannot write Georgian. |
+| Peak normalisation | 18.0 → 16.8 % WER. Small gain; the phone path already does it. |
+| 80 Hz high-pass | 17.8 %. No effect. |
+| Noise suppression on clean audio | 18.2 %. No effect. |
+| Room noise at 10 dB SNR | 25.8 %; Live 12.0 %. Live is far more robust to noise. |
+| The same noise, then noise suppression | 23.9 %. Recovers 2 of the 8 points; not worth a new dependency. |
+| phone.html's resampler from 48 kHz and from 44.1 kHz | 17.8 % and 18.0 %. No measurable cost, so audit item B5 is closed without a change. |
+| 100 ms cut off both ends (VAD clipping) | 18.2 %. No effect. |
+| 200 ms cut off both ends | 20.3 %. Two points: the 300 ms pre-roll matters, keep it. |
+| 300 ms of silence added around the clip | 18.2 %. No effect. |
+| LLM correction pass | 18.0 → 14.5 % WER for 816 ms more: over the 300 ms budget, so not used. |
+| Vocabulary bias | Not measurable on this set (no names or terms of his in it). |
+| Sound that is not speech | FastConformer writes a word or two for silence, hum, noise and clicks. Its own certainty separates them (0.39–0.55 against 0.78 and up on speech), so answers under 0.6 are handed to the next ear. |
+
+### Recommendation, and what was built
+
+- **Engine: Gemini Live's transcript stays the Georgian ear.** It is the most exact engine measured (6–12 % WER), robust to noise, free, and already in GOAT.
+- **Offline fallback: NVIDIA FastConformer for Georgian** (`python/stt_fastconformer.py`, CC-BY-4.0, int8 ONNX, 131 MB on disk, 266 MB of RAM, about 110 ms for a 4 s clip on the CPU, no new package). It answers when Live has nothing after 4 s or cannot be reached, ahead of REST Gemini and Gladia.
+- Latency: no turn gets slower. A Georgian turn that Live used to hold for up to 20 s (and the chain for about 44 s) is now answered after 4.3 s at the latest, and Georgian works with no network (17.6 % WER, p50 295 ms, measured through `stt.transcribe` with the cloud ears switched off; before, there was no Georgian offline at all).
+- `GOAT_STT_KA_LOCAL=first` asks the local ear before Live (0.1–0.3 s instead of 1.7 s median, less exact); `off` is the old chain.
+
+The model files live in `stt/fastconformer-ka/` (not in git): `model.int8.onnx` and `vocab.txt` from `OpenVoiceOS/stt_ka_fastconformer_hybrid_large_pc_onnx` on Hugging Face. Without them nothing changes.
+
+### Problems from section 5: status
+
+| Item | Status |
+|---|---|
+| A1 no Georgian engine, nothing offline | Done: local ear as fallback, one interface (`stt.py`), engine by config. |
+| A4 silent wait of up to 44 s | Reduced to about 4.3 s when the model is installed. |
+| A3 phone parity | Phone clips go through the same `stt.transcribe` and get the same Georgian ears. The phone's own VAD and endpointing, and the missing streaming ear for phone clips with the GPU ear, are unchanged: both need the phone to test. |
+| B2 personal address in the code | Done (`GOAT_PUSH_CONTACT`). |
+| B5 phone resampler | Measured, no cost, left alone. |
+| B6 phone reconnect | Backoff, reconnect on return, and a clip that ended offline is kept for 15 s. Not tested on a phone. |
+| C1 dead code | 12 definitions, 535 lines removed. |
+| C5 dependencies | Declared. |
+| A2 endpoint wait, B1 memory cap, B3, B4, B7–B12, C2–C4, C6, C7 | Not touched: tuned values without a measurement, his decision, or outside the approved list. |
+
 ---
 
 # GOAT audit — Phase 1 (2026-11-06, read-only)
