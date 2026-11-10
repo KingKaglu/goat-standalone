@@ -77,7 +77,10 @@ TIMEOUT_S = 240
 def run(name: str) -> tuple:
     t0 = time.monotonic()
     try:
-        p = subprocess.run([sys.executable, "-u", name + ".py"], cwd=HERE,
+        # No real model in an offline suite: the local Georgian ear stays off
+        # unless a test switches it on with a fake (test_smoke does).
+        env = dict(os.environ, GOAT_STT_KA_LOCAL="off")
+        p = subprocess.run([sys.executable, "-u", name + ".py"], cwd=HERE, env=env,
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=TIMEOUT_S)
         code, out = p.returncode, (p.stdout or "") + (p.stderr or "")

@@ -84,6 +84,26 @@ def transcribe(audio: np.ndarray, sample_rate: int = 16000, mode: str = "en") ->
     return last
 
 
+@engine("fastconformer")
+def _fastconformer(audio: np.ndarray, sample_rate: int, mode: str):
+    """The local Georgian ear alone (Georgian mode only: it knows no English
+    and cannot tell the languages apart). The chain asks it too, first, for
+    every clip that is plainly Georgian; naming it here as the engine skips
+    Whisper and the cloud for Georgian mode altogether."""
+    if mode != "ka":
+        return None
+    import stt_fastconformer
+    if not stt_fastconformer.available():
+        return None
+    text = stt_fastconformer.transcribe(audio, sample_rate)
+    if text is None:
+        return None
+    if text:
+        stt_whisper.note_georgian()
+        text = stt_whisper.clean_transcript(text, True)
+    return Heard(text, "ka")
+
+
 @engine("chain")
 def _chain(audio: np.ndarray, sample_rate: int, mode: str) -> Heard:
     gpu = bool(getattr(stt_whisper, "GPU", False))

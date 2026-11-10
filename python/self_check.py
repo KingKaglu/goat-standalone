@@ -55,6 +55,7 @@ CORE = [
     "audio_io.py",
     "stt_whisper.py",
     "stt.py",
+    "stt_fastconformer.py",
     "tts_edge.py",
     "tts_piper.py",
     "goat_app.py",

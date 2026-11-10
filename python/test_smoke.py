@@ -102,7 +102,52 @@ def georgian_chain():
     stt_live.transcribe, stt_live.transcribe_rest = live, rest
     stt_gladia.available = lambda: state["gladia_on"]
     stt_gladia.transcribe_lang = gladia
+    keep_local, keep_mod = w.KA_LOCAL, sys.modules.get("stt_fastconformer")
+    w.KA_LOCAL = False                    # the cloud chain on its own first
     try:
+        # the local Georgian ear, as a fake module (no model file in a test)
+        local = types.SimpleNamespace(text=KA, ok=True, asked=0, warm_async=lambda: None)
+        local.available = lambda: local.ok
+
+        def local_transcribe(audio, sr=16000):
+            local.asked += 1
+            return local.text
+        local.transcribe = local_transcribe
+        sys.modules["stt_fastconformer"] = local
+
+        state.update(live="ლაივი")
+        check("local ear switched off: it is not asked",
+              w._georgian(SEC, 16000) == "ლაივი" and local.asked == 0)
+        w.KA_LOCAL = True
+        order.clear()
+        check("local ear on: it answers first, no cloud ear asked",
+              w._georgian(SEC, 16000) == KA and order == [] and local.asked == 1, order)
+        local.text = ""
+        check("local ear heard nothing: the Live ear gets the clip",
+              w._georgian(SEC, 16000) == "ლაივი" and order == ["live"], order)
+        local.text = "hello"
+        check("local ear without Georgian letters: the Live ear gets the clip",
+              w._georgian(SEC, 16000) == "ლაივი")
+        local.text, local.ok = KA, False
+        check("no model installed: straight to the Live ear",
+              w._georgian(SEC, 16000) == "ლაივი")
+        local.ok = True
+        local.transcribe = lambda a, sr=16000: 1 / 0
+        check("local ear crashes: the Live ear gets the clip",
+              w._georgian(SEC, 16000) == "ლაივი")
+        local.transcribe = local_transcribe
+        local.asked = 0
+        order.clear()
+        state.update(live="hello there")
+        check("script_only (maybe English): the local ear is never asked",
+              w._georgian(SEC, 16000, script_only=True) is None and local.asked == 0)
+        w.KA_LOCAL = False
+
+        import stt
+        check("engine 'fastconformer': Georgian mode only",
+              stt.ENGINES["fastconformer"](SEC, 16000, "en") is None
+              and stt.ENGINES["fastconformer"](SEC, 16000, "ka") == stt.Heard(KA, "ka"))
+
         state.update(live=KA)
         order.clear()
         check("Live answers: its text, nothing else asked",
@@ -131,6 +176,32 @@ def georgian_chain():
     finally:
         (stt_live.transcribe, stt_live.transcribe_rest,
          stt_gladia.available, stt_gladia.transcribe_lang) = keep
+        w.KA_LOCAL = keep_local
+        if keep_mod is None:
+            sys.modules.pop("stt_fastconformer", None)
+        else:
+            sys.modules["stt_fastconformer"] = keep_mod
+
+
+def local_ear_front_end():
+    """The numpy mel front end of the local Georgian ear (no model needed)."""
+    import stt_fastconformer as fc
+    fb = fc._mel_filters()
+    check("mel filters: 80 bands over 257 bins, none empty",
+          fb.shape == (80, 257) and bool((fb.sum(axis=1) > 0).all()), fb.shape)
+    t = np.arange(16000) / 16000.0
+    feats = fc.features((0.1 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32))
+    check("1 s of audio: 80 x 101 frames, float32",
+          feats.shape == (80, 101) and feats.dtype == np.float32, feats.shape)
+    check("features are normalised per band",
+          bool(np.isfinite(feats).all()) and abs(float(feats.mean())) < 1e-3)
+    keep = fc.DIR
+    fc.DIR = "Z:\\no-such-folder"
+    try:
+        check("no model files: unavailable, and transcribe says None",
+              not fc.available() and fc.transcribe(SEC) is None and "missing" in fc.why())
+    finally:
+        fc.DIR = keep
 
 
 # ---- 3. which ear _handle_utterance picks ----------------------------------
@@ -387,6 +458,7 @@ def endpoint_words():
 
 def main() -> int:
     ear_contract()
+    local_ear_front_end()
     georgian_chain()
     endpoint_words()
     one_door()

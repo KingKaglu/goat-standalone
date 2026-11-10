@@ -189,6 +189,8 @@ def set_language(lang: str) -> bool:
     if lang == LANGUAGE:
         return True
     LANGUAGE = lang
+    if lang != "en":
+        _warm_local()
     if GPU:
         return ensure_server()     # one model for every language: no restart
     shutdown()
@@ -386,6 +388,7 @@ def transcribe_lang(audio: np.ndarray, sample_rate: int = 16000,
         if p_en < NOISY_EN_MAX and EN_KA_CLOUD:
             noisy = p_en >= EN_PROB_MIN
             if not cloud:
+                _warm_local()               # a partial that may be his Georgian
                 if noisy:                   # may be English after all: its fallback
                     text, _ = _pinned(audio, sample_rate, "en")
                     return text, "ka?script"
@@ -439,6 +442,7 @@ def note_georgian() -> None:
     global _ka_at, _en_sure_until
     _ka_at = time.monotonic()
     _en_sure_until = 0.0
+    _warm_local()
 
 
 # an English sentence that asks for Georgian ("talk to me in Georgian")
@@ -461,6 +465,52 @@ def _live_job(audio: np.ndarray):
 
 LIVE_WAIT_S = 20.0   # a raced Live job never holds the turn longer (its own cap is ~18 s)
 
+# The local Georgian ear (stt_fastconformer, 2026-11-10 audit A1/A4). Measured
+# on 30 FLEURS clips (340 s of read Georgian) on his laptop, same clips for all:
+#                 WER     CER    median time   empty answers
+#   Live ear      11.7 %  6.6 %  4958 ms       1
+#   local ear     17.6 %  5.5 %   339 ms       0      (clips of 7-18 s)
+# On the 22 clips without numerals or Latin words: 12.7 % against 13.9 % WER,
+# 7.9 % against 3.4 % CER. It writes numbers as words and knows no English.
+# So it goes first where the clip is plainly Georgian, the cloud ears stay as
+# its fallback, and Georgian works with no network at all.
+# On when its model files are there; GOAT_STT_KA_LOCAL=off = cloud ears only.
+KA_LOCAL = os.environ.get("GOAT_STT_KA_LOCAL", "on").strip().lower() \
+    in ("on", "1", "true", "yes")
+
+
+def _warm_local() -> None:
+    """Georgian is likely: load the local ear's model in the background
+    (about two seconds, once) so his sentence does not wait for it."""
+    if not KA_LOCAL:
+        return
+    try:
+        import stt_fastconformer
+        stt_fastconformer.warm_async()
+    except Exception:  # noqa: BLE001 — it loads on first use instead
+        pass
+
+
+def _local_georgian(audio: np.ndarray, sample_rate: int):
+    """Georgian text from the local ear, or None: switched off, no model,
+    failed, or it heard no Georgian (the cloud ears get the clip then)."""
+    if not KA_LOCAL:
+        return None
+    try:
+        import stt_fastconformer
+        if not stt_fastconformer.available():
+            return None
+        t0 = time.monotonic()
+        text = stt_fastconformer.transcribe(audio, sample_rate)
+    except Exception as e:  # noqa: BLE001 — the cloud ears below
+        print(f"[stt] local Georgian ear failed: {e!r}", flush=True)
+        return None
+    if not (text and re.search(r"[Ⴀ-ჿ]", text)):
+        return None
+    print(f"[stt] Georgian via the local ear in {time.monotonic() - t0:.2f}s: "
+          f"{text[:60]!a}", flush=True)
+    return text
+
 
 def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False,
               live=None):
@@ -473,7 +523,17 @@ def _georgian(audio: np.ndarray, sample_rate: int, script_only: bool = False,
     script_only: the clip may be English — Georgian letters or None, and
     no Gladia (pinned to Georgian, it would write English as Georgian).
     live: a Future of _live_job already running on this clip (Stream started
-    it as he paused): its answer is used instead of asking Live again."""
+    it as he paused): its answer is used instead of asking Live again.
+
+    The local Georgian ear answers first when its model is installed
+    (_local_georgian); everything below is then its fallback. Not for
+    script_only clips: it writes English speech in Georgian letters too, so
+    it cannot say which language a doubtful clip is."""
+    if not script_only:
+        text = _local_georgian(audio, sample_rate)
+        if text:
+            note_georgian()
+            return clean_transcript(text, True)
     try:
         if live is not None:
             text, secs = live.result(timeout=LIVE_WAIT_S)
