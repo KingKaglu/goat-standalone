@@ -1114,11 +1114,30 @@ function onSnapshot(m) {
 }
 
 // ---- link ----
+// Reconnect: at once after a drop, then 0.5 s, 1 s, 2 s, 4 s (was a flat 1.5 s
+// every time), and straight away when the page comes back to the front or the
+// network returns. A clip that ended while the link was down is kept for
+// HELD_CLIP_MS and sent when the link is back, instead of being thrown away.
+let retryMs = 0, retryT = 0, heldClip = null;
+const HELD_CLIP_MS = 15000;
+function reconnectNow() {
+  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+  clearTimeout(retryT); retryT = 0; connect();
+}
 function connect() {
   ws = new WebSocket("wss://" + location.host + "/ws");
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { dot.classList.add("on"); if (live) send({type: "live", on: true}); };
-  ws.onclose = () => { dot.classList.remove("on"); setTimeout(connect, 1500); };
+  ws.onopen = () => {
+    retryMs = 0; dot.classList.add("on");
+    if (live) send({type: "live", on: true});
+    const h = heldClip; heldClip = null;
+    if (h && performance.now() - h.at < HELD_CLIP_MS && send(h.buf)) { waitVerdict(); setStatus("thinking"); }
+  };
+  ws.onclose = () => {
+    dot.classList.remove("on");
+    clearTimeout(retryT); retryT = setTimeout(connect, retryMs);
+    retryMs = Math.min(4000, retryMs ? retryMs * 2 : 500);
+  };
   ws.onmessage = e => {
     if (typeof e.data !== "string") { if (!staleAudio()) { markReply(); play(e.data, sayText); } else adbg("dropped as stale/cut"); return; }
     const m = JSON.parse(e.data);
@@ -1796,7 +1815,8 @@ function endUtterance() {
   if (stream) send({type: "utt_end", sid: stream});      // this clip closes that stream
   const ok = send(pcm.buffer);
   if (ok) waitVerdict(); else resumeVoice();               // the laptop decides: him or echo
-  setStatus(ok ? "thinking" : "not connected");
+  if (!ok) { heldClip = {buf: pcm.buffer, at: performance.now()}; reconnectNow(); }
+  setStatus(ok ? "thinking" : "reconnecting");
 }
 
 async function startMic() {
@@ -1928,7 +1948,9 @@ $("f").onsubmit = ev => {
   const t = $("t").value.trim(); if (!t) return;
   if (send({type: "text", text: t})) { $("t").value = ""; $("f").classList.remove("has"); show("chat"); } else setStatus("not connected");
 };
+window.addEventListener("online", reconnectNow);
 document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) reconnectNow();
   if (!live) return;
   if (document.hidden) send({type: "live", on: false});
   else { send({type: "live", on: true}); ensureCtx(); }
