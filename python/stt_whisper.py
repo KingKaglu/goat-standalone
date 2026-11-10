@@ -486,7 +486,9 @@ if KA_LOCAL in ("on", "1", "true", "yes"):
     KA_LOCAL = "fallback"
 elif KA_LOCAL not in ("fallback", "first"):
     KA_LOCAL = "off"
-KA_LOCAL_AFTER_S = 3.0   # Live's patience when the local ear can take over
+# Live's patience when the local ear can take over: all 13 of his measured
+# Live turns were back within 4.0 s, so none of them loses its better text.
+KA_LOCAL_AFTER_S = 4.0
 
 
 def _local_mode() -> str:
