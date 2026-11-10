@@ -60,6 +60,7 @@ import task_router
 import body_sense
 import game_pilot
 import inner_life
+import stt
 import stt_gladia
 import stt_realtime
 import stt_whisper
@@ -2691,61 +2692,13 @@ class GoatApp:
             if reason:
                 print(f"[stt-rt] no stream opened -> {reason}")
                 self._report_stt_state(reason)
-        if self._gpu_ear():
-            # OpenAI's Whisper large-v3-turbo on his GPU (2026-10-24): the
-            # English ear — local, no credits. Georgian is beyond it (see
-            # stt_whisper), so Georgian and bilingual modes keep the cloud.
-            text, heard = await asyncio.to_thread(
-                stt_whisper.transcribe_lang, audio_np, 16000, "en")
-            self._set_turn_lang("ka" if heard == "ka" else "en")
-        elif (self.language == "auto" and getattr(stt_whisper, "GPU", False)
-              and stt_gladia.available()):
-            # Bilingual with the GPU ear: Whisper tells English from
-            # Georgian in ~1 s locally; English is its own text, Georgian
-            # goes to the cloud ear pinned to Georgian (mixed-language
-            # Gladia wrote his Georgian as "Good morning", 2026-10-24).
-            text, heard = await asyncio.to_thread(
-                stt_whisper.transcribe_lang, audio_np, 16000, None)
-            if heard != "en" and text is not None:
-                # Live ear first, Gladia its fallback (see the ka branch)
-                ka_text = await asyncio.to_thread(
-                    stt_whisper._georgian, audio_np, 16000)
-                if ka_text is not None:
-                    text, heard = ka_text, "ka"
-            self._set_turn_lang(heard if heard in ("en", "ka") else self.turn_lang)
-        elif self.language == "ka" and (text := await asyncio.to_thread(
-                stt_whisper._georgian, audio_np, 16000)) is not None:
-            # Georgian mode: Gemini Live's transcript first, Gladia inside
-            # _georgian as its fallback. Straight to Gladia his Georgian came
-            # out garbled in 5.5-7.2 s ("გარგიმა მლობამ" for "კარგი მადლობა",
-            # 2026-10-25 23:01); Live wrote it right in 1.5-2.8 s. The next
-            # turn's session is dialled now (saves ~1.4 s).
-            self._set_turn_lang("ka")
-            try:
-                import stt_live
-                stt_live.prime()
-            except Exception:  # noqa: BLE001 — the turn dials its own
-                pass
-        elif self.language != "en" and stt_gladia.available():
-            # Georgian or bilingual mode: cloud ear (local whisper can't do
-            # ka at all — it romanizes it into English-looking nonsense,
-            # which is exactly what "it hears English when I speak Georgian"
-            # was). In "auto" nothing is pinned, so the same ear takes both
-            # languages and tells us which one it heard.
-            force = "ka" if self.language == "ka" else None
-            text, heard = await asyncio.to_thread(
-                stt_gladia.transcribe_lang, audio_np, 16000, force)
-            if text is None:
-                # Cloud route broke — English local hearing still works.
-                self.emit("status", "georgian hearing offline — english ear on")
-                text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
-                self._set_turn_lang("en")
-            else:
-                self._set_turn_lang("ka" if self.language == "ka"
-                                    else (heard or self.turn_lang))
-        else:
-            text = await asyncio.to_thread(stt_whisper.transcribe, audio_np)
-            self._set_turn_lang("en")
+        # No streaming transcript: the whole clip goes through the one door
+        # (stt.py). Which engine answers, and its fallback, is config there.
+        got = await asyncio.to_thread(stt.transcribe, audio_np, 16000, self.language)
+        text = got.text
+        if got.status:
+            self.emit("status", got.status)
+        self._set_turn_lang(got.lang or self.turn_lang)
         self._lat_heard("batch")
         await self._heard(text, gap, vcheck, source, capped=capped)
 

@@ -680,6 +680,8 @@ async def main():
             app._talk = fake_talk
             g.stt_gladia = FakeEar(ear_text, ear_lang)
             g.stt_whisper = FakeWhisper()
+            # the ears are asked through stt.py's one door since 2026-11-10
+            g.stt.stt_gladia, g.stt.stt_whisper = g.stt_gladia, g.stt_whisper
             g.tts_edge = FakeTTSEdge()
             await app._handle_utterance(np.zeros(16000, dtype=np.float32))
             return app, spoken, g.stt_gladia, g.stt_whisper, g.tts_edge
@@ -742,6 +744,7 @@ async def main():
                 app._talk = fake_talk
                 g.stt_gladia = FakeEar("cloud words", "en")
                 g.stt_whisper = GPUWhisper(text, lang)
+                g.stt.stt_gladia, g.stt.stt_whisper = g.stt_gladia, g.stt_whisper
                 g.tts_edge = FakeTTSEdge()
                 await app._handle_utterance(np.zeros(16000, dtype=np.float32))
                 return app, spoken, g.stt_gladia, g.stt_whisper
@@ -783,6 +786,7 @@ async def main():
                   f"ear={ear.calls} spoken={spoken} lang={app.turn_lang}")
         finally:
             g.stt_gladia, g.stt_whisper, g.tts_edge = real_ear, real_whisper, real_tts
+            g.stt.stt_gladia, g.stt.stt_whisper = real_ear, real_whisper
 
     finally:
         g.TRANSCRIPT_FILE = old_tr

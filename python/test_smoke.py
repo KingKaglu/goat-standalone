@@ -314,6 +314,67 @@ async def phone_clip():
     check("a clip under 0.25 s is dropped before the ear", got == [])
 
 
+# ---- 6. the one door: engine and fallback by config --------------------------
+def one_door():
+    import stt
+    keep = (stt.ENGINE, stt.FALLBACK, dict(stt.ENGINES), w.GPU, w._georgian, w.transcribe,
+            stt_gladia.available, stt_gladia.transcribe_lang)
+    asked = []
+    try:
+        check("default config: only the old chain", stt.order() == ["chain"], stt.order())
+
+        stt.ENGINES["new"] = lambda a, sr, mode: (asked.append("new") or stt.Heard(KA, "ka"))
+        stt.ENGINES["down"] = lambda a, sr, mode: (asked.append("down") or stt.Heard(None))
+        stt.ENGINES["skip"] = lambda a, sr, mode: (asked.append("skip") or None)
+        stt.ENGINES["boom"] = lambda a, sr, mode: 1 / 0
+        stt.ENGINES["chain"] = lambda a, sr, mode: (asked.append("chain") or stt.Heard("old", "en"))
+
+        stt.ENGINE, stt.FALLBACK = "new", ""
+        check("the configured engine answers first, the chain is not asked",
+              stt.transcribe(SEC, 16000, "ka") == stt.Heard(KA, "ka") and asked == ["new"], asked)
+
+        asked.clear()
+        stt.ENGINE, stt.FALLBACK = "down", "new"
+        check("engine broken (None text): the fallback answers",
+              stt.transcribe(SEC).text == KA and asked == ["down", "new"], asked)
+
+        asked.clear()
+        stt.ENGINE, stt.FALLBACK = "skip", "boom"
+        check("'not mine' and a crash both fall through to the chain",
+              stt.transcribe(SEC).text == "old" and asked == ["skip", "chain"], asked)
+
+        stt.ENGINE, stt.FALLBACK = "typo", ""
+        check("an unknown engine name still hears through the chain",
+              stt.transcribe(SEC).text == "old")
+
+        stt.ENGINES["chain"] = lambda a, sr, mode: stt.Heard(None, "en")
+        stt.ENGINE = "down"
+        check("everything broken: None, so the caller can say hearing is down",
+              stt.transcribe(SEC).text is None)
+
+        # the chain's cloud branch (no GPU ear), which the routing checks skip
+        stt.ENGINES.clear()
+        stt.ENGINES.update(keep[2])
+        stt.ENGINE, stt.FALLBACK = "chain", ""
+        w.GPU = False
+        w._georgian = lambda a, sr, **kw: None
+        w.transcribe = lambda a, sr=16000: "english ear"
+        stt_gladia.available = lambda: True
+        stt_gladia.transcribe_lang = lambda a, sr, force: (KA, "ka")
+        check("Georgian chain silent: Gladia pinned to Georgian",
+              stt.transcribe(SEC, 16000, "ka") == stt.Heard(KA, "ka"))
+        stt_gladia.transcribe_lang = lambda a, sr, force: (None, "")
+        got = stt.transcribe(SEC, 16000, "ka")
+        check("cloud down: the English ear, and a status line saying so",
+              got.text == "english ear" and got.lang == "en" and "offline" in got.status, got)
+    finally:
+        stt.ENGINE, stt.FALLBACK = keep[0], keep[1]
+        stt.ENGINES.clear()
+        stt.ENGINES.update(keep[2])
+        (w.GPU, w._georgian, w.transcribe,
+         stt_gladia.available, stt_gladia.transcribe_lang) = keep[3:]
+
+
 def endpoint_words():
     f = endpoint.sounds_finished
     check("endpoint: finished English and Georgian",
@@ -328,6 +389,7 @@ def main() -> int:
     ear_contract()
     georgian_chain()
     endpoint_words()
+    one_door()
     asyncio.run(routing())
     asyncio.run(phone_clip())
     print("\nALL PASS" if not fails else f"\n{len(fails)} FAILED: {fails}")
