@@ -205,8 +205,68 @@ def prep_pad(a):
     return np.concatenate([z, a, z])
 
 
+def _to_48k(a):
+    import numpy as np
+    sys.path.insert(0, PY) if PY not in sys.path else None
+    import dsp
+    return dsp.resample_poly(a, 3, 1).astype(np.float32)
+
+
+def prep_phonebox(a):
+    """What phone.html does to a 48 kHz phone mic today: every 3 samples
+    averaged into one (a box filter, weak against aliasing). The clip is taken
+    to 48 kHz first, so this row shows what that resampler costs."""
+    import numpy as np
+    x = _to_48k(a)
+    n = len(x) // 3
+    return x[:n * 3].reshape(n, 3).mean(axis=1).astype(np.float32)
+
+
+def prep_phone44(a):
+    """The same phone.html resampler from a 44.1 kHz mic (ratio 2.756: bins of
+    2 and 3 samples in turn, as its loop does)."""
+    import math
+
+    import numpy as np
+    sys.path.insert(0, PY) if PY not in sys.path else None
+    import dsp
+    g = math.gcd(44100, SR)
+    x = dsp.resample_poly(a, 44100 // g, SR // g).astype(np.float32)
+    r = 44100 / SR
+    n = int(len(x) / r)
+    starts = np.floor(np.arange(n) * r).astype(int)
+    ends = np.maximum(starts + 1, np.floor(np.arange(n) * r + r).astype(int))
+    ends = np.minimum(ends, len(x))
+    c = np.concatenate([[0.0], np.cumsum(x, dtype=np.float64)])
+    return ((c[ends] - c[starts]) / np.maximum(1, ends - starts)).astype(np.float32)
+
+
+def _noise(a, snr_db: float):
+    """Pink-ish room noise at a fixed signal-to-noise ratio (same noise every run)."""
+    import numpy as np
+    rng = np.random.default_rng(1234)
+    white = rng.standard_normal(len(a)).astype(np.float32)
+    kernel = (0.9 ** np.arange(64)).astype(np.float32)   # low-heavy, like a room
+    noise = np.convolve(white, kernel, mode="same")
+    p_sig = float(np.mean(a ** 2)) or 1e-9
+    p_noise = float(np.mean(noise ** 2)) or 1e-9
+    k = (p_sig / (p_noise * 10 ** (snr_db / 10))) ** 0.5
+    return np.clip(a + k * noise, -1.0, 1.0).astype(np.float32)
+
+
+def prep_noisy(a):
+    """Room noise added at 10 dB SNR (for clean test sets)."""
+    return _noise(a, 10.0)
+
+
+def prep_noisy_denoise(a):
+    """The same noise, then the noise suppression of `denoise`."""
+    return prep_denoise(_noise(a, 10.0))
+
+
 PREPS = {"raw": prep_raw, "norm": prep_norm, "highpass": prep_highpass,
-         "denoise": prep_denoise, "pad": prep_pad}
+         "denoise": prep_denoise, "pad": prep_pad, "phonebox": prep_phonebox,
+         "phone44": prep_phone44, "noisy": prep_noisy, "noisy-denoise": prep_noisy_denoise}
 PREP_NAME = {"denoise": lambda: "denoise(noisereduce)" if _has("noisereduce")
              else "denoise(spectral-gate)"}
 
@@ -393,6 +453,50 @@ def eng_onnx_ka():
     return run
 
 
+def _fastconformer(model_file: str):
+    """GOAT's own local Georgian ear (python/stt_fastconformer.py): the same
+    NVIDIA model on plain onnxruntime, no extra package. --ka-dir = the folder
+    with model.onnx / model.int8.onnx and vocab.txt."""
+    if ARGS is not None and ARGS.ka_dir:
+        os.environ["GOAT_STT_KA_DIR"] = os.path.abspath(ARGS.ka_dir)
+    os.environ["GOAT_STT_KA_MODEL"] = model_file
+    import importlib.util
+    for base in (PY, os.path.join(os.path.dirname(HERE), "python")):
+        path = os.path.join(base, "stt_fastconformer.py")
+        if os.path.isfile(path):
+            break
+    else:
+        raise ImportError("stt_fastconformer.py")
+    # one private copy of the module per model file (it reads the env at import)
+    spec = importlib.util.spec_from_file_location("stt_fc_" + model_file.replace(".", "_"), path)
+    fc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fc)
+    return fc
+
+
+def _fastconformer_why(model_file: str):
+    try:
+        fc = _fastconformer(model_file)
+    except ImportError:
+        return "python/stt_fastconformer.py missing"
+    return fc.why() or None
+
+
+def eng_fastconformer():
+    """NVIDIA Georgian FastConformer (CTC head, full precision) on the CPU
+    through GOAT's stt_fastconformer: offline, no key."""
+    fc = _fastconformer("model.onnx")
+    fc.warm()
+    return lambda a: (fc.transcribe(a, SR) or "")
+
+
+def eng_fastconformer_int8():
+    """The same model quantised to 8 bits (131 MB instead of 458 MB)."""
+    fc = _fastconformer("model.int8.onnx")
+    fc.warm()
+    return lambda a: (fc.transcribe(a, SR) or "")
+
+
 def eng_nemo_ka():
     """nvidia/stt_ka_fastconformer_hybrid_large_pc through NeMo
     (`pip install nemo_toolkit[asr]`, PyTorch): transducer decoder."""
@@ -450,6 +554,9 @@ ENGINES = {
     "gemini-rest": (lambda: None if _gemini_key() else "no Gemini key", eng_gemini_rest, True, False),
     "gemini-rest-vocab": (lambda: (None if _gemini_key() else "no Gemini key") if VOCAB
                           else "needs --vocab", eng_gemini_rest_vocab, True, False),
+    "fastconformer": (lambda: _fastconformer_why("model.onnx"), eng_fastconformer, False, False),
+    "fastconformer-int8": (lambda: _fastconformer_why("model.int8.onnx"),
+                           eng_fastconformer_int8, False, False),
     "onnx-ka": (lambda: None if _has("onnx_asr") else "package onnx-asr not installed",
                 eng_onnx_ka, False, False),
     "nemo-ka": (lambda: None if _has("nemo") else "package nemo_toolkit not installed",
@@ -679,7 +786,9 @@ def main(argv: list) -> int:
     ap.add_argument("--gemini-model", default="gemini-3.5-flash-lite")
     ap.add_argument("--fix-model", default="gemini-3.5-flash-lite")
     ap.add_argument("--onnx-model", default="OpenVoiceOS/stt_ka_fastconformer_hybrid_large_pc_onnx")
-    ap.add_argument("--nemo-model", default="nvidia/stt_ka_fastconformer_hybrid_large_pc")
+    ap.add_argument("--ka-dir", help="folder with the FastConformer model.onnx + vocab.txt "
+                                     "(default: <GOAT>/stt/fastconformer-ka)")
+    ap.add_argument("--nemo-model",default="nvidia/stt_ka_fastconformer_hybrid_large_pc")
     ap.add_argument("--hf-model", default="BuzzASR/georgian")
     ap.add_argument("--out", help="output folder (default <folder>/_bench)")
     ap.add_argument("--list", action="store_true", help="list engines and exit")
