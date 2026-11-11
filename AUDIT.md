@@ -194,10 +194,15 @@ Test set: the first 30 clips of FLEURS Georgian (test split, CC-BY-4.0): 340 s o
 | FastConformer ka, full precision, CPU | 18.0 | 5.7 | 0 | 140–155 | 215–250 | free | yes |
 | FastConformer + LLM correction (Gemini Flash-Lite) | 14.5 | 4.7 | 0 | 140 + 816 | – | about $0.03 | no |
 | REST Gemini Flash-Lite (today's second ear) | 40.7 | 34.0 | 8 | 2064 | 4775 | about $0.03 | no |
+| FastConformer ka, transducer head through NeMo (PyTorch, CPU; run 2026-11-11 in a throwaway venv, another benchmark was using the CPU, so the latency is a ceiling) | 15.3 | 4.5 | 0 | 1638 | 2297 | free | yes |
+| FastConformer ka through `onnx-asr` (2026-11-11; same model and numbers as GOAT's own front end, which confirms it) | 18.0 | 5.7 | 0 | 136 | 206 | free | yes |
+| Gladia Solaria-1 pinned to Georgian (today's last ear; 2026-11-11) | 75.3 | 25.1 | 0 | 5978 | 8211 | €0.27 (this run: about €0.03) | no |
 | Whisper large-v3-turbo, pinned to Georgian | 108.4 | 84.6 | 0 | 5162 | 5345 | free | yes |
 | Whisper large-v3-turbo, auto language | 121.6 | 102.5 | 0 | 1310 | 5399 | free | yes |
 
-Not run: ElevenLabs Scribe (the key answers 401; $0.22 per audio hour batch), Gladia (paid, not approved), BuzzASR/georgian and the NeMo transducer head (their packages could not be installed in this session; BuzzASR's own card reports 34–44 % WER, far behind FastConformer's 5.7–13.4 %), Chirp 3 and OpenAI (no accounts).
+Not run: ElevenLabs Scribe (the key still answers 401 on 2026-11-11; $0.22 per audio hour batch), Chirp 3 and OpenAI (no accounts). BuzzASR/georgian (a fine-tuned Whisper, 3 GB) was started on 2026-11-11: this laptop's PyTorch has no GPU build, and one 9 s clip took 91–131 s on the CPU, so the run was stopped and its WER was not measured (its own card reports 34–44 %). It cannot be a voice ear here at that speed.
+
+The NeMo transducer head is 2.7 WER points better than the CTC head GOAT uses (15.3 against 18.0 %), but it needs PyTorch and NeMo inside GOAT and took 1.6 s per clip in this run, so it is not built in. An ONNX export of the transducer head would be the thing to try next.
 
 On the 22 clips whose reference has no numerals or Latin words: Live 12.7 % WER / 7.9 % CER, FastConformer 13.9 % / 3.4 %. FastConformer writes numbers as words ("ათი" for "10"), which costs it on the other 8.
 
