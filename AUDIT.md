@@ -251,6 +251,47 @@ The model files live in `stt/fastconformer-ka/` (not in git): `model.int8.onnx` 
 | C5 dependencies | Declared. |
 | A2 endpoint wait, B1 memory cap, B3, B4, B7–B12, C2–C4, C6, C7 | Not touched: tuned values without a measurement, his decision, or outside the approved list. |
 
+### Baselines after (2026-11-11 and 2026-11-12, GOAT running the branch code)
+
+| What | Before | After | Note |
+|---|---|---|---|
+| Startup to "engine up" | 26 s median (27 restarts) | 24 s and 14 s (2 launches) | Two launches are not a trend. Nothing at boot was changed on purpose. |
+| Time to first word, laptop | p50 2.71 s, p90 4.97 s (146 turns) | median 2.50 s, range 1.72–5.07 s (7 turns) | Same within the noise. Seven turns give no p90. |
+| Ear after the endpoint | p50 32 ms, p90 1664 ms | 172, 235 and 2293 ms (3 turns with a split) | The 2293 ms one was a batch-ear turn. |
+| Voice brain to first audio | p50 1245 ms | 1038, 1469 and 2260 ms | |
+| Georgian with no network | did not work | 17.6 % WER, p50 295 ms | FLEURS, through `stt.transcribe`. |
+| Longest silent wait on a Georgian turn | about 44 s | about 4.3 s | Chain timing, with the local model installed. |
+| Georgian WER, online | 11.9 % (whole chain) | 5.7–11.7 % (Live is still first; nothing changed for a turn that Live answers) | FLEURS. |
+| Worker tokens per job | 58 fresh in, 202k cache read, 95 % cache hit | not re-measured | No worker job ran after the launch; prompts and caching were not changed. |
+| Phone turns | no data | no data | |
+| Offline test suites | pass | pass | `run_tests.py`, last run 2026-11-12 on the branch head. |
+
+### What stays unmeasured
+
+On 2026-11-12 he waived the two things that need him: his own recordings and the test on the phone. So:
+
+- WER on his voice, on the phone mic, on mixed Georgian and English and on his names is unknown. Every WER figure here is read speech from FLEURS. `scripts/stt_record.py` records the clips and `scripts/stt_bench.py <folder>` scores them whenever he wants the numbers.
+- Vocabulary bias could not be tested for the same reason.
+- The phone reconnect change is verified in a desktop browser only (item B6 above).
+
+### Manual checks
+
+Laptop voice:
+1. Start with `GOAT.bat`; the window says it is listening within about 30 s.
+2. One English and one Georgian sentence: each answer starts within about 3 s.
+3. One sentence that mixes Georgian with English product names: the transcript in the window matches what was said.
+4. Talk over an answer: it stops. Play its own answer loud: it does not answer itself.
+5. Network off, one Georgian sentence: it is still heard (the local ear), within about a second of the pause.
+6. `py -3.13 metrics.py summary` in `python\` afterwards shows the turns.
+
+Phone:
+1. Open the page from the QR code (`py -3.13 phone_qr.py login --open`), allow the microphone, tap once so sound may play.
+2. One typed and one spoken turn: the answer is spoken on the phone.
+3. Lock the screen for 30 s, unlock, speak: the dot is green again at once and the turn goes through.
+4. Wi-Fi off for 5 s, speak one sentence meanwhile, Wi-Fi on: that sentence is answered.
+5. Speaker loud next to the mic: GOAT does not answer itself.
+6. Portrait on a small screen: nothing is cut off, the text box stays above the keyboard.
+
 ---
 
 # GOAT audit — Phase 1 (2026-11-06, read-only)
