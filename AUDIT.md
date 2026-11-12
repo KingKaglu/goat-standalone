@@ -246,7 +246,7 @@ The model files live in `stt/fastconformer-ka/` (not in git): `model.int8.onnx` 
 | A3 phone parity | Phone clips go through the same `stt.transcribe` and get the same Georgian ears. The phone's own VAD and endpointing, and the missing streaming ear for phone clips with the GPU ear, are unchanged: both need the phone to test. |
 | B2 personal address in the code | Done (`GOAT_PUSH_CONTACT`). |
 | B5 phone resampler | Measured, no cost, left alone. |
-| B6 phone reconnect | Backoff, reconnect on return, and a clip that ended offline is kept for 15 s. Not tested on a phone. |
+| B6 phone reconnect | Backoff, reconnect on return, and a clip that ended offline is kept for 15 s. Page logic checked in desktop Chrome on 2026-11-12 with a stand-in socket (the real `phone.html` script, no server): after a drop the retries came at 0, 533, 1017, 2023, 4023, 4021 ms; `online` and return-to-front each retried in 0 ms; an utterance that ended offline (38,400 bytes) went out on the next socket and a 16 s old one was dropped. Still not tested on a phone: screen lock and a real Wi-Fi drop. |
 | C1 dead code | 12 definitions, 535 lines removed. |
 | C5 dependencies | Declared. |
 | A2 endpoint wait, B1 memory cap, B3, B4, B7–B12, C2–C4, C6, C7 | Not touched: tuned values without a measurement, his decision, or outside the approved list. |
