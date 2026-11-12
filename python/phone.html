@@ -1,22 +1,34 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b1324">
+<meta name="theme-color" content="#0c1226">
 <link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
 <link rel="apple-touch-icon" href="/icon.svg">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
 <title>GOAT</title>
 <style>
 :root{color-scheme:dark;
-  /* v8 midnight (2026-10-25): same tokens as the laptop. acc = the voice,
-     work = Claude (used ONLY on Claude's marks). */
-  --bg:#0b1324;--bg2:#060a14;--s1:#e9eefa0e;--s2:#e9eefa17;--line:#e9eefa0f;--line2:#e9eefa1c;
-  --tx:#e9eefa;--dim:#8e9ab4;--faint:#56627d;--on:#06101f;
-  --acc:#5aa2ff;--accd:#5aa2ff24;--work:#f2b36b;--ok:#4fd18b;--bad:#ff6b5e;--warn:#f2b36b;
+  /* v9 glass (2026-11-12): same tokens as the laptop's glass theme. acc =
+     the voice, work = Claude (used ONLY on Claude's marks). s1/s2 are panes
+     of white light; --pane and --rim make a frosted card. */
+  --bg:#0c1226;--bg2:#05070e;--s1:#ffffff14;--s2:#ffffff21;--line:#ffffff1f;--line2:#ffffff33;
+  --tx:#f3f6ff;--dim:#a9b4d0;--faint:#6c7896;--on:#06101f;
+  --acc:#6fa8ff;--accd:#6fa8ff24;--work:#ffc27a;--ok:#5fe0a0;--bad:#ff7468;--warn:#ffc27a;
+  --pane:linear-gradient(180deg,#ffffff1f,#ffffff0b);
+  --rim:inset 0 1px 0 #ffffff29,0 10px 30px #00000042;
+  --blur:blur(20px) saturate(150%);
   --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
   --nav:62px}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;overflow:hidden;background:linear-gradient(180deg,var(--bg),var(--bg2)) fixed;color:var(--tx);
+html,body{margin:0;height:100%;overflow:hidden;color:var(--tx);
+  /* the aurora: four wide pools of light for the panes to catch */
+  background:
+    radial-gradient(120vmax 90vmax at 10% -8%,#4f7dff5c,transparent 60%),
+    radial-gradient(110vmax 80vmax at 108% 8%,#9b6bff52,transparent 58%),
+    radial-gradient(100vmax 80vmax at 18% 108%,#22c7c03d,transparent 55%),
+    radial-gradient(90vmax 70vmax at 104% 100%,#ff6fae2e,transparent 55%),
+    linear-gradient(180deg,var(--bg),var(--bg2));
+  background-attachment:fixed;
   font:15px/1.5 "Segoe UI Variable","Segoe UI",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   -webkit-font-smoothing:antialiased}
 body{display:flex;flex-direction:column}
@@ -29,7 +41,7 @@ header{display:flex;align-items:center;gap:10px;min-height:46px;
   padding:calc(6px + env(safe-area-inset-top)) 18px 6px}
 .brand{display:flex;align-items:center;gap:9px;font-weight:650;font-size:15px;letter-spacing:.2em}
 #dot{width:11px;height:11px;border-radius:50%;border:1.5px solid var(--faint);transition:border-color .3s,box-shadow .3s}
-#dot.on{border-color:var(--acc);box-shadow:0 0 8px #5aa2ff66}
+#dot.on{border-color:var(--acc);box-shadow:0 0 8px #6fa8ff66}
 body[data-work="1"] #dot.on{box-shadow:0 0 0 2px var(--bg),0 0 0 3.5px var(--work)}
 .chips{margin-left:auto;display:flex;align-items:center;gap:8px;min-width:0;
   font:11.5px/1 var(--mono);color:var(--dim);white-space:nowrap}
@@ -48,7 +60,9 @@ main{flex:1;min-height:0;position:relative}
 /* chat */
 #log{display:flex;flex-direction:column;gap:14px;padding-top:6px}
 .m{max-width:88%;white-space:pre-wrap;overflow-wrap:anywhere}
-.you{align-self:flex-end;text-align:right;color:var(--dim);font-size:15px;padding:0 2px}
+.you{align-self:flex-end;text-align:right;color:var(--tx);font-size:15px;max-width:86%;
+  padding:8px 14px;border-radius:18px 18px 6px 18px;background:var(--pane);
+  border:1px solid var(--line);box-shadow:inset 0 1px 0 #ffffff1f}
 .goat{align-self:flex-start;padding:0 2px;font-size:19px;font-weight:300;line-height:1.5}
 /* older turns fade 100% -> 55% -> 30% as they rise (v8 motion rule) */
 #log>.m{opacity:.3;transition:opacity .3s}
@@ -61,10 +75,10 @@ main{flex:1;min-height:0;position:relative}
 /* v8 presence: a ring of light threaded on a string (voice = ring, Claude = the
    warm light that orbits it while it works). Driven by body[data-st]. */
 .pres{display:flex;align-items:center;width:100%;max-width:360px;margin-bottom:22px}
-.pres .str{flex:1;height:1px;background:linear-gradient(90deg,transparent,#3a4a6b)}
-.pres .str+.ring+.str{background:linear-gradient(270deg,transparent,#3a4a6b)}
+.pres .str{flex:1;height:1px;background:linear-gradient(90deg,transparent,#4a5a80)}
+.pres .str+.ring+.str{background:linear-gradient(270deg,transparent,#4a5a80)}
 .ring{width:88px;height:88px;border-radius:50%;border:2px solid var(--acc);opacity:.7;flex:none;
-  position:relative;display:grid;place-items:center;box-shadow:0 0 28px #5aa2ff2e,inset 0 0 18px #5aa2ff1f;
+  position:relative;display:grid;place-items:center;box-shadow:0 0 28px #6fa8ff2e,inset 0 0 18px #6fa8ff1f;
   transition:opacity .4s,transform .3s,border-color .3s;animation:breathe 8s ease-in-out infinite}
 .ring>b{display:block;width:0;height:0;border-radius:50%;background:var(--acc);transition:width .15s,height .15s,opacity .15s}
 .ring::after{content:"";position:absolute;inset:-2px;border-radius:50%;border:2px solid var(--acc);opacity:0}
@@ -80,7 +94,7 @@ body[data-st=hear] .ring{opacity:1;animation:none;transform:scale(1.04)}
 body[data-st=hear] .ring>b{width:46px;height:46px;opacity:.55}
 body[data-st=speak] .ring{opacity:1;animation:none}
 body[data-st=speak] .ring::after{animation:pulse 1.4s ease-out infinite}
-body[data-think="1"] .ring{opacity:1;animation:arc 1.2s linear infinite;border-top-color:#cfe3ff;border-right-color:#5aa2ff55}
+body[data-think="1"] .ring{opacity:1;animation:arc 1.2s linear infinite;border-top-color:#cfe3ff;border-right-color:#6fa8ff55}
 body[data-work="1"] .ring::before{opacity:1;animation:orbit 3s linear infinite}
 body[data-conn="0"] .ring{opacity:.25;animation:none;border-color:var(--faint);box-shadow:none}
 .greet{font-size:30px;font-weight:300;color:var(--tx);letter-spacing:.01em}
@@ -89,7 +103,7 @@ body[data-conn="0"] .ring{opacity:.25;animation:none;border-color:var(--faint);b
 body[data-work="1"] .pst{color:var(--work)}
 #log:empty~.hint{display:flex}
 #nowcard{display:none;margin:2px 18px 6px;flex:none;cursor:pointer;
-  padding:9px 14px;border-radius:14px;background:var(--s1);
+  padding:9px 14px;border-radius:14px;background:var(--pane);box-shadow:var(--rim);
   border:1px solid var(--line2);font:12.5px/1.4 var(--mono);color:var(--dim);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #nowcard.on{display:block}
@@ -98,7 +112,8 @@ body[data-pane=work] #nowcard{display:none}
   font:11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
 .sep::before,.sep::after{content:"";flex:1;height:1px;background:var(--line2)}
 #jump{position:absolute;left:50%;bottom:12px;z-index:5;transform:translate(-50%,8px);
-  opacity:0;pointer-events:none;border:1px solid var(--line2);background:var(--s2);color:var(--tx);
+  opacity:0;pointer-events:none;border:1px solid var(--line2);background:#ffffff26;color:var(--tx);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
   border-radius:999px;min-height:36px;padding:0 14px;font-size:13px;display:flex;align-items:center;
   gap:6px;box-shadow:0 6px 20px #000b;transition:opacity .18s,transform .18s}
 #jump.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
@@ -109,7 +124,8 @@ body:not([data-pane=chat]) #jump{display:none}
 @keyframes blink{50%{opacity:.25}}
 
 /* grouped sections */
-.card{background:var(--s1);border:1px solid var(--line);border-radius:16px;padding:16px;margin:0 0 12px}
+.card{background:var(--pane);border:1px solid var(--line2);border-radius:20px;padding:16px;margin:0 0 12px;
+  box-shadow:var(--rim)}
 .card h3{margin:0 0 12px;font:600 11px/1 var(--mono);letter-spacing:1.6px;
   text-transform:uppercase;color:var(--dim);display:flex;justify-content:space-between;
   align-items:center;gap:8px;min-height:20px}
@@ -266,9 +282,10 @@ form#f{display:flex;align-items:center;gap:8px;padding:6px 14px 10px}
 #f .ic{width:44px;height:44px;border-radius:50%;border:none;background:none;
   color:var(--dim);display:grid;place-items:center;flex:none}
 #f .ic:active{background:var(--s2)}
-#t{flex:1;min-width:0;background:var(--s1);border:1px solid var(--line2);color:var(--tx);
-  border-radius:16px;padding:0 18px;min-height:46px;font-size:16px;outline:none}
-#t:focus{border-color:#5aa2ff66}
+#t{flex:1;min-width:0;background:var(--pane);border:1px solid var(--line2);color:var(--tx);
+  border-radius:23px;padding:0 18px;min-height:46px;font-size:16px;outline:none;
+  box-shadow:inset 0 1px 0 #ffffff24}
+#t:focus{border-color:#6fa8ff99;box-shadow:inset 0 1px 0 #ffffff24,0 0 0 3px #6fa8ff26}
 #t::placeholder{color:var(--faint)}
 #orb,#send{width:46px;height:46px;border-radius:50%;border:none;flex:none;
   display:grid;place-items:center;position:relative;transition:background .2s,color .2s,transform .12s}
@@ -287,11 +304,12 @@ form#f{display:flex;align-items:center;gap:8px;padding:6px 14px 10px}
 #orb.speak .mic,#orb.hear .mic{display:none}
 #orb.speak .eq,#orb.hear .eq{display:flex}
 #orb.work:not(.speak):not(.hear){box-shadow:0 0 0 2px var(--work)}
-#send{background:var(--acc);color:var(--on);display:none}
+#send{background:linear-gradient(135deg,#a9cbff,var(--acc));color:var(--on);display:none}
 #f.has #send{display:grid}#f.has #orb{display:none}
 body[data-pane=ctl] #f,body[data-pane=ctl] #status{display:none}
 
-nav{display:flex;border-top:1px solid var(--line);background:#070c18;
+nav{display:flex;border-top:1px solid var(--line2);background:linear-gradient(180deg,#ffffff17,#ffffff08);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
   padding-bottom:env(safe-area-inset-bottom)}
 nav button{flex:1;background:none;border:none;color:var(--faint);height:var(--nav);
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
@@ -307,7 +325,7 @@ nav .badge.on{display:block;animation:blink 1.2s infinite}
 <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.5-4.6A8 8 0 1 1 21 12Z"/></symbol>
 <symbol id="i-work" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
 <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 20h20"/></symbol>
-<symbol id="i-ctl" viewBox="0 0 24 24"><path d="M5 4v16M12 4v16M19 4v16"/><circle cx="5" cy="9" r="2" fill="#0b1324"/><circle cx="12" cy="15" r="2" fill="#0b1324"/><circle cx="19" cy="8" r="2" fill="#0b1324"/></symbol>
+<symbol id="i-ctl" viewBox="0 0 24 24"><path d="M5 4v16M12 4v16M19 4v16"/><circle cx="5" cy="9" r="2" fill="#0c1226"/><circle cx="12" cy="15" r="2" fill="#0c1226"/><circle cx="19" cy="8" r="2" fill="#0c1226"/></symbol>
 <symbol id="i-clip" viewBox="0 0 24 24"><path d="m20 11-8.6 8.6a5 5 0 0 1-7-7L13 4a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L14.5 7"/></symbol>
 <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
 <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
