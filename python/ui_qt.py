@@ -139,6 +139,20 @@ UI_CONFIG = os.path.join(GOAT_ROOT, "ui-config.json")
 # themes lifted a full step: backgrounds up from near-black, dim/faint
 # raised so secondary text is READABLE, not archaeological.
 THEMES = {
+    # v9 (his order 2026-11-12: "a glassy UI"): frosted panes over slow
+    # coloured light. "glass" turns the surfaces into light panes (build_style)
+    # and the room into an aurora (Backdrop), so the panes have something to
+    # catch. Every other theme stays exactly as it was.
+    "glass": {
+        "bg_top": "#0c1226", "bg_bot": "#05070e",
+        "paper": "#f3f6ff", "dim": "#a9b4d0", "faint": "#6c7896",
+        "accent": "#6fa8ff", "accent2": "#a9cbff", "string_base": "#4a5a80",
+        "you_old": "#c3cfe8", "reply_old": "#b3bdd2", "sel": "#2a4a86",
+        "rail": "#080c18", "card": "#151d33", "line": "#2a3550",
+        "glow": "#6b5bd6", "ok": "#5fe0a0", "danger": "#ff7468",
+        "work": "#ffc27a", "glass": True,
+        "aurora": ("#4f7dff", "#9b6bff", "#22c7c0", "#ff6fae"),
+    },
     # v7 (his concept, 2026-09-30): midnight navy, one electric-blue accent,
     # a dusk glow behind the mountains. The default room of the new face.
     "midnight": {
@@ -191,7 +205,7 @@ THEMES = {
         "work": "#9aa0ff",
     },
 }
-THEME_ORDER = ["midnight", "jarvis", "ember", "paper", "phosphor", "graphite"]
+THEME_ORDER = ["glass", "midnight", "jarvis", "ember", "paper", "phosphor", "graphite"]
 
 
 def _hex_mix(a: str, b: str, f: float) -> str:
@@ -270,10 +284,11 @@ LANGS = {"english": "en", "ქართული": "ka", "ორივე": "aut
 COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
                "background": ["bg_top", "bg_bot"]}
 
-# Bumped when a new face should re-seat the theme once (v7 → midnight).
-DESIGN_VERSION = 7
+# Bumped when a new face should re-seat the theme once (v7 → midnight,
+# v9 → glass).
+DESIGN_VERSION = 9
 
-DEFAULT_CFG = {"theme": "midnight", "text": "normal", "voice": True,
+DEFAULT_CFG = {"theme": "glass", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
                "lang": "en", "character": "goat",
                "work_model": "fable 5.1", "hard_model": "fable 5.1",
@@ -300,7 +315,7 @@ def load_ui_config() -> dict:
         pass
     # A new face arrives in its own room once; after that his pick sticks.
     if not isinstance(cfg.get("design"), int) or cfg["design"] < DESIGN_VERSION:
-        cfg["theme"] = "midnight"
+        cfg["theme"] = DEFAULT_CFG["theme"]
         cfg["design"] = DESIGN_VERSION
     if cfg["theme"] not in THEMES:
         cfg["theme"] = "midnight"
@@ -416,6 +431,30 @@ def build_style(t: dict, reply_px: int = 20, scale: float = 1.0) -> str:
     tint_hi = rgba(acc, 60)
     danger, work = t["danger"], t["work"]
     danger_soft = _hex_mix(danger, t["paper"], 0.25)
+    composer_bg = rgba(t["surface"], 235)
+    palette_bg = _hex_mix(t["surface"], t["bg_top"], 0.25)
+    pcard_bg = _hex_mix(t["surface"], t["bg_top"], 0.15)
+    menu_bg = t["surface"]
+    send_bg = acc
+    desk_pane = "background: transparent; border: none;"
+    if t.get("glass"):
+        # Glass: a pane is white light, brighter at its top edge, with a
+        # light rim. Qt has no backdrop blur, so the room behind is painted
+        # soft (Backdrop) and the panes stay thin. Things that float over
+        # text (palette, proactive card, menu) are frosted nearly opaque so
+        # the words under them never show through.
+        def pane(top: int, bot: int) -> str:
+            return ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+                    f"stop:0 {rgba('#ffffff', top)}, stop:1 {rgba('#ffffff', bot)})")
+        card, card_hi = pane(30, 11), pane(46, 20)
+        line = rgba("#ffffff", 46)
+        composer_bg = pane(40, 18)
+        frost = _hex_mix(t["bg_top"], "#ffffff", 0.09)
+        palette_bg = pcard_bg = menu_bg = rgba(frost, 238)
+        send_bg = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+                   f"stop:0 {acc2}, stop:1 {acc})")
+        desk_pane = (f"background: {pane(24, 8)}; border: 1px solid {rgba('#ffffff', 34)}; "
+                     f"border-radius: {s(20)}px; padding: {s(16)}px {s(10)}px {s(10)}px {s(10)}px;")
     # Labels: 11 px mono caps, +1.6 px tracking (caps set by mklabel).
     track = f"{1.6 * scale:.1f}"
     return f"""
@@ -468,6 +507,7 @@ QLabel#cardTitle {{ color: {t['paper']}; font-size: {s(15)}px; font-weight: 500;
 QLabel#cardSub {{ color: {t['dim']}; font-size: {s(13)}px; }}
 QLabel#chev {{ color: {t['faint']}; font-family: {ICON_FONT}; font-size: {s(10)}px; }}
 QFrame#card {{ background: {card}; border: 1px solid {line}; border-radius: {s(16)}px; }}
+QFrame#deskPane {{ {desk_pane} }}
 QFrame#mindCard {{ background: {rgba(t['paper'], 10)}; border: 1px solid {rgba(t['paper'], 22)};
   border-radius: {s(16)}px; }}
 QLabel#mindHead {{ font-family: {MONO_FONT}; font-size: {s(10)}px; letter-spacing: {track}px; }}
@@ -499,7 +539,7 @@ QPushButton#more:hover {{ color: {t['paper']}; }}
 
 /* ---- composer ---- */
 QFrame#composer {{
-  background: {rgba(t['surface'], 235)}; border: 1px solid {ring};
+  background: {composer_bg}; border: 1px solid {ring};
   border-radius: {s(16)}px;
 }}
 QFrame#composer[work="true"] {{ border: 1px solid {work}; }}
@@ -526,7 +566,7 @@ QPushButton#micbtn[hot="true"] {{ color: {acc2}; background: {tint}; border: 1px
 QPushButton#micbtn[muted="true"] {{ border: 1px solid {rgba(danger, 110)}; }}
 QPushButton#micbtn:pressed {{ background: {rgba(t['paper'], 6)}; }}
 QPushButton#sendbtn {{
-  background: {acc}; border: none; color: white; font-family: {ICON_FONT};
+  background: {send_bg}; border: none; color: white; font-family: {ICON_FONT};
   font-size: {s(16)}px; border-radius: {s(10)}px;
   min-width: {s(38)}px; max-width: {s(38)}px; min-height: {s(38)}px; max-height: {s(38)}px;
 }}
@@ -545,7 +585,7 @@ QLabel#hintRow, QLabel#topHint {{ color: {t['faint']}; font-family: {MONO_FONT};
   font-size: {s(10)}px; }}
 
 /* ---- v8 (e): Ctrl K palette + proactive cards ---- */
-QFrame#palette {{ background: {_hex_mix(t['surface'], t['bg_top'], 0.25)}; border: 1px solid {rgba(t['paper'], 24)};
+QFrame#palette {{ background: {palette_bg}; border: 1px solid {rgba(t['paper'], 24)};
   border-radius: {s(16)}px; }}
 QFrame#paletteTop {{ border: none; border-bottom: 1px solid {line}; background: transparent; }}
 QLabel#paletteGlass {{ color: {t['dim']}; font-size: {s(18)}px; }}
@@ -555,7 +595,7 @@ QLabel#paletteKbd {{ color: {t['faint']}; font-family: {MONO_FONT}; font-size: {
 QLabel#paletteEmpty {{ color: {t['dim']}; font-size: {s(14)}px; }}
 QListWidget#paletteList {{ background: transparent; border: none; outline: none; padding-top: {s(4)}px; }}
 QListWidget#paletteList::item {{ border: none; background: transparent; }}
-QFrame#pcard {{ background: {_hex_mix(t['surface'], t['bg_top'], 0.15)}; border: 1px solid {rgba(acc, 90)};
+QFrame#pcard {{ background: {pcard_bg}; border: 1px solid {rgba(acc, 90)};
   border-radius: {s(16)}px; }}
 QFrame#pcard[tone="work"] {{ border: 1px solid {rgba(work, 110)}; }}
 QFrame#pcard[tone="danger"] {{ border: 1px solid {rgba(danger, 120)}; }}
@@ -722,7 +762,7 @@ QScrollBar:vertical:hover {{ background: {rgba(t['paper'], 5)}; }}
 QScrollBar::handle:vertical:hover {{ background: {rgba(t['paper'], 60)}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-QMenu {{ background: {t['surface']}; border: 1px solid {line}; padding: {s(4)}px; }}
+QMenu {{ background: {menu_bg}; border: 1px solid {line}; padding: {s(4)}px; }}
 QMenu::item {{ padding: {s(8)}px {s(16)}px; border-radius: {s(8)}px; }}
 QMenu::item:selected {{ background: {tint_hi}; }}
 """
@@ -807,7 +847,7 @@ class Backdrop(QWidget):
         p = QPainter(self)
         key = (self.width(), self.height(), self.rail_w, self.side_w,
                self.glow_y, self.glow, self.t.get("bg_top"),
-               self.t.get("accent"), self.t.get("paper"))
+               self.t.get("accent"), self.t.get("paper"), self.t.get("glass"))
         if self._cache is None or key != self._cache_key:
             self._cache = self._paint()
             self._cache_key = key
@@ -828,6 +868,24 @@ class Backdrop(QWidget):
         p.fillRect(0, 0, w, h, g)
         cx0, cx1 = self.rail_w, max(self.rail_w + 1, w - self.side_w)
         cx = cx0 + (cx1 - cx0) / 2
+        glass = bool(t.get("glass"))
+        if glass:
+            # The aurora: four wide pools of coloured light, screened onto the
+            # dark so they add light without greying it. Wide and soft on
+            # purpose: this is the "blur" the panes sit on.
+            cols = t.get("aurora") or (t["accent"],) * 4
+            big = float(max(w, h))
+            p.setCompositionMode(QPainter.CompositionMode_Screen)
+            for col, (fx, fy, fr, a) in zip(cols, ((0.16, 0.06, 0.62, 0.34),
+                                                   (0.90, 0.16, 0.56, 0.30),
+                                                   (0.30, 1.02, 0.52, 0.22),
+                                                   (0.86, 0.94, 0.46, 0.17))):
+                rg = QRadialGradient(QPointF(w * fx, h * fy), big * fr)
+                rg.setColorAt(0.0, _qc(col, int(255 * a)))
+                rg.setColorAt(0.55, _qc(col, int(255 * a * 0.32)))
+                rg.setColorAt(1.0, _qc(col, 0))
+                p.fillRect(0, 0, w, h, rg)
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         if self.glow > 0.0:
             rad = max(200.0, 620.0 * h / 900.0)
             rg = QRadialGradient(QPointF(cx, h * self.glow_y), rad)
@@ -848,9 +906,17 @@ class Backdrop(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(_qc(t["paper"], int(255 * a)))
             p.drawPath(path)
-        # The rail: the room, a shade darker, one hairline.
-        p.fillRect(0, 0, cx0, h, QColor(0, 0, 0, 56))
-        p.fillRect(QRectF(cx0, 0, 1, h), _qc(t["paper"], 15))
+        if glass:
+            # The rail is a pane too: a lift of light and a brighter rim.
+            rail = QLinearGradient(0, 0, 0, h)
+            rail.setColorAt(0.0, QColor(255, 255, 255, 22))
+            rail.setColorAt(1.0, QColor(255, 255, 255, 8))
+            p.fillRect(0, 0, cx0, h, rail)
+            p.fillRect(QRectF(cx0, 0, 1, h), QColor(255, 255, 255, 40))
+        else:
+            # The rail: the room, a shade darker, one hairline.
+            p.fillRect(0, 0, cx0, h, QColor(0, 0, 0, 56))
+            p.fillRect(QRectF(cx0, 0, 1, h), _qc(t["paper"], 15))
         p.end()
         return pm
 
@@ -3982,7 +4048,12 @@ class GoatWindow(QWidget):
         self._desk_sig: dict = {}
         for key, head in (("open", "Open"), ("days", "Recent days"),
                           ("ask", "Ask me")):
-            col = QVBoxLayout()
+            # A frame per column, so the glass theme can make each a pane;
+            # in the other themes it is invisible and takes no room.
+            pane = QFrame()
+            pane.setObjectName("deskPane")
+            col = QVBoxLayout(pane)
+            col.setContentsMargins(0, 0, 0, 0)
             col.setSpacing(0)
             h = mklabel(head, "sectionTitle")
             h.setContentsMargins(8, 0, 0, 6)
@@ -3991,7 +4062,7 @@ class GoatWindow(QWidget):
             box.setSpacing(0)
             col.addLayout(box)
             col.addStretch(1)
-            dl.addLayout(col, 1)
+            dl.addWidget(pane, 1)
             self.desk_cols[key] = box
             self.desk_heads[key] = h
         desk.setMaximumWidth(DESK_MAX_W)
