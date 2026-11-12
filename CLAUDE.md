@@ -50,6 +50,9 @@ working on GOAT's code. Background: `README.md`, `STATE.md` (dev journal), `AUDI
 - `secret_paths.is_secret()` is the one list of private files. The voice's hands refuse them;
   the worker's tools need his one-shot yes (`_secret_guard_hook`, via `close_guard`).
 - No `shell=True` with model-written text (Windows `cmd.exe` parses quotes and `&`).
+- `GOAT_GUARDS` = `on` | `off` | `none` (`guards.py`, his order 2026-11-12): `off` stops the
+  confirm-first gates (destructive shell commands, closing a session window, risky screen actions,
+  Wi-Fi off); `none` also opens the private files. `run_tests.py` pins it to `on`.
 
 ## Switches added in the audit
 `GOAT_METRICS`, `GOAT_PHONE_LAN`, `GOAT_STT_EN_STICKY` (skip the slow language check on confident

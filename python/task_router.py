@@ -302,7 +302,8 @@ def handoff_line(lang: str, n: int) -> str:
 def job_text(r: dict, his: str) -> str:
     """The job as Claude gets it: his words, plus the confirm rule if needed."""
     task = r["task_summary"] or his
-    if r["needs_confirmation"]:
+    import guards
+    if r["needs_confirmation"] and guards.asks():
         task += (". This is destructive or sends something: before the "
                  "irreversible step, ask Giorgi to confirm (tell_voice, kind "
                  "question) and wait for his yes.")

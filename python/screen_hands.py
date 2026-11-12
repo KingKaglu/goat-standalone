@@ -486,6 +486,9 @@ def _refuse_closing_self(combo: str) -> None:
     # A terminal, a Claude session or unsaved work in front: his yes first
     # (2026-10-01, his live Claude Code terminal was closed on "close this").
     import close_guard
+    import guards
+    if not guards.asks():            # GOAT_GUARDS=off|none
+        return
     key = close_guard.approval_key(
         "screen-key", combo.strip().lower(),
         {"hwnd": int(fg), "pid": int(pid.value)})

@@ -70,6 +70,7 @@ CORE = [
     "screen_hands.py",
     "fast_hands.py",
     "close_guard.py",
+    "guards.py",
     "dsp.py",
     "stt_gladia.py",
     "endpoint.py",

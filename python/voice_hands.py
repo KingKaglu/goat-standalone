@@ -42,6 +42,7 @@ import urllib.request
 import zipfile
 
 from goat_paths import GOAT_ROOT
+import guards
 import secret_paths
 
 HOME = os.path.expanduser("~")
@@ -252,7 +253,7 @@ def find_files(query: str) -> str:
             time.sleep(0.25)
     elif time.time() - _index_t > INDEX_TTL_S:
         warm()                              # refresh in the background
-    names = [h for h in _name_hits(words) if not secret_paths.is_secret(h[0])]
+    names = [h for h in _name_hits(words) if not _private(h[0])]
     lines = []
     if names:
         lines.append("By name:")
@@ -261,7 +262,7 @@ def find_files(query: str) -> str:
     if len(names) < 3:
         # few or no names match: look inside his documents too
         inside = [h for h in _content_hits(words) if h[0] not in {p for p, _ in names}
-                  and not secret_paths.is_secret(h[0])]
+                  and not _private(h[0])]
     if inside:
         lines.append("Mentioned inside:")
         lines += ["  " + _fmt(p, mt) for p, mt in inside]
@@ -271,9 +272,14 @@ def find_files(query: str) -> str:
     return "\n".join(lines)
 
 
+def _private(path: str) -> bool:
+    """A private file (secret_paths), unless GOAT_GUARDS=none."""
+    return guards.secrets() and secret_paths.is_secret(path)
+
+
 def read_file(path: str) -> str:
     path = (path or "").strip().strip('"')
-    if secret_paths.is_secret(path):
+    if _private(path):
         return secret_paths.REFUSAL
     if not os.path.isfile(path):
         return f"ERROR: no such file: {path}"
@@ -292,7 +298,7 @@ def read_file(path: str) -> str:
 
 def list_folder(path: str) -> str:
     path = (path or "").strip().strip('"') or os.path.join(HOME, "Desktop")
-    if secret_paths.is_secret(path):
+    if _private(path):
         return secret_paths.REFUSAL
     try:
         names = sorted(os.listdir(path), key=str.lower)
@@ -308,7 +314,7 @@ def open_path(path: str) -> str:
     path = (path or "").strip().strip('"')
     if not os.path.exists(path):
         return f"ERROR: no such file or folder: {path}"
-    if secret_paths.is_secret(path):
+    if _private(path):
         return secret_paths.REFUSAL
     if os.path.splitext(path)[1].lower() in NEVER_OPEN:
         return "ERROR: that's a program or script — running it is Claude's job"

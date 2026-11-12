@@ -656,7 +656,8 @@ def pc(t: str, raw: str = "") -> "object | None":
         ka = m.group("ka") or m.group("ka2") or ""
         on = (s == "on") if s else (e in ("enable", "connect", "reconnect")) if e \
             else ka == "ჩართე"
-        if kind == "WiFi" and not on:
+        import guards
+        if kind == "WiFi" and not on and guards.asks():
             # Wi-Fi off cuts my cloud ear and his phone link — he may not be
             # able to SAY "turn it back on". Ask once; his yes runs it.
             import close_guard

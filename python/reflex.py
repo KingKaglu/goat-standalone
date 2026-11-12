@@ -303,6 +303,9 @@ def _close_question(target: str, lang: str) -> "Reflex | None":
     one he was asked about, not whatever is in front by then."""
     try:
         import close_guard
+        import guards
+        if not guards.asks():        # GOAT_GUARDS=off|none: just close it
+            return None
         if target:
             import screen_hands
             w = screen_hands._match(target)

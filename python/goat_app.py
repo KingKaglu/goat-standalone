@@ -44,6 +44,7 @@ from claude_agent_sdk import (
 
 import action_policy
 import close_guard
+import guards
 import endpoint
 import local_hands
 import live_view
@@ -995,6 +996,8 @@ async def _close_guard_hook(input_data, tool_use_id, context):
     Approvals bind to the exact tool and command and are consumed once. The
     SDK runs this even under bypassPermissions (verified 2026-10-01).
     """
+    if not guards.asks():            # GOAT_GUARDS=off|none: his order, no question
+        return {}
     raw_input = input_data.get("tool_input") or {}
     tool_input = raw_input if isinstance(raw_input, dict) else {}
     cmd = str(tool_input.get("command") or "")
@@ -1069,6 +1072,8 @@ async def _secret_guard_hook(input_data, tool_use_id, context):
     reads text strangers wrote; a planted "cat .goat-secrets.json" must not
     just run. Touching a private file needs Giorgi's own yes, once, for that
     exact call — the same one-shot approval the shell guard uses."""
+    if not guards.secrets():         # GOAT_GUARDS=none
+        return {}
     tool = str(input_data.get("tool_name") or "")
     raw = input_data.get("tool_input")
     hit = secret_hit(tool, raw)

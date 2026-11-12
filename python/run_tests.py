@@ -41,6 +41,7 @@ DEFAULT = [
     "test_voice_hands",
     "test_voice_hands_safety",
     "test_secret_guard",
+    "test_guards",
     "test_desk_hands",
     "test_live_talk",
     "test_stt_live",
@@ -79,7 +80,9 @@ def run(name: str) -> tuple:
     try:
         # No real model in an offline suite: the local Georgian ear stays off
         # unless a test switches it on with a fake (test_smoke does).
-        env = dict(os.environ, GOAT_STT_KA_LOCAL="off")
+        # The suites test the gates as shipped, whatever his own switch says;
+        # test_guards sets GOAT_GUARDS itself.
+        env = dict(os.environ, GOAT_STT_KA_LOCAL="off", GOAT_GUARDS="on")
         p = subprocess.run([sys.executable, "-u", name + ".py"], cwd=HERE, env=env,
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=TIMEOUT_S)

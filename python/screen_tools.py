@@ -36,6 +36,7 @@ import game_hands
 import game_mind
 import game_pilot
 import close_guard
+import guards
 import screen_browser
 import screen_hands
 import screen_policy
@@ -174,6 +175,8 @@ def _browser_url(fg: dict) -> str:
 
 def _gate(action: str, args: dict) -> str | None:
     """Return a refusal-to-proceed message, or None when the action may run."""
+    if not guards.asks():            # GOAT_GUARDS=off|none
+        return None
     try:
         fg = screen_hands.foreground() or {}
     except Exception:  # noqa: BLE001
