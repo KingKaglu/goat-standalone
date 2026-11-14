@@ -140,6 +140,29 @@ _POST_TOPIC_RE = re.compile(
     r"\b(?:last|latest|finished|ready|done|already)\b", re.IGNORECASE)
 POST_SHORT_HINT = " (use the post-short skill: Shorts Maker renders it, you upload it on tiktok.com)"
 
+POST_TOPIC_QUESTION = {"en": "Sir, what should the video be about?",
+                       "ka": "ბატონო, რაზე იყოს ვიდეო?"}
+_YOU_PICK_RE = re.compile(r"\b(?:you\s+(?:pick|choose|decide)|anything|whatever|surprise\s+me|"
+                          r"up\s+to\s+you|your\s+choice|შენ\s+აირჩიე|რაც\s+გინდა)\b", re.IGNORECASE)
+_CHECK_FIRST_RE = re.compile(r"\b(?:check|review|see|look\s+at)\s+(?:it\s+)?(?:first|before)|"
+                             r"don'?t\s+post|not\s+live|before\s+it\s+goes", re.IGNORECASE)
+
+
+def post_short_job(answer: str) -> str:
+    """Claude's job once he has answered "what should the video be about?"."""
+    a = " ".join((answer or "").split()).strip(" .!?")
+    if _YOU_PICK_RE.search(a) or not a:
+        topic = ("a topic you pick that fits his channels (science, space, history, tech news); "
+                 "tell him which in one line")
+    else:
+        topic = f'"{a}"'
+    mode = ("He wants to check it first: upload with --dry-run, don't press Post."
+            if _CHECK_FIRST_RE.search(a) else
+            "Upload it and press Post (no --dry-run): this request is not check-first.")
+    return (f"Post a new short about {topic} with the post-short skill: Shorts Maker renders it, "
+            f"you upload it on tiktok.com. {mode}")
+
+
 _TERMINAL_CLAUDE_RE = re.compile(
     r"\b(?:terminal\s+claude|claude\s+(?:in|on)\s+(?:my|the)\s+terminal|claude\s+code)\b",
     re.IGNORECASE)
@@ -264,7 +287,9 @@ def route(text: str, *, job_running: bool = False) -> dict:
                     why="the terminal Claude")
     if _POST_SHORT_RE.search(t) and not question_like(t):
         if _POST_TOPIC_RE.search(t):
-            return done(type=TASK, size=BIG, task_summary=_summary(t) + POST_SHORT_HINT,
+            mode = (" He wants to check it first: --dry-run, don't press Post." if _CHECK_FIRST_RE.search(t)
+                    else " Upload it and press Post (no --dry-run): this request is not check-first.")
+            return done(type=TASK, size=BIG, task_summary=_summary(t) + POST_SHORT_HINT + mode,
                         needs_confirmation=False, why="post a short", depth="quick")
         return done(type=TASK, size=SMALL, task_summary=_summary(t),
                     why="post a short: ask the topic")

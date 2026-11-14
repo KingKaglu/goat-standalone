@@ -188,6 +188,14 @@ class AuditRouterFixes(unittest.TestCase):
         # Without one the voice asks what about.
         r = tr.route("post a new video")
         self.assertEqual((r["size"], r["why"]), (tr.SMALL, "post a short: ask the topic"))
+        self.assertIn("not check-first", tr.route("post a video about Rome")["task_summary"])
+        self.assertIn("--dry-run", tr.route("post a video about Rome, let me check it first")["task_summary"])
+        # His answer to "what should it be about?" becomes the job.
+        job = tr.post_short_job("the deep ocean")
+        self.assertIn('"the deep ocean"', job)
+        self.assertIn("not check-first", job)
+        self.assertIn("you pick", tr.post_short_job("anything you want").lower())
+        self.assertIn("--dry-run", tr.post_short_job("sharks, but let me check it before it goes live"))
         # Questions and playing media are not posting.
         for s in ("how do I post a video on TikTok?", "play a video"):
             self.assertNotIn("post a short", tr.route(s)["why"], s)

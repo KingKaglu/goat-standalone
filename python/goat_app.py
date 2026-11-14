@@ -4032,9 +4032,27 @@ class GoatApp:
         print(f"[route] {r['type']}/{r['size']} ({r['why']}) in {r['ms']} ms"
               + (" confirm" if r["needs_confirmation"] else "")
               + f": {text[:70]!r}", flush=True)
+        lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
+        # "Post a new video" (his order 2026-11-14): GOAT itself asks what about,
+        # and his next turn is the topic. The voice model was picking topics alone.
+        asked = getattr(self, "_post_topic_asked", 0.0)
+        if asked and time.time() - asked < 300:
+            self._post_topic_asked = 0.0
+            if r["why"] not in ("calling it off", "about the running job"):
+                r = dict(r, type=task_router.TASK, size=task_router.BIG, why="post a short: topic",
+                         task_summary=task_router.post_short_job(text), needs_confirmation=False,
+                         depth="quick", refers_back=False)
+        elif r["why"] == "post a short: ask the topic":
+            self._post_topic_asked = time.time()
+            q = task_router.POST_TOPIC_QUESTION[lang]
+            self._front_cancel()
+            self._say_now(q)
+            self.talker.remember(text, q)
+            self._log_exchange(text, q)
+            self.emit("turn_done", "")
+            return True
         if r["size"] != task_router.BIG:
             return False
-        lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
         self._handoff_n = getattr(self, "_handoff_n", -1) + 1
         line = task_router.handoff_line(lang, self._handoff_n)
         self._front_cancel()
