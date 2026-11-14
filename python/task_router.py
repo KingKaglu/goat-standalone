@@ -138,7 +138,7 @@ _POST_SHORT_RE = re.compile(
 _POST_TOPIC_RE = re.compile(
     r"\b(?:about|on|of|regarding|covering)\s+(?!it\b|that\b|this\b|them\b)\w+|"
     r"\b(?:last|latest|finished|ready|done|already)\b", re.IGNORECASE)
-POST_SHORT_HINT = " (use the post-short skill: Shorts Maker finds, clips and posts it)"
+POST_SHORT_HINT = " (use the post-short skill: Shorts Maker renders it, you upload it on tiktok.com)"
 
 _TERMINAL_CLAUDE_RE = re.compile(
     r"\b(?:terminal\s+claude|claude\s+(?:in|on)\s+(?:my|the)\s+terminal|claude\s+code)\b",
