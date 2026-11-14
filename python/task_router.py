@@ -126,6 +126,20 @@ _MEDIA_RE = re.compile(
     r"\b(?:music|song|songs|playlist|album|podcast|video|spotify|youtube|"
     r"radio|track)\b", re.IGNORECASE)
 
+# Posting a short through Shorts Maker (his order 2026-11-14: "I tell it to post
+# new video, it asks me about what topic, then goes to the clip maker"). With a
+# topic it's Claude's job at once (post-short skill); without one the voice asks
+# "what about?" first and hands it over itself (talk_brain prompt).
+_POST_SHORT_RE = re.compile(
+    r"\b(?:post|upload|publish|put\s+out|drop)\s+(?:(?:me|us)\s+)?(?:a|an|another|one|some|two|three|"
+    r"the|new|fresh|last|latest|finished|ready|my|your|\s)*(?:(?:short|tiktok|tik\s*tok|insta(?:gram)?)\s+)?"
+    r"(?:videos?|shorts?|clips?|reels?|tiktoks?)\b|"
+    r"\b(?:clip|shorts)\s*maker\b", re.IGNORECASE)
+_POST_TOPIC_RE = re.compile(
+    r"\b(?:about|on|of|regarding|covering)\s+(?!it\b|that\b|this\b|them\b)\w+|"
+    r"\b(?:last|latest|finished|ready|done|already)\b", re.IGNORECASE)
+POST_SHORT_HINT = " (use the post-short skill: Shorts Maker finds, clips and posts it)"
+
 _TERMINAL_CLAUDE_RE = re.compile(
     r"\b(?:terminal\s+claude|claude\s+(?:in|on)\s+(?:my|the)\s+terminal|claude\s+code)\b",
     re.IGNORECASE)
@@ -215,6 +229,12 @@ def _summary(text: str) -> str:
     return (t[:1].upper() + t[1:]) if t else ""
 
 
+def question_like(text: str) -> bool:
+    """'how do I post a video on TikTok?' is a question, not an order to post."""
+    return bool(_QUESTION_RE.match(text)) and not re.match(
+        r"(?i)^\W*(?:can|could|would|will)\s+you\s+(?!tell|explain|say)", text)
+
+
 def route(text: str, *, job_running: bool = False) -> dict:
     """{type, size, task_summary, needs_confirmation, why, ms} for one turn."""
     t0 = time.perf_counter()
@@ -242,6 +262,12 @@ def route(text: str, *, job_running: bool = False) -> dict:
         # reads and types into them in one step ("terminal" isn't a job).
         return done(type=TASK, size=SMALL, task_summary=_summary(t),
                     why="the terminal Claude")
+    if _POST_SHORT_RE.search(t) and not question_like(t):
+        if _POST_TOPIC_RE.search(t):
+            return done(type=TASK, size=BIG, task_summary=_summary(t) + POST_SHORT_HINT,
+                        needs_confirmation=False, why="post a short", depth="quick")
+        return done(type=TASK, size=SMALL, task_summary=_summary(t),
+                    why="post a short: ask the topic")
     lead = _FILLER_RE.sub("", t)
     if (_KNOWLEDGE_LEAD_RE.match(lead) and not _THING_RE.search(t)
             and not _MACHINE_RE.search(t) and not _BULK_FILES_RE.search(t)

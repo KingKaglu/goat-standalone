@@ -178,6 +178,20 @@ class AuditRouterFixes(unittest.TestCase):
         self.assertIn("improve my Georgian listening", job)
         self.assertIn("კარგი, გადაეცი.", job)
 
+    def test_posting_a_short(self):
+        # With a topic (or "the last clip") it's Claude's job with the post-short skill.
+        for s in ("post a new video about sharks", "Hey GOAT, post a short about black holes from this week",
+                  "can you post a video about Rome", "upload the last clip", "post the clip you already made"):
+            r = tr.route(s)
+            self.assertEqual((r["size"], r["why"]), (tr.BIG, "post a short"), s)
+            self.assertIn("post-short skill", r["task_summary"], s)
+        # Without one the voice asks what about.
+        r = tr.route("post a new video")
+        self.assertEqual((r["size"], r["why"]), (tr.SMALL, "post a short: ask the topic"))
+        # Questions and playing media are not posting.
+        for s in ("how do I post a video on TikTok?", "play a video"):
+            self.assertNotIn("post a short", tr.route(s)["why"], s)
+
     def test_every_result_has_a_depth(self):
         for s in CHAT + SMALL + BIG:
             self.assertIn(tr.route(s).get("depth"), ("quick", "deep"), s)
