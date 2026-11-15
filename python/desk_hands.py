@@ -101,7 +101,7 @@ def write_file(args: dict) -> str:
         return "ERROR: that folder is off limits for the voice — Claude's job"
     import guards
     import secret_paths
-    if guards.secrets() and secret_paths.is_secret(path):   # 2026-11-06 audit S6
+    if guards.private() and secret_paths.is_secret(path):   # 2026-11-06 audit S6
         return secret_paths.REFUSAL
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)

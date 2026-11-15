@@ -56,6 +56,7 @@ import threading
 import time
 from collections import deque
 
+import guards
 from goat_paths import GOAT_ROOT
 
 HOST = "generativelanguage.googleapis.com"
@@ -462,7 +463,7 @@ class GeminiTalk:
         self.last_error = ""
         self.fail_streak = 0
         self.ttfts: deque = deque(maxlen=20)
-        self._system = TALK_SYSTEM + _read_memory()
+        self._system = guards.prompt(TALK_SYSTEM) + _read_memory()
         self._memory_t = time.time()
         self._seed()
 
@@ -509,7 +510,7 @@ class GeminiTalk:
     def _refresh_system(self):
         # memory.md is edited by Claude during the day; reread it now and then
         if time.time() - self._memory_t > 300:
-            self._system = TALK_SYSTEM + _read_memory()
+            self._system = guards.prompt(TALK_SYSTEM) + _read_memory()
             self._memory_t = time.time()
 
     def _body(self, user_parts: list) -> dict:

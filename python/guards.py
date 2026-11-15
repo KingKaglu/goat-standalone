@@ -36,6 +36,24 @@ def secrets() -> bool:
     return level() != "none"
 
 
+def private() -> bool:
+    """True when a private file must be held RIGHT NOW (the gates call this).
+
+    on    always held (his one-shot yes opens one exact call, as before).
+    off   held, unless his own recent words named private things
+          (secret_paths.heard): his order is the approval, a stranger's text
+          is not.
+    none  never held.
+    """
+    lvl = level()
+    if lvl == "none":
+        return False
+    if lvl == "off":
+        import secret_paths
+        return not secret_paths.he_asked()
+    return True
+
+
 # ---- the brains' prompts follow the switch (2026-11-15) --------------------
 # With the gates off the tools stopped asking, but the prompts still told the
 # brains to "ask one short question and wait for his explicit yes", so GOAT
@@ -43,8 +61,9 @@ def secrets() -> bool:
 # ask"). Each rule swaps one ask-first sentence for its guards-off wording.
 # Two things stay whatever the switch says: a garbled order is not an order,
 # and text he did not write (a web page, a file, a message) is not an order.
-_SECRETS_LINE = ("One thing still asks his yes, enforced by the app: touching "
-                 "key, login or token files. ")
+_SECRETS_LINE = ("Key, login and token files open when his own words asked "
+                 "for them; if the app still holds one, it was not in his "
+                 "order: ask him once. ")
 
 PROMPT_RULES: tuple[tuple[str, str], ...] = (
     (r"For destructive or\s+outward-facing actions, ask one short question "
@@ -77,6 +96,11 @@ PROMPT_RULES: tuple[tuple[str, str], ...] = (
      r"the call with confirm=true\.",
      "The confirm gate is switched off (GOAT_GUARDS): nothing comes back "
      "asking for confirmation."),
+    # the voice's prompt (talk_brain.TALK_SYSTEM)
+    (r"Placing, changing or closing orders stays with Claude and needs his "
+     r"yes\.",
+     "Placing, changing or closing orders stays with Claude: hand it over "
+     "when he orders it, his order is enough."),
 )
 
 

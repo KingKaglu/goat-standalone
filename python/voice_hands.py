@@ -273,8 +273,9 @@ def find_files(query: str) -> str:
 
 
 def _private(path: str) -> bool:
-    """A private file (secret_paths), unless GOAT_GUARDS=none."""
-    return guards.secrets() and secret_paths.is_secret(path)
+    """A private file (secret_paths) that is held right now: not with
+    GOAT_GUARDS=none, and not with off once his own words asked for it."""
+    return guards.private() and secret_paths.is_secret(path)
 
 
 def read_file(path: str) -> str:

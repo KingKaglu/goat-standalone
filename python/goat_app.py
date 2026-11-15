@@ -1072,7 +1072,7 @@ async def _secret_guard_hook(input_data, tool_use_id, context):
     reads text strangers wrote; a planted "cat .goat-secrets.json" must not
     just run. Touching a private file needs Giorgi's own yes, once, for that
     exact call — the same one-shot approval the shell guard uses."""
-    if not guards.secrets():         # GOAT_GUARDS=none
+    if not guards.private():         # GOAT_GUARDS=none, or off + his own words asked
         return {}
     tool = str(input_data.get("tool_name") or "")
     raw = input_data.get("tool_input")
@@ -3087,6 +3087,7 @@ class GoatApp:
         text = text.strip()
         if not text:
             return
+        secret_paths.heard(text)     # his own words can open private files
         self._merge_prev = None
         self._last_exchange = time.monotonic()
         cut_in, self._cut_in = getattr(self, "_cut_in", None), None
@@ -4271,6 +4272,7 @@ class GoatApp:
     async def _direct_job(self, task: str, his: str):
         """His work button / dropped files: straight to Claude, and the voice
         says so (and tells him the result when the watch reports it)."""
+        secret_paths.heard(his)      # a typed work order is his own words too
         lang = self.turn_lang if self.turn_lang in ("en", "ka") else "en"
         pool = ACK_HANDOFF[lang]
         self._ho_i = (getattr(self, "_ho_i", -1) + 1) % len(pool)

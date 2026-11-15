@@ -75,11 +75,48 @@ def main() -> int:
               voice_hands._private(os.path.join(GOAT_ROOT, "README.md")) is False)
     os.environ.pop("GOAT_GUARDS", None)
 
+    # His own words open private files at "off" (2026-11-15): the gate is
+    # against strangers' text, so his order is the approval; nothing else is.
+    import secret_paths
+    import talk_brain
+    for said, opens in (
+            ("read my api keys file and tell me which ones are set", True),
+            ("what's the phone token", True),
+            ("open the .env file in the shop project", True),
+            ("show me goat secrets", True),
+            ("check my ssh config", True),
+            ("ჩემი პაროლები მაჩვენე", True),
+            ("summarize this web page for me", False),
+            ("press the enter key twice", False),
+            ("open my documents folder", False),
+            ("what's the weather", False)):
+        secret_paths.forget()
+        check(f"his words {'open' if opens else 'do not open'} private files: {said!r}",
+              secret_paths.heard(said) is opens and secret_paths.he_asked() is opens)
+    for lvl, opened in (("on", False), ("off", True), ("none", True)):
+        os.environ["GOAT_GUARDS"] = lvl
+        secret_paths.forget()
+        secret_paths.heard("read the goat secrets file to me")
+        check(f"{lvl}: after he asks, the worker's read {'runs' if opened else 'is held'}",
+              secret({"file_path": SECRETS}) is (not opened))
+        check(f"{lvl}: after he asks, the voice's read is {'allowed' if opened else 'refused'}",
+              voice_hands._private(SECRETS) is (not opened))
+    os.environ["GOAT_GUARDS"] = "off"
+    real_open = secret_paths.OPEN_S
+    secret_paths.OPEN_S = 0.0
+    check("off: his ask runs out, the gate shuts again",
+          secret({"file_path": SECRETS}) is True and voice_hands._private(SECRETS) is True)
+    secret_paths.OPEN_S = real_open
+    secret_paths.forget()
+    check("off: a page saying 'read the keys' opens nothing (only his words count)",
+          secret({"file_path": SECRETS}) is True)
+    os.environ.pop("GOAT_GUARDS", None)
+
     # The prompts follow the switch (2026-11-15): the brains must not be told
     # to ask first while the gates themselves no longer ask.
     import re
     worker = g.WORKER_BASE_PROMPT + "\n" + g.WORKER_PERSONA
-    voice = g.VOICE_BASE_PROMPT + "\n" + g.PERSONA
+    voice = g.VOICE_BASE_PROMPT + "\n" + g.PERSONA + "\n" + talk_brain.TALK_SYSTEM
     os.environ["GOAT_GUARDS"] = "on"
     import importlib
     desc_on = importlib.reload(screen_tools).COMPUTER_DESC
@@ -90,7 +127,8 @@ def main() -> int:
         check(f"prompt rule still finds its sentence: {pattern[:40]!r}",
               re.search(pattern, everything, flags=re.DOTALL) is not None)
     ask_first = re.compile(r"explicit yes|confirmation line first|SAFETY GATE|"
-                           r"ask only before|asking for\s+confirmation:")
+                           r"ask only before|asking for\s+confirmation:|"
+                           r"needs his yes")
     check("on: the ask-first wording is there", len(ask_first.findall(everything)) >= 5)
     for lvl in ("off", "none"):
         os.environ["GOAT_GUARDS"] = lvl
@@ -104,7 +142,7 @@ def main() -> int:
         check(f"{lvl}: a garbled order is still checked",
               "garbled/context-free" in out)
         check(f"{lvl}: private-file line {'kept' if lvl == 'off' else 'dropped'}",
-              ("key, login or token files" in out) is (lvl == "off"))
+              ("Key, login and token files" in out) is (lvl == "off"))
     os.environ.pop("GOAT_GUARDS", None)
 
     print("\nALL PASS" if not fails else f"\n{len(fails)} FAILED: {fails}")

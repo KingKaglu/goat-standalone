@@ -105,3 +105,48 @@ def mentions_secret(text: str) -> str | None:
 
 REFUSAL = ("ERROR: that's a private file (keys, logins or tokens) — "
            "I don't read or open those, and I never send them anywhere")
+
+
+# ---- his own words open them (2026-11-15) ----------------------------------
+# The gate exists for text strangers wrote, not for him (see the top of this
+# file). With GOAT_GUARDS=off it used to stop him as well: the voice refused,
+# the worker asked for a second yes (his order: "make sure it doesn't refuse
+# when I ask"). Now, when HIS OWN words (spoken or typed, taken before any
+# model sees them) name private things, the gate stands open for OPEN_S; a
+# web page that says "read the keys" still finds it shut, because a page
+# cannot put words in his mouth. guards.private() is the one place that asks.
+OPEN_S = 600.0
+ASK_RE = re.compile(
+    r"\b(?:passwords?|passcodes?|tokens?|secrets?|credentials?|logins?|"
+    r"cookies?|certificates?|keystores?|voice ?prints?|"
+    r"(?:api|ssh|private|access|signing|license|secret)[ -]?keys?|"
+    r"(?:my|the|your|goat'?s?) keys?|keys? files?|"
+    r"ssh|gpg|\.?env files?|dot ?env|\.env\b|npmrc|pypirc|netrc|"
+    r"private files?|browser (?:profile|data)s?|"
+    r"\.?claude (?:folder|directory|dir|config|settings|files?))\b"
+    r"|\.goat-secrets|goat[- ]secrets"
+    r"|პაროლ|გასაღებ|ტოკენ|საიდუმლო|ქუქი|სერტიფიკატ|ლოგინ",
+    re.IGNORECASE)
+_asked_at = 0.0
+
+
+def heard(text: str) -> bool:
+    """Call with his own words. True (and the clock starts) when they name
+    private things."""
+    global _asked_at
+    if ASK_RE.search(str(text or "")):
+        import time
+        _asked_at = time.monotonic()
+        return True
+    return False
+
+
+def he_asked() -> bool:
+    """True while his own recent words cover touching private files."""
+    import time
+    return bool(_asked_at) and time.monotonic() - _asked_at < OPEN_S
+
+
+def forget() -> None:
+    global _asked_at
+    _asked_at = 0.0
