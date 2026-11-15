@@ -247,14 +247,27 @@ COMPUTER_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["live", "look", "click_mark", "click_text", "find", "read",
-                     "changes", "wait_for",
+            "enum": ["do", "live", "look", "click_mark", "click_text", "find",
+                     "read", "changes", "wait_for",
                      "screenshot", "click", "double_click", "right_click",
                      "middle_click", "move", "drag", "scroll", "type", "key",
                      "windows", "focus", "window_state", "foreground",
                      "cursor", "pixel", "monitors", "wait", "log",
                      "hide_self", "show_self"],
             "description": "What to do. See the tool description.",
+        },
+        "steps": {
+            "type": "array",
+            "description": "do: the actions to run in a row, each an object "
+                           "shaped like one call of this tool, e.g. "
+                           '[{"action":"click_text","text":"File"},'
+                           '{"action":"click_text","text":"Save As"},'
+                           '{"action":"type","text":"notes.txt"},'
+                           '{"action":"key","text":"enter"}]. Add '
+                           '"optional":true to a step that may not apply.',
+            "items": {"type": "object",
+                      "properties": {"action": {"type": "string"}},
+                      "required": ["action"]},
         },
         "mark": {"type": "integer",
                  "description": "Mark number from the last look, for click_mark."},
@@ -289,8 +302,10 @@ COMPUTER_SCHEMA = {
                                  "anything consequential - it is what lets the "
                                  "safety gate read the intent."},
         "seconds": {"type": "number",
-                    "description": "wait / wait_for timeout (max 30); live: "
-                                   "how far back to report (default 60)."},
+                    "description": "wait / wait_for timeout (max 30); "
+                                   "click_text: keep looking this long for "
+                                   "the text to appear; live: how far back "
+                                   "to report (default 60)."},
         "max_edge": {"type": "integer",
                      "description": "Longest screenshot edge, default 1400."},
         "grid": {"type": "boolean",
@@ -334,6 +349,16 @@ comes back (it says what changed on screen) -> look again only if needed.
                wait + screenshot loops.
 click / key / type also reply with what they changed.
 
+FAST PATH — do: when you know the next few steps, send them ALL in one
+call: action="do", steps=[{action, ...}, ...] (up to 15, any action here
+except screenshot). They run locally in a row with no round trip between
+them: each click_text waits up to 3 s for its text to appear, each
+click/type/key waits for the screen to settle, and the run stops at the
+first step that fails. One report comes back: a line per step, the last
+step's full result, and what did not run. A menu path, a form, a dialog
+(focus, click_text, type, key, wait_for) is ONE call, not five.
+"optional":true on a step = skip it quietly if it fails (a cookie banner).
+
 COORDINATES ARE REAL SCREEN PIXELS everywhere. For things that aren't text
 or controls (a board game cell, a map, a canvas) use screenshot: its yellow
 grid labels are real coordinates. A cyan crosshair marks the mouse.
@@ -371,6 +396,9 @@ anything consequential — it is what lets the safety gate see the intent.
 Destructive or money-shaped actions come back asking for confirmation: relay
 the question to Giorgi in one line, then repeat the call with confirm=true.
 """
+# Read at boot, like the gate itself: with GOAT_GUARDS off the last
+# paragraph says the gate is off instead of promising a question.
+COMPUTER_DESC = guards.prompt(COMPUTER_DESC)
 
 
 def _image(png: bytes) -> dict:
@@ -378,8 +406,10 @@ def _image(png: bytes) -> dict:
             "mimeType": "image/png"}
 
 
-async def _sight(action: str, args: dict) -> dict | None:
-    """Real-sight actions (screen_sense, 2026-10-21). None = not one of them."""
+async def _sight(action: str, args: dict, patience: float = 0.0) -> dict | None:
+    """Real-sight actions (screen_sense, 2026-10-21). None = not one of them.
+    `patience`: how long click_text keeps looking for text that isn't there
+    yet (a `do` run passes it, so a step can follow the one that opens it)."""
     target = args.get("target")
     if action == "live":
         import live_eyes
@@ -426,6 +456,15 @@ async def _sight(action: str, args: dict) -> dict | None:
                 if not want:
                     return _fail('click_text needs text="what it says"')
                 hits = await asyncio.to_thread(screen_sense.find, str(want), target)
+                try:
+                    patience = max(patience, float(args.get("seconds") or 0))
+                except (TypeError, ValueError):
+                    pass
+                give_up = time.monotonic() + min(patience, 30.0)
+                while not hits and time.monotonic() < give_up:
+                    await asyncio.sleep(0.25)
+                    hits = await asyncio.to_thread(screen_sense.find, str(want),
+                                                   target)
                 if not hits:
                     return _fail(f"no {want!r} on screen — look to see what is there")
                 h = hits[0]
@@ -483,17 +522,101 @@ async def _sight(action: str, args: dict) -> dict | None:
     return None
 
 
+DO_MAX_STEPS = 15
+DO_PATIENCE_S = 3.0        # a step's text may still be opening: wait this long
+_NOT_A_STEP = ("do", "screenshot")
+
+
+def _said(res: dict) -> str:
+    """The text of a tool result (pictures dropped)."""
+    return " ".join(str(c.get("text", "")) for c in (res.get("content") or [])
+                    if isinstance(c, dict) and c.get("type") == "text").strip()
+
+
+async def _do(args: dict) -> dict:
+    """Run several actions in a row, locally, and report once.
+
+    His order 2026-11-15: "do things like click and everything faster". The
+    local part of a click was never the slow part; one model round trip per
+    click was (seconds each). A known path now costs one round trip in all.
+    Every step still passes its own gate and lands in the ledger."""
+    steps = args.get("steps")
+    if isinstance(steps, str):          # some models send the list as JSON text
+        try:
+            steps = json.loads(steps)
+        except ValueError:
+            steps = None
+    if not isinstance(steps, list) or not steps:
+        return _fail('do needs steps=[{"action": ...}, ...]')
+    if len(steps) > DO_MAX_STEPS:
+        return _fail(f"do takes at most {DO_MAX_STEPS} steps; send the rest "
+                     "in a second call")
+    # Check the whole list before the first click: half a run is worse
+    # than none.
+    for i, step in enumerate(steps, 1):
+        act = str(step.get("action", "")).strip().lower() \
+            if isinstance(step, dict) else ""
+        if not act:
+            return _fail(f"step {i} has no action; nothing was run")
+        if act in _NOT_A_STEP:
+            return _fail(f"step {i}: {act} can't be a step (call it on its "
+                         "own); nothing was run")
+    t0 = time.monotonic()
+    lines, done, stopped = [], 0, ""
+    for i, step in enumerate(steps, 1):
+        step = dict(step)
+        optional = bool(step.pop("optional", False))
+        act = str(step["action"]).strip().lower()
+        if act == "look":
+            step.setdefault("image", False)
+        try:
+            res = await _computer(step, patience=DO_PATIENCE_S)
+        except Exception as exc:  # noqa: BLE001 — a step that throws is a failed step
+            res = _fail(f"{act} failed: {exc}")
+        said = " ".join(_said(res).split()) or "ok"
+        failed = bool(res.get("isError"))
+        last = i == len(steps)
+        if failed and optional:
+            lines.append(f"{i}. {act}: skipped (optional) - {said[:160]}")
+            continue
+        if failed:
+            lines.append(f"{i}. {act}: FAILED - {_said(res)[:1500]}")
+            stopped = (f"STOPPED at step {i} of {len(steps)}"
+                       + (f"; steps {i + 1}-{len(steps)} did not run"
+                          if not last else "") + ".")
+            if said.startswith("CONFIRM FIRST"):
+                stopped += (" After his yes, run that step on its own with "
+                            "confirm=true, then send the remaining steps.")
+            break
+        done += 1
+        lines.append(f"{i}. {act}: " + (_said(res)[:4000] if last else said[:300]))
+    secs = time.monotonic() - t0
+    _record({"tool": "computer", "action": "do",
+             "what": f"do - {done}/{len(steps)} steps",
+             "status": "error" if stopped else "ok", "ms": int(secs * 1000)})
+    head = f"{done} of {len(steps)} steps done in {secs:.1f} s."
+    body = (head + (" " + stopped if stopped else "") + "\n" + "\n".join(lines))
+    return _fail(body) if stopped else _text(body)
+
+
 @tool("computer", COMPUTER_DESC, COMPUTER_SCHEMA)
 async def computer(args: dict) -> dict:
+    return await _computer(args)
+
+
+async def _computer(args: dict, patience: float = 0.0) -> dict:
+    """One `computer` action. `patience` comes from a `do` run (see _sight)."""
     action = str(args.get("action", "")).strip().lower()
     if not action:
         return _fail("action is required")
+    if action == "do":
+        return await _do(args)
 
     def _xy():
         x, y = args.get("x"), args.get("y")
         return (int(x), int(y)) if x is not None and y is not None else (None, None)
 
-    sight = await _sight(action, args)
+    sight = await _sight(action, args, patience)
     if sight is not None:
         return sight
 

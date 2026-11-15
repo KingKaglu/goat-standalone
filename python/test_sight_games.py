@@ -56,6 +56,111 @@ def test_snap():
     assert hit and hit[:2] == (650, 935) and "Save draft" in hit[2]
 
 
+def test_settle():
+    """After an action the view is polled: back as soon as it changed and
+    held still, and a no-op still gets its full quiet wait."""
+    box = (0, 0, 400, 400)
+    blank = np.zeros((100, 100), np.uint8)
+    big = blank.copy()
+    big[10:90, 10:90] = 200                    # a dialog: most of the view
+    tiny = blank.copy()
+    tiny[50:53, 50:53] = 200                   # a button's own highlight
+
+    def feed(frames):
+        it = iter(frames)
+        last = [frames[-1]]
+
+        def grab(_box):
+            last[0] = next(it, last[0])
+            return last[0]
+        return grab
+
+    t0 = time.monotonic()
+    after, boxes = ss._settle(box, blank, quiet=1.15, grab=feed([blank, big]))
+    took = time.monotonic() - t0
+    assert boxes and after is big, boxes
+    assert took < 0.33, f"a big change must report fast, took {took:.2f}s"
+
+    t0 = time.monotonic()
+    _, boxes = ss._settle(box, blank, quiet=1.15, grab=feed([tiny]))
+    took = time.monotonic() - t0
+    assert boxes and 0.28 <= took < 0.6, f"tiny change watched ~0.3 s, took {took:.2f}s"
+
+    t0 = time.monotonic()
+    _, boxes = ss._settle(box, blank, quiet=0.4, grab=feed([blank]))
+    took = time.monotonic() - t0
+    assert boxes == [] and 0.38 <= took < 0.7, f"no-op waits its quiet time, {took:.2f}s"
+
+    # a spinner that never stops is cut off, not waited on forever
+    flip = [blank, big] * 40
+    t0 = time.monotonic()
+    ss._settle(box, blank, quiet=1.15, grab=feed(flip))
+    assert time.monotonic() - t0 < 1.2
+
+
+def test_do_batch():
+    """`do` runs steps in order in one call, stops at the first failure,
+    skips optional misses, and refuses a bad list before touching anything."""
+    import asyncio
+
+    import screen_tools as st
+
+    ran = []
+
+    async def fake(step, patience=0.0):
+        ran.append((step.get("action"), step.get("text"), patience))
+        if step.get("text") == "missing":
+            return st._fail("no 'missing' on screen")
+        if step.get("action") == "look":
+            assert step.get("image") is False      # no pictures inside a run
+        return st._text(f"did {step.get('action')} {step.get('text') or ''}".strip())
+
+    real, real_record = st._computer, st._record
+    st._computer, st._record = fake, lambda entry: None
+    try:
+        run = lambda steps: asyncio.run(st._do({"action": "do", "steps": steps}))  # noqa: E731
+        r = run([{"action": "focus", "target": "Notepad"},
+                 {"action": "click_text", "text": "File"},
+                 {"action": "type", "text": "hello"}])
+        assert not r.get("isError") and "3 of 3 steps" in st._said(r), r
+        assert [a for a, _, _ in ran] == ["focus", "click_text", "type"]
+        assert all(p == st.DO_PATIENCE_S for _, _, p in ran)
+
+        ran.clear()
+        r = run([{"action": "click_text", "text": "File"},
+                 {"action": "click_text", "text": "missing"},
+                 {"action": "key", "text": "enter"}])
+        said = st._said(r)
+        assert r.get("isError") and "STOPPED at step 2 of 3" in said, said
+        assert "steps 3-3 did not run" in said
+        assert [a for a, _, _ in ran] == ["click_text", "click_text"]   # enter never sent
+
+        ran.clear()
+        r = run([{"action": "click_text", "text": "missing", "optional": True},
+                 {"action": "look"},
+                 {"action": "key", "text": "enter"}])
+        said = st._said(r)
+        assert not r.get("isError") and "skipped (optional)" in said, said
+        assert "2 of 3 steps" in said and len(ran) == 3
+        assert all("optional" not in s for s in ran)
+
+        ran.clear()
+        for bad in ([], "nonsense", [{"text": "no action"}],
+                    [{"action": "click_text", "text": "a"}, {"action": "screenshot"}],
+                    [{"action": "do", "steps": []}],
+                    [{"action": "wait"}] * (st.DO_MAX_STEPS + 1)):
+            r = run(bad)
+            assert r.get("isError"), bad
+        assert ran == [], "a bad list must run nothing"
+
+        r = run('[{"action": "key", "text": "enter"}]')       # list sent as JSON text
+        assert not r.get("isError") and len(ran) == 1
+    finally:
+        st._computer, st._record = real, real_record
+    assert "do" in st.COMPUTER_SCHEMA["properties"]["action"]["enum"]
+    assert "steps" in st.COMPUTER_SCHEMA["properties"]
+
+
 def test_sequence_language():
     st = gh.parse("w:800 space*2 a+d:300 wait:200 rclick:150 mouse:+5,-7 "
                   "down:shift up:shift up:300")
@@ -141,7 +246,7 @@ def test_plan_checks():
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     for fn in (test_merge_names_and_dedup, test_diff_boxes, test_snap,
-               test_sequence_language, test_anticheat, test_pilot_conditions,
+               test_settle, test_do_batch, test_sequence_language, test_anticheat, test_pilot_conditions,
                test_plan_checks):
         fn()
         print("PASS", fn.__name__)

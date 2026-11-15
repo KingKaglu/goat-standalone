@@ -67,7 +67,7 @@ def target(target_spec=None) -> dict:
     return w
 
 
-def _live(win: dict, box):
+def _live(win: dict, box, wait: float = 1.5):
     """(ui, ocr lines) from live_eyes' cache when it shows this window as it
     is right now; None = read it the slow way."""
     try:
@@ -76,7 +76,7 @@ def _live(win: dict, box):
         if eyes is None or not win.get("hwnd") \
                 or eyes.front.get("hwnd") != win["hwnd"]:
             return None
-        return eyes.fresh(win["hwnd"], box)
+        return eyes.fresh(win["hwnd"], box, wait)
     except Exception:  # noqa: BLE001 — the eyes are an accelerator only
         return None
 
@@ -456,6 +456,12 @@ def snap(x: int, y: int, label: str | None = None):
     box = (win["left"], win["top"], win["width"], win["height"])
     if not _inside((x, y), (box[0], box[1], box[0] + box[2], box[1] + box[3])):
         return None
+    # Live eyes already hold this window's controls and text: a raw click
+    # is corrected in a few ms instead of a fresh UIA + OCR pass (~1 s).
+    cached = _live(win, box, wait=0.5)
+    if cached is not None:
+        return snap_pick(merge(list(cached[0]), list(cached[1]),
+                               box[2] * box[3]), x, y, label)
     try:
         ui = uia_elements(win, timeout=0.8)
     except Exception:  # noqa: BLE001
@@ -687,26 +693,63 @@ def act_and_report(fn, settle: float = 0.35, target_spec=None) -> tuple:
     except Exception:  # noqa: BLE001
         return fn(), ""
     result = fn()
-    time.sleep(settle)
     try:
+        after, boxes = _settle(box, before, quiet=settle + 0.8)
         fg = screen_hands.foreground() or {}
         if fg and fg.get("title") and fg.get("title") != title \
                 and fg.get("pid") != __import__("os").getpid():
             return result, f"a different window is in front now: {fg['title'][:70]!r}"
-        # Some apps redraw late (Calculator's "=" landed after 0.35 s and
-        # was reported as "nothing changed", 2026-10-21): keep watching a
-        # little longer before calling it no-op. Each check costs ~15 ms.
-        after = _small(box)
-        boxes = diff_boxes(before, after, box)
-        deadline = time.monotonic() + 0.8
-        while not boxes and time.monotonic() < deadline:
-            time.sleep(0.1)
-            after = _small(box)
-            boxes = diff_boxes(before, after, box)
         _last_small[_key(box)] = after
         return result, _describe_change(boxes, box)
     except Exception as e:  # noqa: BLE001
         return result, f"(couldn't check the result: {e})"
+
+
+SETTLE_POLL_S = 0.05       # one look costs ~15 ms
+SETTLE_CALM_S = 0.12       # this long without a new change = it has landed
+SETTLE_MAX_S = 0.7         # an animation that never stops is cut off here
+SETTLE_SMALL = 0.02        # a change under 2% of the view is "tiny"
+SETTLE_SMALL_S = 0.3       # tiny changes are watched at least this long
+
+
+def _settle(box, before, quiet: float = 1.15, grab=None):
+    """Watch the view after an action: (last frame, changed boxes vs before).
+
+    The old check slept a fixed 0.35 s and then looked once, so every click
+    cost that much even when the app answered in 30 ms (his order
+    2026-11-15: faster hands). Now the view is polled: the moment something
+    changes and then holds still for SETTLE_CALM_S, it returns. An action
+    that changes nothing still gets `quiet` seconds before it is called a
+    no-op (Calculator's "=" landed late, 2026-10-21)."""
+    grab = grab or _small
+    t0 = time.monotonic()
+    last = before
+    first_change = calm_since = None
+    while True:
+        time.sleep(SETTLE_POLL_S)
+        cur = grab(box)
+        now = time.monotonic()
+        moved = bool(diff_boxes(last, cur, box))
+        last = cur
+        if moved:
+            first_change = first_change or now
+            calm_since = None
+        elif first_change is not None:
+            calm_since = calm_since or now
+            if now - calm_since >= SETTLE_CALM_S:
+                # A tiny change may be only the button's own highlight, with
+                # the real answer (a dialog, a page) still on its way: give
+                # those the old 0.3 s before reporting.
+                boxes = diff_boxes(before, cur, box)
+                area = sum((r[2] - r[0]) * (r[3] - r[1]) for r in boxes)
+                if (area >= SETTLE_SMALL * box[2] * box[3]
+                        or now - t0 >= SETTLE_SMALL_S):
+                    break
+        if first_change is None and now - t0 >= quiet:
+            break
+        if first_change is not None and now - first_change >= SETTLE_MAX_S:
+            break
+    return last, diff_boxes(before, last, box)
 
 
 def wait_for(text: str | None = None, gone: str | None = None,

@@ -53,6 +53,17 @@ working on GOAT's code. Background: `README.md`, `STATE.md` (dev journal), `AUDI
 - `GOAT_GUARDS` = `on` | `off` | `none` (`guards.py`, his order 2026-11-12): `off` stops the
   confirm-first gates (destructive shell commands, closing a session window, risky screen actions,
   Wi-Fi off); `none` also opens the private files. `run_tests.py` pins it to `on`.
+  The prompts follow it too (2026-11-15): `guards.prompt()` rewrites the ask-first sentences
+  of the worker prompt and the `computer` tool description when the gates are off. A new
+  "ask first" sentence in a prompt needs a rule in `guards.PROMPT_RULES` (`test_guards` checks
+  every rule still finds its sentence).
+
+## Screen speed (2026-11-15)
+- `computer` action `do` (`screen_tools._do`): up to 15 steps in one tool call, run locally,
+  stop at the first failure; `click_text` waits up to 3 s for its text. The model round trip
+  per click was the slow part, not the click.
+- `screen_sense._settle`: after a click/type/key the view is polled (50 ms) instead of a fixed
+  0.35 s sleep. `snap()` reads live eyes' cache first.
 
 ## Switches added in the audit
 `GOAT_METRICS`, `GOAT_PHONE_LAN`, `GOAT_STT_EN_STICKY` (skip the slow language check on confident

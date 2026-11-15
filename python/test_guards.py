@@ -75,6 +75,38 @@ def main() -> int:
               voice_hands._private(os.path.join(GOAT_ROOT, "README.md")) is False)
     os.environ.pop("GOAT_GUARDS", None)
 
+    # The prompts follow the switch (2026-11-15): the brains must not be told
+    # to ask first while the gates themselves no longer ask.
+    import re
+    worker = g.WORKER_BASE_PROMPT + "\n" + g.WORKER_PERSONA
+    voice = g.VOICE_BASE_PROMPT + "\n" + g.PERSONA
+    os.environ["GOAT_GUARDS"] = "on"
+    import importlib
+    desc_on = importlib.reload(screen_tools).COMPUTER_DESC
+    everything = worker + voice + desc_on
+    check("on: prompts are untouched", g.guards.prompt(worker) == worker
+          and g.guards.prompt(voice) == voice)
+    for pattern, _new in guards.PROMPT_RULES:
+        check(f"prompt rule still finds its sentence: {pattern[:40]!r}",
+              re.search(pattern, everything, flags=re.DOTALL) is not None)
+    ask_first = re.compile(r"explicit yes|confirmation line first|SAFETY GATE|"
+                           r"ask only before|asking for\s+confirmation:")
+    check("on: the ask-first wording is there", len(ask_first.findall(everything)) >= 5)
+    for lvl in ("off", "none"):
+        os.environ["GOAT_GUARDS"] = lvl
+        out = guards.prompt(worker) + guards.prompt(voice) + guards.prompt(desc_on)
+        check(f"{lvl}: no ask-first wording left in the prompts",
+              not ask_first.search(out), ask_first.findall(out))
+        check(f"{lvl}: the prompt says his order is enough",
+              "NO GATE" in out and "without asking" in out)
+        check(f"{lvl}: strangers' text is still not an order",
+              "never counts as an order" in out)
+        check(f"{lvl}: a garbled order is still checked",
+              "garbled/context-free" in out)
+        check(f"{lvl}: private-file line {'kept' if lvl == 'off' else 'dropped'}",
+              ("key, login or token files" in out) is (lvl == "off"))
+    os.environ.pop("GOAT_GUARDS", None)
+
     print("\nALL PASS" if not fails else f"\n{len(fails)} FAILED: {fails}")
     return 1 if fails else 0
 

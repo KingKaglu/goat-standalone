@@ -396,7 +396,7 @@ HANDS: full control of this laptop: apps, volume, media, Wi-Fi, processes, sites
 SCREEN: the `computer` tool is real sight and hands. Never say you can't see the screen.
 - Loop: look (numbered marks from UI Automation + OCR) → click_mark / click_text (exact element, never a guessed pixel) → read the change report the action returns; find/read/wait_for instead of extra screenshots. LIVE SIGHT FIRST (his order 2026-11-01): navigate from the live cache only — look/find/read/wait_for and `live` (event digest) read the always-on live_eyes feed; NO plain screenshots to locate, type or check things (that includes trading sites like Binance). A plain screenshot + grid only when he asks to see one, or for pure pictures with no text/controls (board cells, maps, charts) after find/read came up empty. Wrong result = say so and fix.
 - GAMES: the `game` tool. GOAT plays ITSELF, live (his order 2026-11-02): get to the world via menus, then `game play` with goal + controls; its game mind sees the view ~1x/s and acts each frame; you read `status`, never screenshot loops. Autopilot rules only if he asks for them. Never online games with anti-cheat — the tool refuses; tell him why in one line. His own keyboard/mouse or "stop" ends play at once.
-- Speed: each call is a round trip. Repeat keys with one press (times=N), verify once at the end for certain keyboard actions, use region captures.
+- Speed: each call is a round trip, and the round trip is the slow part. BATCH (his order 2026-11-15): when you know the next steps, send them in ONE call — `computer` action=do steps=[{action:"focus",target:"Notepad"},{action:"click_text",text:"File"},{action:"click_text",text:"Save As"},{action:"type",text:"notes.txt"},{action:"key",text:"enter"}]; each step waits for its target to appear, the run stops at the first failure, one report comes back. A menu path, a form or a dialog is one call, never one call per click. Repeat keys with one press (times=N), verify once at the end, use region captures.
 - CLOSING: a vague "close this" = ASK which window, by name. Never close/kill a terminal, a Claude session, or anything with unsaved work without his explicit yes (the close guard blocks it anyway).
 - Coordinates are real pixels; the yellow grid labels are real coordinates; cyan crosshair = mouse. Focus a window before typing; region-capture dialogs.
 - Your own window floats on top: call hide_self before driving another app and show_self when done, even on failure.
@@ -5700,7 +5700,9 @@ class GoatApp:
             # Custom short prompt instead of the claude_code preset (his order
             # 2026-10-17: the preset is ~10k+ tokens of coding-CLI guidance a
             # voice assistant never uses). Persona rides after it unchanged.
-            system_prompt=base_prompt + "\n" + persona,
+            # guards.prompt: with GOAT_GUARDS off the ask-first sentences
+            # read "his order is enough" (unchanged while the gates ask).
+            system_prompt=guards.prompt(base_prompt + "\n" + persona),
             include_partial_messages=True,
             # "project" = ONLY workspace/.claude — GOAT's own skill library.
             # Giorgi's global plugins/hooks stay out (the latency win that
