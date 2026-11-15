@@ -57,6 +57,9 @@ working on GOAT's code. Background: `README.md`, `STATE.md` (dev journal), `AUDI
   of the worker prompt and the `computer` tool description when the gates are off. A new
   "ask first" sentence in a prompt needs a rule in `guards.PROMPT_RULES` (`test_guards` checks
   every rule still finds its sentence).
+- Private files at `off` (2026-11-15): `guards.private()` is what the gates call. His own words
+  naming private things (`secret_paths.heard`, fed from `_talk` and `_direct_job` before any
+  model sees them) open the gate for 10 minutes; text from pages or files never does.
 
 ## Screen speed (2026-11-15)
 - `computer` action `do` (`screen_tools._do`): up to 15 steps in one tool call, run locally,
