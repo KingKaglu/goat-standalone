@@ -68,6 +68,17 @@ working on GOAT's code. Background: `README.md`, `STATE.md` (dev journal), `AUDI
 - `screen_sense._settle`: after a click/type/key the view is polled (50 ms) instead of a fixed
   0.35 s sleep. `snap()` reads live eyes' cache first.
 
+## Awareness (2026-11-16)
+- `awareness.py` = what GOAT notices while he's silent: a stream of changes with fixed scores
+  (`workspace/awareness/stream.jsonl`, app names only, never titles), a measured self-state,
+  and a dry-run "worth a thought" gate (`THINK_AT`). No model, no senses of its own.
+- `inner_life.py` owns the senses (`sense()`, `front_app()`) and drives `Awareness.tick()` from
+  its 30 s loop; `watchers.alert` and reflections post through `aware.note()`. `turn_note` adds
+  `[while he was silent — …]` once after 10+ quiet minutes and `[self — …]` when he asks how it is.
+- `_his_last` (set in `_talk`) is HIS last words; `_last_exchange` also moves when a job ends.
+- Look: `py -3.13 python\awareness.py [hours]`; numbers: the `aware` block of `metrics.py summary`.
+  Plan and next chunks: `workspace/self-awareness/design.md`.
+
 ## Switches added in the audit
 `GOAT_METRICS`, `GOAT_PHONE_LAN`, `GOAT_STT_EN_STICKY` (skip the slow language check on confident
 English turns), `GOAT_BACKCHANNEL_AFTER` (default 2.5 s).

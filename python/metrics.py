@@ -12,6 +12,9 @@ Events (all carry "t" = unix time):
   barge        what          possible / confirmed / echo, not you / ...
   claude_usage model, input, cache_read, cache_create, output
   ear          ms, mode      laptop ear: pause -> transcript; pinned / auto
+  aware        ticks, ms, ms_max, events, pressure   hourly: the awareness loop
+  aware_gate   pressure, events, dry   enough happened to be worth a thought
+  spoke_first  outcome, why  a line said unprompted: answered / passed
 
   py -3.13 metrics.py summary [file]   -> the numbers PLAN.md tracks
 """
@@ -131,6 +134,25 @@ def summarize(events: list) -> dict:
     s["splits"] = splits
     s["merged"] = sum(1 for h in heard if h.get("merged"))
     s["drops"] = len(drops)
+
+    # The awareness loop (awareness.py): what it costs, how much it notices,
+    # how often it would think, and whether speaking first lands.
+    aw = [e for e in ev if e["kind"] == "aware"]
+    ticks = sum(int(e.get("ticks") or 0) for e in aw)
+    gates = [e for e in ev if e["kind"] == "aware_gate"]
+    spoke = [str(e.get("outcome")) for e in ev if e["kind"] == "spoke_first"]
+    hours = len(aw)
+    s["aware"] = {
+        "hours": hours, "ticks": ticks,
+        "tick_ms": round(sum(float(e.get("ms") or 0) * int(e.get("ticks") or 0)
+                             for e in aw) / ticks, 3) if ticks else None,
+        "tick_ms_max": max((float(e.get("ms_max") or 0) for e in aw), default=None),
+        "events_per_day": round(sum(int(e.get("events") or 0) for e in aw)
+                                * 24 / hours, 1) if hours else None,
+        "gates": len(gates),
+        "gates_dry": sum(1 for e in gates if e.get("dry")),
+        "spoke_first": {"answered": spoke.count("answered"),
+                        "passed": spoke.count("passed")}}
     return s
 
 

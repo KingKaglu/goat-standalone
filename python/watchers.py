@@ -63,6 +63,10 @@ class Watchers:
 
     def alert(self, kind: str, spoken: str, push: str):
         eng = self.engine
+        try:     # 2026-11-16: GOAT remembers what it noticed (awareness.py)
+            eng._inner.aware.note("alert", push, 5, what=kind)
+        except Exception:  # noqa: BLE001
+            pass
         try:     # v8 (e): a quiet card in the window too, spoken or not
             import json as _j
             eng.emit("card", _j.dumps({"text": push, "kicker": "heads up",

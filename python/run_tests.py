@@ -62,6 +62,7 @@ DEFAULT = [
     "test_child_guard",
     "test_self_update",
     "test_self_awareness",
+    "test_awareness",
     "test_sight_games",
     "test_game_mind",
     "test_trade_hands",

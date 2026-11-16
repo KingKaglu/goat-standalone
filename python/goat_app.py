@@ -3091,6 +3091,7 @@ class GoatApp:
         secret_paths.heard(text)     # his own words can open private files
         self._merge_prev = None
         self._last_exchange = time.monotonic()
+        self._his_last = self._last_exchange   # HIS words (awareness.py)
         cut_in, self._cut_in = getattr(self, "_cut_in", None), None
         if cut_in is not None and time.monotonic() - cut_in[0] > CUT_IN_S:
             cut_in = None

@@ -16,9 +16,16 @@ Layers 4-6 of his 2026-10-20 ask ("give the GOAT the consciousness"; layers
                 there. Never in a call, a fullscreen game/video, while muted,
                 asleep, on the phone, or mid-conversation.
 
+  Awareness   — (2026-11-16, "self-awareness even while I am not talking to
+                you") every tick takes one cheap look around (is he here,
+                which app, my body, my own load) and awareness.py turns the
+                CHANGES into a stream GOAT keeps while he's silent. On his
+                next turn after a silence the brain hears what it noticed;
+                when he asks how it is, its measured state. No model.
+
 Cost (his question, same day; weekly quota was at 86%): reflections are
 capped at 6 a day, skipped when the 5-hour quota is above 70% or the week
-above 95%; mood and initiative are pure local reads.
+above 95%; mood, awareness and initiative are pure local reads.
 """
 import asyncio
 import ctypes
@@ -34,7 +41,10 @@ from ctypes import wintypes
 
 import psutil
 
+import awareness
+import body_sense
 import episodes
+import metrics
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -52,6 +62,8 @@ SAY_TTL_S = 3 * 3600          # a thought older than this is stale news
 AWAY_S = 15 * 60              # back after this long away = natural moment
 QUIET_EXCHANGE_S = 30 * 60    # or: he's here and we haven't talked this long
 KEEP_THOUGHTS = 4             # bullets kept in self.md
+BODY_EVERY = 4                # ticks between looks at my body (it reads files)
+SPOKE_WAIT_S = 180            # he answers a line I said first inside this, or let it pass
 
 REFLECT_SYSTEM = (
     "You are GOAT, Giorgi's personal voice assistant, thinking privately in "
@@ -178,6 +190,56 @@ def other_app_on_mic() -> bool:
         return False
 
 
+_APPS: dict = {}              # pid -> app name
+
+
+def front_app() -> str:
+    """The app he has in front, as a bare name ("brave"). '' for GOAT's own
+    window or when Windows won't say. The name only, never the title."""
+    u = ctypes.windll.user32
+    h = u.GetForegroundWindow()
+    if not h:
+        return ""
+    pid = wintypes.DWORD()
+    u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+    if not pid.value or pid.value == os.getpid():
+        return ""
+    name = _APPS.get(pid.value)
+    if name is None:
+        try:
+            name = psutil.Process(pid.value).name()
+        except Exception:  # noqa: BLE001 — gone, or not ours to read
+            name = ""
+        name = re.sub(r"\.exe$", "", name, flags=re.I).lower()
+        if len(_APPS) > 300:
+            _APPS.clear()
+        _APPS[pid.value] = name
+    return name
+
+
+def sense(app, proc=None, body: bool = False) -> dict:
+    """One cheap look around for awareness.tick(): a few system calls, and
+    the body's files only when asked."""
+    now = time.monotonic()
+    last = getattr(app, "_last_exchange", None)
+    his = getattr(app, "_his_last", None)
+    s = {"idle": input_idle_s(),
+         "quiet": now - last if last is not None else 0.0,
+         "heard": now - his if his is not None else None,
+         "front": front_app(),
+         "busy": bool(getattr(app, "busy", False)),
+         "engine_down": bool(getattr(app, "engine_down", False)),
+         "boot": psutil.boot_time()}
+    if proc is not None:
+        s["up"] = time.time() - proc.create_time()
+        s["cpu"] = proc.cpu_percent(None)
+    if body:
+        b = getattr(app, "_body", None)
+        if b is not None:
+            s["body"] = b.state()
+    return s
+
+
 def _plan() -> dict:
     try:
         with open(episodes.PLAN_FILE, encoding="utf-8") as f:
@@ -248,6 +310,14 @@ class InnerLife:
         self._note = ""               # thoughts waiting for his next turn
         self._prev_idle = 0.0
         self._lock = threading.Lock()
+        try:
+            self.aware = awareness.Awareness()
+        except Exception as e:  # noqa: BLE001 — never blocks the boot
+            print(f"[aware] off: {type(e).__name__}: {e}")
+            self.aware = None
+        self._proc = psutil.Process()
+        self._ticks = 0
+        self._spoke = None            # (monotonic, why) of a line said first
 
     # ---- state ----
     def _load(self) -> dict:
@@ -296,6 +366,16 @@ class InnerLife:
                              "moment; context only, don't recite them]\n"
                              + self._note)
                 self._note = ""
+        aware = getattr(self, "aware", None)
+        if aware is not None:
+            try:      # what I noticed while he was silent, once; my measured
+                seen = aware.since_note()         # state when he asks how I am
+                if seen:
+                    parts.append(seen)
+                if body_sense.ASKED_RE.search(text):
+                    parts.append(aware.self_line())
+            except Exception as e:  # noqa: BLE001
+                print(f"[aware] {type(e).__name__}: {e}")
         return "\n".join(parts)
 
     # ---- background ----
@@ -312,9 +392,39 @@ class InnerLife:
 
     def tick(self):
         now = time.time()
+        self._perceive()
         if self._quiet_for() >= IDLE_REFLECT_S and self._may_reflect():
             self.reflect()
         self._maybe_speak(now)
+
+    def _perceive(self):
+        """One look around, every tick, model or no model (awareness.py)."""
+        aware = getattr(self, "aware", None)
+        if aware is None:
+            return
+        try:
+            n = getattr(self, "_ticks", 0)
+            self._ticks = n + 1
+            aware.tick(sense(self.app, getattr(self, "_proc", None),
+                             body=n % BODY_EVERY == 0))
+            self._spoke_result()
+        except Exception as e:  # noqa: BLE001 — a blind tick costs nothing
+            print(f"[aware] {type(e).__name__}: {e}")
+
+    def _spoke_result(self):
+        """Did he answer the line I said first? The number that will tune
+        how often I speak up (design.md chunk 3)."""
+        sp = getattr(self, "_spoke", None)
+        if not sp or time.monotonic() - sp[0] < SPOKE_WAIT_S:
+            return
+        self._spoke = None
+        his = getattr(self.app, "_his_last", None)
+        answered = his is not None and his > sp[0]
+        metrics.emit("spoke_first", outcome="answered" if answered else "passed",
+                     why=sp[1])
+        self.aware.note("spoke", "he answered what I said first" if answered
+                        else "he let what I said first pass", 2)
+        print(f"[inner] spoke first -> {'answered' if answered else 'let pass'}")
 
     def _quiet_for(self) -> float:
         last = getattr(self.app, "_last_exchange", None)
@@ -375,6 +485,9 @@ class InnerLife:
         if say:
             self.st["say"].append({"line": say, "t": time.time()})
         self._save()
+        aware = getattr(self, "aware", None)
+        if aware is not None:
+            aware.note("thought", "I thought about our talk: " + thoughts[0], 2)
         print(f"[inner] reflected: {thoughts[0][:90]}" + (" | will say" if say else ""))
         return text
 
@@ -421,6 +534,10 @@ class InnerLife:
         self.st["says"] = self._count("says") + 1
         self._save()
         a = self.app
+        self._spoke = (time.monotonic(), why)
+        aware = getattr(self, "aware", None)
+        if aware is not None:
+            aware.note("spoke", "I said first: " + line, 3)
         print(f"[inner] spoke first ({why}): {line}")
         try:     # v8 (e): what I said unprompted stays on screen a while
             a.emit("card", json.dumps({"text": line, "kicker": "on my mind",

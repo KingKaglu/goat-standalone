@@ -81,6 +81,7 @@ CORE = [
     "body_sense.py",
     "episodes.py",
     "inner_life.py",
+    "awareness.py",
     "screen_sense.py",
     "game_hands.py",
     "game_pilot.py",
@@ -88,7 +89,7 @@ CORE = [
 
 # goat_doctor runs its probes at import time (it's a script), so it is
 # compile-checked but excluded from the import smoke test.
-IMPORT_TEST = "import goat_paths, stt_whisper, tts_edge, tts_piper, audio_io, goat_app, ui_qt, child_guard, fast_hands, close_guard, dsp, endpoint, phone_server, voice_id, body_sense, episodes, inner_life, screen_sense, game_hands, game_pilot"
+IMPORT_TEST = "import goat_paths, stt_whisper, tts_edge, tts_piper, audio_io, goat_app, ui_qt, child_guard, fast_hands, close_guard, dsp, endpoint, phone_server, voice_id, body_sense, episodes, inner_life, awareness, screen_sense, game_hands, game_pilot"
 
 # Things the app dies or goes deaf/mute without.
 ASSETS = [
