@@ -83,7 +83,12 @@ _STOP_LEFT = _re.compile(
     r"\bno no\b|გაჩერდი|მოიცა|გაჩუმდი|კმარა|შეწყვიტე", _re.I)
 _TOKEN_ABC = "abcdefghjkmnpqrstuvwxyz23456789"   # no 0/o/1/l/i: typed on a phone
 TOKEN_LEN = 26     # 26 symbols of 31 = ~128 bits
-TOKEN_MIN = 20     # a token he writes into token.txt himself must be this long
+# A token he writes into token.txt himself must be this long. His own machine
+# may lower it with GOAT_PHONE_TOKEN_MIN (never below 4); the default stays 20.
+try:
+    TOKEN_MIN = max(4, int(os.environ.get("GOAT_PHONE_TOKEN_MIN", "20")))
+except ValueError:
+    TOKEN_MIN = 20
 ROOT = os.path.dirname(HERE)
 SHOT = os.path.join(HERE, "live-shot.png")       # screen_tools.SHOT_PATH
 VITALS_S = 3.0
