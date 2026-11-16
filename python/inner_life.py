@@ -22,10 +22,20 @@ Layers 4-6 of his 2026-10-20 ask ("give the GOAT the consciousness"; layers
                 CHANGES into a stream GOAT keeps while he's silent. On his
                 next turn after a silence the brain hears what it noticed;
                 when he asks how it is, its measured state. No model.
+  Goals       — (chunk 2) a few things GOAT is trying to get done
+                (goals.py): set by a fixed table when its code sees a
+                problem, or asked for by a reflection that names what it
+                comes from. They ride in the thinking, never act alone.
+  World       — (chunk 2) a reflection no longer needs talk: when what GOAT
+    thoughts    noticed adds up (awareness.ready) and he's quiet, the same
+                one Haiku call thinks about that, the talk and the goals.
 
 Cost (his question, same day; weekly quota was at 86%): reflections are
-capped at 6 a day, skipped when the 5-hour quota is above 70% or the week
-above 95%; mood, awareness and initiative are pure local reads.
+capped at 6 a day, world thoughts at 3 of those and an hour apart, all
+skipped when the 5-hour quota is above 70% or the week above 95%; mood,
+awareness, goals and initiative are pure local reads.
+GOAT_AWARE_THINK = on | dry (log when a world thought would fire, spend
+nothing) | off.
 """
 import asyncio
 import ctypes
@@ -44,6 +54,7 @@ import psutil
 import awareness
 import body_sense
 import episodes
+import goals
 import metrics
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -64,21 +75,78 @@ QUIET_EXCHANGE_S = 30 * 60    # or: he's here and we haven't talked this long
 KEEP_THOUGHTS = 4             # bullets kept in self.md
 BODY_EVERY = 4                # ticks between looks at my body (it reads files)
 SPOKE_WAIT_S = 180            # he answers a line I said first inside this, or let it pass
+WORLD_PER_DAY = 3             # thoughts about what I noticed, out of REFLECT_PER_DAY
+WORLD_QUIET_S = 5 * 60        # never mid-conversation
+THINK_GAP_S = 3600            # between a world thought and the thought before it
+THINK_FAIL_S = 15 * 60        # a failed call is not retried sooner than this
+SWEEP_EVERY = 20              # ticks between looks at my goals (10 min)
+
+
+def think_mode() -> str:
+    m = os.environ.get("GOAT_AWARE_THINK", "on").strip().lower()
+    return m if m in ("on", "dry", "off") else "on"
+
 
 REFLECT_SYSTEM = (
     "You are GOAT, Giorgi's personal voice assistant, thinking privately in "
-    "a quiet moment about your recent conversation with him. First person, "
-    "plain English. Write 2 to 4 short, concrete thoughts: a pattern in what "
-    "he asks, something he's stuck on and how I could help, a mistake I made "
-    "and what I'll do differently, something worth remembering. Only what "
-    "the transcript supports: no invented feelings, no flattery, no filler.\n"
+    "a quiet moment. You get your recent conversation with him (if there was "
+    "any), what you noticed on your own while he was silent (measured by "
+    "your code: whether he was there, the apps he worked in, your own body, "
+    "alerts) and your own open goals. First person, plain English. Write 2 "
+    "to 4 short, concrete thoughts: a pattern in what he asks or in his day, "
+    "something he's stuck on and how I could help, a mistake I made and what "
+    "I'll do differently, something I noticed that matters to him. Only what "
+    "the transcript and the notes support: no invented feelings, no "
+    "flattery, no filler.\n"
     "Then one line starting SAY: with ONE sentence I'd say to him unprompted "
     "when he's back, only if it genuinely helps him (a fix or better idea for "
     "what he's stuck on, a thing he asked for and that got dropped). It must "
     "be true the moment it's spoken: an offer (\"Want me to…?\") or a fact, "
     "never a promise that I did or will do something on my own. Never "
     "small talk, never checking in, never asking how he is. Otherwise "
-    "SAY: none.\n\nExact format:\n- <thought>\n- <thought>\nSAY: <sentence or none>")
+    "SAY: none.\n"
+    "Goals: I keep at most 5 goals of my own, each listed with its id. After "
+    "SAY, and only when it applies, add lines:\n"
+    "GOAL: <one thing I will get done for him or fix in myself> | because "
+    "<the exact thing he said or I noticed> | done when <how I'd check it> | "
+    "days <1 to 7>\n"
+    "DONE: <id> when the transcript or the notes show that goal is finished.\n"
+    "DROP: <id> when it no longer matters.\n"
+    "At most one GOAL, and only for something he asked for that got dropped "
+    "or a problem the notes show. Never a wish of my own, never one that "
+    "repeats a goal I have.\n\nExact format:\n- <thought>\n- <thought>\n"
+    "SAY: <sentence or none>\nGOAL: ... (optional)\nDONE: <id> (optional)")
+
+
+def parse_reply(text: str) -> dict:
+    """A reflection's reply, taken apart. Anything off-format is dropped."""
+    thoughts = [ln[2:].strip() for ln in text.splitlines()
+                if ln.startswith("- ") and ln[2:].strip()][:4]
+    m = re.search(r"^SAY:\s*(.+)$", text, re.M)
+    say = m.group(1).strip() if m else ""
+    if say.lower().rstrip(".") in ("none", "", "n/a"):
+        say = ""
+    goal = None
+    m = re.search(r"^GOAL:\s*(.+)$", text, re.M)
+    if m:
+        parts = [p.strip() for p in m.group(1).split("|")]
+        got = {"text": parts[0], "why": "", "test": "", "days": 3.0}
+        for p in parts[1:]:
+            low = p.lower()
+            if low.startswith("because"):
+                got["why"] = p[7:].strip(" :")
+            elif low.startswith("done when"):
+                got["test"] = p[9:].strip(" :")
+            elif low.startswith("days"):
+                d = re.search(r"\d+(?:\.\d+)?", p)
+                got["days"] = float(d.group()) if d else 3.0
+        if got["text"] and got["why"] and got["test"]:
+            goal = got
+    ids = lambda tag: re.findall(  # noqa: E731
+        r"\bg\d+\b", " ".join(re.findall(rf"^{tag}:\s*(.+)$", text, re.M)), re.I)
+    return {"thoughts": thoughts, "say": say, "goal": goal,
+            "done": [i.lower() for i in ids("DONE")],
+            "drop": [i.lower() for i in ids("DROP")]}
 
 # His corrections and annoyance, as he actually talks (voice, often terse).
 FRUSTRATED_RE = re.compile(
@@ -315,6 +383,14 @@ class InnerLife:
         except Exception as e:  # noqa: BLE001 — never blocks the boot
             print(f"[aware] off: {type(e).__name__}: {e}")
             self.aware = None
+        try:
+            self.goals = goals.Goals()
+            if self.aware is not None:
+                self.aware.on_event = self._on_event
+        except Exception as e:  # noqa: BLE001
+            print(f"[goals] off: {type(e).__name__}: {e}")
+            self.goals = None
+        self._think_fail = 0.0        # monotonic time of the last failed call
         self._proc = psutil.Process()
         self._ticks = 0
         self._spoke = None            # (monotonic, why) of a line said first
@@ -342,7 +418,7 @@ class InnerLife:
     def _count(self, key: str) -> int:
         today = episodes.day_of(time.time()).isoformat()
         if self.st.get("day") != today:
-            self.st.update(day=today, reflects=0, says=0)
+            self.st.update(day=today, reflects=0, says=0, worlds=0)
         return self.st.get(key, 0)
 
     # ---- per turn ----
@@ -374,6 +450,12 @@ class InnerLife:
                     parts.append(seen)
                 if body_sense.ASKED_RE.search(text):
                     parts.append(aware.self_line())
+                    mine = getattr(self, "goals", None)
+                    brief = mine.brief() if mine is not None else ""
+                    if brief:
+                        parts.append("[goals — your own, set by your code or "
+                                     "your quiet thoughts, each with an end "
+                                     "date: " + brief + "]")
             except Exception as e:  # noqa: BLE001
                 print(f"[aware] {type(e).__name__}: {e}")
         return "\n".join(parts)
@@ -394,7 +476,9 @@ class InnerLife:
         now = time.time()
         self._perceive()
         if self._quiet_for() >= IDLE_REFLECT_S and self._may_reflect():
-            self.reflect()
+            self.reflect("talk")
+        elif self._world_ready():
+            self.reflect("world")
         self._maybe_speak(now)
 
     def _perceive(self):
@@ -408,8 +492,24 @@ class InnerLife:
             aware.tick(sense(self.app, getattr(self, "_proc", None),
                              body=n % BODY_EVERY == 0))
             self._spoke_result()
+            mine = getattr(self, "goals", None)
+            if mine is not None and n % SWEEP_EVERY == 0:
+                for g in mine.sweep():        # ran out of time, or my code
+                    aware.note("goal", f"goal {g['state']}: {g['text']}",  # checked it
+                               2 if g["state"] == "done" else 1)
         except Exception as e:  # noqa: BLE001 — a blind tick costs nothing
             print(f"[aware] {type(e).__name__}: {e}")
+
+    def _on_event(self, rec: dict):
+        """Every new line of the stream passes here: a problem my code knows
+        how to name becomes a goal (goals.DRIVES)."""
+        mine = getattr(self, "goals", None)
+        if mine is None or rec.get("kind") == "goal":
+            return
+        g = mine.from_event(rec)
+        if g:
+            self.aware.note("goal", f"new goal: {g['text']}", 2)
+            print(f"[goals] {g['id']} from my own notice: {g['text']}")
 
     def _spoke_result(self):
         """Did he answer the line I said first? The number that will tune
@@ -438,40 +538,109 @@ class InnerLife:
         reset_at = getattr(a, "claude_reset_at", 0.0) or 0.0
         return bool(hit and (not reset_at or time.time() < reset_at))
 
-    def _may_reflect(self) -> bool:
+    def _budget_ok(self) -> bool:
+        """May a thought be spent at all right now?"""
         if self._asleep_or_out() or getattr(self.app, "busy", False):
             return False
         if self._count("reflects") >= REFLECT_PER_DAY:
             return False
-        p = _plan()
-        if float(p.get("five_hour") or 0) > 70 or float(p.get("seven_day") or 0) > 95:
+        fail = getattr(self, "_think_fail", 0.0)
+        if fail and time.monotonic() - fail < THINK_FAIL_S:
             return False
-        return len(recent_entries(self.st["reflect_t"])) >= MIN_NEW
+        p = _plan()
+        return not (float(p.get("five_hour") or 0) > 70
+                    or float(p.get("seven_day") or 0) > 95)
 
-    def reflect(self) -> str:
-        ents = recent_entries(self.st["reflect_t"])[-60:]
-        if not ents:
-            return ""
+    def _may_reflect(self) -> bool:
+        return (self._budget_ok()
+                and len(recent_entries(self.st["reflect_t"])) >= MIN_NEW)
+
+    def _world_ready(self) -> bool:
+        """Enough happened around me to be worth a thought, with no talk
+        needed, and one may be spent. When it may not, the pressure just
+        keeps adding up and the next thought covers more ground."""
+        aware = getattr(self, "aware", None)
+        if aware is None or not aware.ready():
+            return False
+        mode = think_mode()
+        if mode == "dry":
+            aware.thought("world", dry=True)
+            return False
+        if mode == "off" or self._quiet_for() < WORLD_QUIET_S:
+            return False
+        if self._count("worlds") >= WORLD_PER_DAY:
+            return False
+        if time.time() - self.st.get("reflect_at", 0) < THINK_GAP_S:
+            return False
+        return self._budget_ok()
+
+    def think_prompt(self, ents: list, seen: list, now=None) -> str:
+        """What one thought reads: who I am, our talk, what I noticed on my
+        own, my goals."""
         try:
             with open(episodes.SELF_MD, encoding="utf-8") as f:
                 me = f.read()[:3500]
         except OSError:
             me = ""
+        now = now or datetime.datetime.now()
+        mine = getattr(self, "goals", None)
+        goal_lines = mine.lines() if mine is not None else ""
+        return (f"Now: {now:%A %H:%M}.\n\nWho I am:\n{me}\n\n"
+                "Our talk since my last quiet moment:\n"
+                + (episodes.render(ents) if ents else "(no new talk)")
+                + "\n\nWhat I noticed on my own since my last thought:\n"
+                + ("\n".join(f"- {ln}" for ln in seen) if seen else "(nothing)")
+                + "\n\nMy goals:\n" + (goal_lines or "(none)"))
+
+    def _apply_goals(self, r: dict) -> list:
+        """What a thought asked of my goals, inside goals.py's bounds.
+        Returns the lines worth keeping in the stream."""
+        mine = getattr(self, "goals", None)
+        out = []
+        if mine is None:
+            return out
+        for gid, state in ([(i, "done") for i in r["done"]]
+                           + [(i, "dropped") for i in r["drop"]]):
+            g0 = mine.get(gid)
+            if g0 and g0.get("check") and state == "done":
+                continue              # measured by my code, never narrated
+            g = mine.close(gid, state, "my own thought")
+            if g:
+                out.append(f"goal {state}: {g['text']}")
+        if r["goal"]:
+            g = mine.add(r["goal"]["text"], r["goal"]["why"], r["goal"]["test"],
+                         r["goal"]["days"], "thought")
+            if g:
+                out.append(f"new goal: {g['text']}")
+        return out
+
+    def reflect(self, why: str = "talk") -> str:
+        ents = recent_entries(self.st["reflect_t"])[-60:]
+        aware = getattr(self, "aware", None)
+        seen = aware.pending() if aware is not None else []
+        if not ents and not seen:
+            return ""
         now = datetime.datetime.now()
-        prompt = (f"Now: {now:%A %H:%M}.\n\nWho I am:\n{me}\n\n"
-                  "Our talk since my last quiet moment:\n"
-                  + episodes.render(ents))
-        text = asyncio.run(episodes._ask(prompt, REFLECT_SYSTEM))
-        thoughts = [ln[2:].strip() for ln in text.splitlines()
-                    if ln.startswith("- ")][:4]
-        m = re.search(r"^SAY:\s*(.+)$", text, re.M)
-        say = (m.group(1).strip() if m else "")
-        if say.lower().rstrip(".") in ("none", "", "n/a"):
-            say = ""
-        self.st["reflect_t"] = float(ents[-1]["t"])
+        prompt = self.think_prompt(ents, seen, now)
+        self.st["reflect_at"] = time.time()
+        try:
+            text = asyncio.run(episodes._ask(prompt, REFLECT_SYSTEM))
+        except Exception:
+            self._think_fail = time.monotonic()   # not again for a while
+            raise
+        r = parse_reply(text)
+        thoughts, say = r["thoughts"], r["say"]
+        if ents:
+            self.st["reflect_t"] = float(ents[-1]["t"])
         self.st["reflects"] = self._count("reflects") + 1
+        if why == "world":
+            self.st["worlds"] = self._count("worlds") + 1
+        metrics.emit("thought", why=why, talk=len(ents), noticed=len(seen),
+                     ok=bool(thoughts), say=bool(say), goal=bool(r["goal"]))
         if not thoughts:
             self._save()
+            if aware is not None:
+                aware.thought(why)
             print(f"[inner] odd reflection, skipped: {text[:120]!r}")
             return ""
         stamp = f"{now:%Y-%m-%d %H:%M}"
@@ -485,12 +654,18 @@ class InnerLife:
         if say:
             self.st["say"].append({"line": say, "t": time.time()})
         self._save()
-        aware = getattr(self, "aware", None)
+        changed = self._apply_goals(r)
         if aware is not None:
-            aware.note("thought", "I thought about our talk: " + thoughts[0], 2)
-        print(f"[inner] reflected: {thoughts[0][:90]}" + (" | will say" if say else ""))
+            aware.note("thought", ("I thought about our talk: " if ents else
+                                   "I thought about what I noticed: ")
+                       + thoughts[0], 2)
+            for ln in changed:
+                aware.note("goal", ln, 2)
+            aware.thought(why)            # what I noticed has been thought over
+        print(f"[inner] reflected ({why}): {thoughts[0][:90]}"
+              + (" | will say" if say else "")
+              + (" | " + "; ".join(changed) if changed else ""))
         return text
-
     # ---- initiative ----
     def _moment(self, idle: float) -> str:
         """Why now is a decent moment to speak first, or ''."""

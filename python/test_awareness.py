@@ -8,6 +8,7 @@ import threading
 import time
 
 import awareness
+import goals
 import inner_life
 import metrics
 import watchers
@@ -18,7 +19,7 @@ MIN = 60.0
 
 def new(folder=None, **kw):
     a = awareness.Awareness(folder or tempfile.mkdtemp(), **kw)
-    a.him_since = a._seen_t = T
+    a.him_since = a._seen_t = a.thought_t = T
     return a
 
 
@@ -153,36 +154,190 @@ def test_same_line_not_twice():
     assert not a.note("x", "   ", 1)
 
 
-def test_gate_is_a_dry_run():
+def test_think_gate():
     seen = []
-    old_on, old_emit = metrics.ON, metrics.emit
+    old_emit = metrics.emit
     metrics.emit = lambda kind, **f: seen.append((kind, f))
     try:
         a = new()
         a.tick(snap(), T)
-        for i in range(4):
-            a.note("alert", f"alert {i}", 5)
-        assert a.pressure >= awareness.THINK_AT
-        a.tick(snap(), T + 30)
-        assert a.pressure == 0 and a.gates == 1
+        for i in range(25):                             # a pile of small things
+            post(a, T + i, "activity", f"he spent {20 + i} min in brave", 1)
+        assert a.pressure >= awareness.THINK_AT and not a.ready(), \
+            "small things alone wait for one that matters"
+        post(a, T + 60, "alert", "Battery 18%, not charging", 5)
+        assert a.ready()
+        lines = a.pending()
+        assert len(lines) == 27 and lines[-1].endswith("Battery 18%, not charging")
+        assert len(a.pending(limit=5)) == 5 and "Battery 18%" in a.pending(5)[-1]
+        p, n = a.thought("world", dry=True, now=T + 120)
+        assert p >= awareness.THINK_AT and n >= 26
+        assert a.pressure == 0 and a.peak == 0 and a.gates == 1 and not a.ready()
         g = [f for k, f in seen if k == "aware_gate"]
-        assert g and g[0]["dry"] is True and g[0]["events"] >= 4
-        assert not any("worth a thought" in ln for ln in
+        assert g and g[0]["dry"] is True and g[0]["why"] == "world"
+        post(a, T + 200, "alert", "Download finished: x.zip", 5)
+        assert a.pending() == [awareness._hm(T + 200) + " Download finished: x.zip"], \
+            "only what came after the last thought"
+        assert not any("a thought (" in ln for ln in
                        a.since_note(T + 3600).splitlines()), "gate lines stay private"
-        fired = []
-        b = new(on_gate=lambda p, n: fired.append((p, n)))
-        b.tick(snap(), T)
-        for i in range(4):
-            b.note("alert", f"alert {i}", 5)
-        b.tick(snap(), T + 30)
-        assert fired and fired[0][0] >= awareness.THINK_AT
-        # the hourly roll-up
-        a.tick(snap(), T + 3700)
+        b = awareness.Awareness(a.dir)                  # the mark survives a restart
+        assert abs(b.thought_t - (T + 120)) < 1 and b.gates == 1
+        a.tick(snap(), T + 3700)                        # the hourly roll-up
         roll = [f for k, f in seen if k == "aware"]
-        assert roll and roll[0]["ticks"] >= 3 and roll[0]["ms"] < 50
+        assert roll and roll[0]["ticks"] >= 2 and roll[0]["ms"] < 50
     finally:
-        metrics.ON, metrics.emit = old_on, old_emit
+        metrics.emit = old_emit
 
+
+def test_goals_bounds():
+    g = goals.Goals(tempfile.mkdtemp())
+    assert g.add("fix it", "he said so", "done") is None, "too vague"
+    assert g.add("email him the hours file", "", "sent") is None, "no because"
+    one = g.add("Email him the hours file.", "he asked at 21:02 and I never did",
+                "the email shows in Sent", days=30, now=T)
+    assert one["id"] == "g1" and one["expires"] == round(T + 7 * 86400), "7 days at most"
+    assert g.add("email him the hours file", "x", "y", now=T) is None, "alike"
+    for i, t in enumerate(("check the TikTok draft state", "rebuild the phone app",
+                           "look at why Georgian speech was slow", "tidy the downloads folder")):
+        assert g.add(t, "he asked", "he confirms", now=T + i)
+    assert g.add("one goal too many for me", "he asked", "ok", now=T) is None
+    assert len(g.active()) == goals.MAX_ACTIVE
+    assert "g1: Email him the hours file (because: he asked at 21:02" in g.lines()
+    assert g.close("G2", "dropped", "no longer matters")["state"] == "dropped"
+    assert g.close("g2") is None and g.close("g99") is None
+    # a machine check closes its goal; time closes the rest
+    d = g.from_event({"kind": "alert", "what": "disk", "text": "C: is down to 20 GB free"}, T)
+    assert d["check"] == "disk" and d["source"] == "drive"
+    assert g.from_event({"kind": "alert", "what": "disk", "text": "again"}, T) is None
+    assert g.from_event({"kind": "alert", "what": "battery", "text": "x"}, T) is None
+    assert g.sweep(T + 60, {"disk": lambda: False}) == []
+    done = g.sweep(T + 120, {"disk": lambda: True})
+    assert [x["state"] for x in done] == ["done"] and done[0]["text"].startswith("free up")
+    gone = g.sweep(T + 8 * 86400, {})
+    assert len(gone) == 4 and all(x["state"] == "expired" for x in gone)
+    assert g.active() == []
+    again = goals.Goals(g.dir)                          # survives a restart
+    assert again.d["n"] == 6 and "## Closed" in open(again.md, encoding="utf-8").read()
+
+
+def test_parse_reply():
+    r = inner_life.parse_reply(
+        "- He asked twice for the hours email and I dropped it.\n"
+        "- The charger fell out again at 14:02.\n"
+        "SAY: Want me to send the hours file now?\n"
+        "GOAL: send him the hours file | because he asked at 21:02 and it never "
+        "went | done when the email is in Sent | days 2\n"
+        "DONE: g3\nDROP: g1, G4")
+    assert len(r["thoughts"]) == 2 and r["say"].startswith("Want me")
+    assert r["goal"] == {"text": "send him the hours file",
+                         "why": "he asked at 21:02 and it never went",
+                         "test": "the email is in Sent", "days": 2.0}
+    assert r["done"] == ["g3"] and r["drop"] == ["g1", "g4"]
+    r = inner_life.parse_reply("- one thought\nSAY: none\nGOAL: be a better assistant")
+    assert r["say"] == "" and r["goal"] is None, "a goal with no because/test is dropped"
+    assert inner_life.parse_reply("gibberish")["thoughts"] == []
+
+
+def test_world_thought():
+    """A thought with no talk at all: gated, widened, and it moves my goals."""
+    class Eng:
+        _last_exchange = time.monotonic() - 3600
+        busy = False
+    d = tempfile.mkdtemp()
+    x = inner_life.InnerLife.__new__(inner_life.InnerLife)
+    x.app, x._note, x._lock = Eng(), "", threading.Lock()
+    x._mood = inner_life.read_mood("", [], inner_life.datetime.datetime.now())[0]
+    x.st = {"reflect_t": time.time() + 9, "say": []}    # no talk newer than this
+    x.aware = awareness.Awareness(d)
+    x.goals = goals.Goals(d)
+    x.aware.on_event = x._on_event
+    asked = []
+
+    async def fake_ask(prompt, system):
+        asked.append(prompt)
+        return ("- The C drive has been low since this morning.\n"
+                "SAY: Want me to clear old downloads? C: is down to 20 GB.\n"
+                "GOAL: look at why Georgian speech was slow | because he repeated "
+                "himself three times at 14:10 | done when I measured it | days 2\n"
+                "DONE: g1")
+    old = (inner_life.episodes._ask, inner_life.THOUGHTS, inner_life.write_thoughts,
+           inner_life.STATE, inner_life._plan, os.environ.get("GOAT_AWARE_THINK"))
+    inner_life.episodes._ask = fake_ask
+    inner_life.THOUGHTS = os.path.join(d, "thoughts.md")
+    inner_life.write_thoughts = lambda *a: None
+    inner_life.STATE = os.path.join(d, "inner.json")
+    inner_life._plan = lambda: {"five_hour": 40, "seven_day": 50}
+    try:
+        assert not x._world_ready(), "nothing noticed yet"
+        x.aware.note("alert", "C: is down to 20 GB free", 5, what="disk")
+        assert [g["text"] for g in x.goals.active()] == ["free up space on the C: drive"]
+        for i in range(8):
+            x.aware.note("presence", f"he's back after {3 + i} h", 3)
+        assert x.aware.ready()
+        os.environ["GOAT_AWARE_THINK"] = "off"
+        assert not x._world_ready()
+        os.environ["GOAT_AWARE_THINK"] = "on"
+        Eng._last_exchange = time.monotonic() - 30      # mid-conversation
+        assert not x._world_ready()
+        Eng._last_exchange = time.monotonic() - 3600
+        inner_life._plan = lambda: {"five_hour": 85}    # quota too high
+        assert not x._world_ready() and x.aware.ready(), "the pressure waits"
+        inner_life._plan = lambda: {"five_hour": 40}
+        assert x._world_ready()
+        x.reflect("world")
+        p = asked[0]
+        assert "(no new talk)" in p and "C: is down to 20 GB free" in p
+        assert "- g1: free up space on the C: drive (because:" in p
+        acts = {g["text"] for g in x.goals.active()}
+        assert acts == {"look at why Georgian speech was slow",
+                        "free up space on the C: drive"}, acts
+        assert x.goals.get("g1")["state"] == "active", \
+            "a goal with a machine check is closed by the check, not by a thought"
+        assert x.st["worlds"] == 1 and x.st["reflects"] == 1 and len(x.st["say"]) == 1
+        assert not x.aware.ready() and x.aware.pressure == 0
+        assert "I thought about what I noticed" in " ".join(texts(x.aware, "thought"))
+        assert "low since this morning" in open(inner_life.THOUGHTS, encoding="utf-8").read()
+        assert "on your mind" in x.turn_note("open chrome")
+        assert "[goals — " in x.turn_note("how are you")
+        # an hour apart, three a day, and a failed call is not retried at once
+        for i in range(8):
+            x.aware.note("presence", f"he's back after {13 + i} h", 3)
+        assert x.aware.ready() and not x._world_ready(), "too soon after the last"
+        x.st["reflect_at"] = time.time() - 2 * 3600
+        assert x._world_ready()
+        x.st["worlds"] = inner_life.WORLD_PER_DAY
+        assert not x._world_ready()
+        x.st["worlds"] = 1
+
+        async def boom(prompt, system):
+            raise RuntimeError("no network")
+        inner_life.episodes._ask = boom
+        try:
+            x.reflect("world")
+            raise AssertionError("should have raised")
+        except RuntimeError:
+            pass
+        x.st["reflect_at"] = time.time() - 2 * 3600
+        assert not x._world_ready() and x.aware.ready(), "backs off, keeps the pressure"
+        os.environ["GOAT_AWARE_THINK"] = "dry"
+        x._think_fail = 0.0
+        assert not x._world_ready() and not x.aware.ready(), "dry: logged, nothing spent"
+        assert len(asked) == 1
+    finally:
+        (inner_life.episodes._ask, inner_life.THOUGHTS, inner_life.write_thoughts,
+         inner_life.STATE, inner_life._plan) = old[:5]
+        if old[5] is None:
+            os.environ.pop("GOAT_AWARE_THINK", None)
+        else:
+            os.environ["GOAT_AWARE_THINK"] = old[5]
+
+
+def test_rollback_on_waking():
+    a = new()
+    a.tick(snap(body={"phone": "phone not connected",
+                      "rollback": "watchdog rolled back a bad build of me at 02:00"}), T)
+    assert texts(a, "body") == ["watchdog rolled back a bad build of me at 02:00"]
+    assert goals.DRIVES[("body", "rollback")][3] is None
 
 def test_self_line_and_summary():
     a = new()
@@ -201,6 +356,7 @@ def test_self_line_and_summary():
     assert s["aware"] == {"hours": 2, "ticks": 240, "tick_ms": 1.0,
                           "tick_ms_max": 9.0, "events_per_day": 144.0,
                           "gates": 1, "gates_dry": 1,
+                          "thoughts": {"talk": 0, "world": 0},
                           "spoke_first": {"answered": 1, "passed": 1}}, s["aware"]
     assert metrics.summarize([])["aware"]["tick_ms"] is None
 
@@ -294,7 +450,9 @@ if __name__ == "__main__":
     for fn in (test_presence_and_app, test_my_own_job_is_not_him,
                test_body_changes_only, test_wake_and_sleep,
                test_note_rides_once_after_silence, test_same_line_not_twice,
-               test_gate_is_a_dry_run, test_self_line_and_summary, test_trim,
+               test_think_gate, test_goals_bounds, test_parse_reply,
+               test_world_thought, test_rollback_on_waking,
+               test_self_line_and_summary, test_trim,
                test_inner_life_wiring, test_tick_is_cheap):
         fn()
         print("PASS", fn.__name__)

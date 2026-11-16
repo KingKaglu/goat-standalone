@@ -16,9 +16,10 @@ left no record. This is the part of the inner life that keeps running:
 
 No model anywhere in this file, and no senses either: inner_life.py takes the
 snapshot (it owns the senses) and drives tick() from its own 30 s loop;
-watchers and the reflection post through note(). The think gate is a DRY RUN
-in this chunk: it logs when enough has happened to be worth a thought and
-spends nothing (design: workspace/self-awareness/design.md).
+watchers and the reflection post through note(). ready() says when enough
+has happened to be worth a thought; inner_life decides whether one may be
+spent and calls thought() when it was (design:
+workspace/self-awareness/design.md).
 
 The stream keeps app names, never window titles or screen text, and lives in
 workspace/awareness/ (not in git).
@@ -53,7 +54,10 @@ SAME_S = 10 * 60          # the same line again inside this is dropped
 CPU_HOT = 40.0            # % of one core, while idle ...
 CPU_TICKS = 4             # ... for this many ticks
 CPU_COOL_S = 30 * 60
-THINK_AT = 20.0           # pressure worth a thought (dry run for now)
+THINK_AT = 20.0           # pressure worth a thought ...
+THINK_PEAK = 3            # ... if at least one thing in it scored this much
+PENDING_MAX = 30          # lines of the stream one thought reads
+BOOT_TELL = ("rollback",)  # body parts worth a line even on the first look
 NOTE_MIN_SAL = 2          # the turn note skips anything below this
 NOTE_MIN_SILENCE_S = 10 * 60
 NOTE_MAX = 6
@@ -88,15 +92,17 @@ def _shape(v: str) -> str:
 
 
 class Awareness:
-    def __init__(self, folder: str | None = None, on_gate=None):
+    def __init__(self, folder: str | None = None):
         self.dir = folder or DIR
         self.stream = os.path.join(self.dir, "stream.jsonl")
         self.state_file = os.path.join(self.dir, "state.json")
-        self.on_gate = on_gate            # None = dry run
+        self.on_event = None              # called with each new stream line
         self._lock = threading.RLock()
         self.st = self._load()
         self.pressure = float(self.st.get("pressure") or 0.0)
+        self.peak = float(self.st.get("peak") or 0.0)   # top score in it
         self.gates = int(self.st.get("gates") or 0)
+        self.thought_t = float(self.st.get("thought_t") or time.time())
         # him
         self.him = "here"
         self.him_since = time.time()
@@ -135,7 +141,8 @@ class Awareness:
 
     def _save(self, now: float):
         self.st.update(alive=now, pressure=round(self.pressure, 1),
-                       gates=self.gates)
+                       peak=self.peak, gates=self.gates,
+                       thought_t=round(self.thought_t, 3))
         try:
             os.makedirs(self.dir, exist_ok=True)
             tmp = self.state_file + ".tmp"
@@ -217,8 +224,15 @@ class Awareness:
             except OSError:
                 return False
             self.pressure += float(sal)
+            self.peak = max(self.peak, float(sal))
             self._since_gate += 1
             self._roll["events"] += 1
+        hook = self.on_event
+        if hook is not None and kind not in QUIET_KINDS:
+            try:
+                hook(rec)
+            except Exception as e:  # noqa: BLE001
+                print(f"[aware] on_event: {type(e).__name__}: {e}")
         return True
 
     # --------------------------------------------------------------- tick --
@@ -247,7 +261,6 @@ class Awareness:
                 self._body(s)
                 self._health(s, now)
                 self._silence_peak = max(self._silence_peak, self._heard(s))
-                self._gate(now)
                 if now - self._beat >= HEARTBEAT_S:
                     self._beat = now
                     self._save(now)
@@ -358,8 +371,11 @@ class Awareness:
         if new is None:
             return
         old, self.body = self.body, dict(new)
-        if old is None:
-            return                        # the first look is the baseline
+        if old is None:                   # the first look is the baseline,
+            for k in BOOT_TELL:           # but waking up after a rollback
+                if k in new:              # is news
+                    self._post("body", new[k], BODY_SAL.get(k, 2), part=k)
+            return
         for k, v in new.items():
             if k not in old or _shape(old[k]) != _shape(v):
                 self._post("body", v, BODY_SAL.get(k, 2), part=k)
@@ -375,22 +391,41 @@ class Awareness:
             self._hot_said = now
             self._post("health", f"I'm using {cpu:.0f}% of a core while idle", 2)
 
-    def _gate(self, now):
-        if self.pressure < THINK_AT:
-            return
-        p, n = self.pressure, self._since_gate
-        self.gates += 1
-        dry = self.on_gate is None
-        metrics.emit("aware_gate", pressure=round(p, 1), events=n, dry=dry)
-        self._post("gate", f"enough happened to be worth a thought (pressure "
-                   f"{p:.0f} from {n} events)" + (", dry run" if dry else ""), 0)
-        self.pressure, self._since_gate = 0.0, 0
-        self._save(now)
-        if not dry:
-            try:
-                self.on_gate(p, n)
-            except Exception as e:  # noqa: BLE001
-                print(f"[aware] gate: {type(e).__name__}: {e}")
+    # --------------------------------------------------------- think gate --
+    def ready(self) -> bool:
+        """Enough has happened to be worth a thought: the scores add up to
+        THINK_AT and at least one thing in them mattered (THINK_PEAK). A pile
+        of small things (he spent 20 min in an app, ten times) keeps waiting
+        for something that does."""
+        return self.pressure >= THINK_AT and self.peak >= THINK_PEAK
+
+    def pending(self, limit: int = PENDING_MAX) -> list:
+        """What I noticed since my last thought, as lines for the next one:
+        the highest-scored `limit`, in time order."""
+        since = round(self.thought_t, 3)
+        evs = [e for e in self.events()
+               if e.get("at", e["t"]) >= since
+               and e.get("kind") not in QUIET_KINDS]
+        top = sorted(evs, key=lambda e: (-e.get("sal", 0), e["t"]))[:limit]
+        top.sort(key=lambda e: e["t"])
+        return [f"{_hm(e['t'])} {e['text']}" for e in top]
+
+    def thought(self, why: str = "world", dry: bool = False,
+                now: float | None = None) -> tuple:
+        """A thought was spent on what I noticed (or, dry: would have been).
+        Empties the pressure and moves the 'since my last thought' mark."""
+        now = time.time() if now is None else now
+        with self._lock:
+            p, n = self.pressure, self._since_gate
+            self.gates += 1
+            metrics.emit("aware_gate", pressure=round(p, 1), events=n,
+                         dry=dry, why=why)
+            self._post("gate", f"a thought ({why}) over {n} things, pressure "
+                       f"{p:.0f}" + (", dry run: no model call" if dry else ""), 0)
+            self.pressure, self.peak, self._since_gate = 0.0, 0.0, 0
+            self.thought_t = now
+            self._save(now)
+        return p, n
 
     # ------------------------------------------------------------ reports --
     def health(self) -> tuple:
@@ -495,3 +530,5 @@ if __name__ == "__main__":
           if alive else "never", "| pressure", a.pressure, "of", THINK_AT,
           "| thoughts it would have had:", a.gates)
     print(a.digest(hours))
+    import goals
+    print("\n" + goals.Goals().render())

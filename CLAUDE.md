@@ -71,12 +71,21 @@ working on GOAT's code. Background: `README.md`, `STATE.md` (dev journal), `AUDI
 ## Awareness (2026-11-16)
 - `awareness.py` = what GOAT notices while he's silent: a stream of changes with fixed scores
   (`workspace/awareness/stream.jsonl`, app names only, never titles), a measured self-state,
-  and a dry-run "worth a thought" gate (`THINK_AT`). No model, no senses of its own.
+  and `ready()` = enough happened to be worth a thought (`THINK_AT` summed, one item at
+  `THINK_PEAK`). No model, no senses of its own.
+- `goals.py` = GOAT's own goals (`workspace/awareness/goals.json`, readable copy `goals.md`):
+  at most 5, at most 7 days each, each with a because and a done-test. They come from
+  `goals.DRIVES` (code saw a problem) or from a reflection's `GOAL:` line; a goal with a machine
+  check (`goals.CHECKS`) is closed only by that check. Goals never make GOAT act on its own.
+- World thoughts: `inner_life.reflect("world")` fires without talk when `aware.ready()`, he's
+  quiet, at most 3 a day, an hour apart, inside the 6-a-day and quota limits. Same single Haiku
+  call as the talk reflection; it reads talk + `aware.pending()` + goals (`think_prompt`,
+  `parse_reply`). `GOAT_AWARE_THINK` = `on` | `dry` (log, spend nothing) | `off`.
 - `inner_life.py` owns the senses (`sense()`, `front_app()`) and drives `Awareness.tick()` from
   its 30 s loop; `watchers.alert` and reflections post through `aware.note()`. `turn_note` adds
   `[while he was silent — …]` once after 10+ quiet minutes and `[self — …]` when he asks how it is.
 - `_his_last` (set in `_talk`) is HIS last words; `_last_exchange` also moves when a job ends.
-- Look: `py -3.13 python\awareness.py [hours]`; numbers: the `aware` block of `metrics.py summary`.
+- Look: `py -3.13 python\awareness.py [hours]` (stream + goals); numbers: the `aware` block of `metrics.py summary`.
   Plan and next chunks: `workspace/self-awareness/design.md`.
 
 ## Switches added in the audit

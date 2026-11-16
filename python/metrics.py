@@ -13,7 +13,8 @@ Events (all carry "t" = unix time):
   claude_usage model, input, cache_read, cache_create, output
   ear          ms, mode      laptop ear: pause -> transcript; pinned / auto
   aware        ticks, ms, ms_max, events, pressure   hourly: the awareness loop
-  aware_gate   pressure, events, dry   enough happened to be worth a thought
+  aware_gate   pressure, events, dry, why   a thought over what it noticed
+  thought      why (talk / world), talk, noticed, ok, say, goal   one Haiku call
   spoke_first  outcome, why  a line said unprompted: answered / passed
 
   py -3.13 metrics.py summary [file]   -> the numbers PLAN.md tracks
@@ -151,6 +152,8 @@ def summarize(events: list) -> dict:
                                 * 24 / hours, 1) if hours else None,
         "gates": len(gates),
         "gates_dry": sum(1 for e in gates if e.get("dry")),
+        "thoughts": {w: sum(1 for e in ev if e["kind"] == "thought"
+                            and e.get("why") == w) for w in ("talk", "world")},
         "spoke_first": {"answered": spoke.count("answered"),
                         "passed": spoke.count("passed")}}
     return s
