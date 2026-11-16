@@ -621,17 +621,35 @@ def icon_png(size: int, maskable: bool = False) -> bytes:
     s = size * k
     im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    bg = (14, 14, 15, 255)
+    bg = (5, 7, 10, 255)
     if maskable:
         d.rectangle((0, 0, s, s), fill=bg)
     else:
         d.rounded_rectangle((0, 0, s - 1, s - 1), radius=int(s * 0.215), fill=bg)
     c, f = s / 2, s / 512
-    r1, w = 150 * f, 28 * f
-    d.ellipse((c - r1 - w / 2, c - r1 - w / 2, c + r1 + w / 2, c + r1 + w / 2),
-              outline=(240, 180, 41, 255), width=int(w))
-    r2 = 70 * f
-    d.ellipse((c - r2, c - r2, c + r2, c + r2), fill=(236, 234, 228, 255))
+    # Aeon mark (v10): lime orb with a white-hot core and one tilted orbit.
+    # Maskable keeps everything inside the 80% safe zone.
+    k2 = 0.8 if maskable else 1.0
+    lime = (200, 255, 77)
+    halo = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    hd = ImageDraw.Draw(halo)
+    for rr, a in ((150, 7), (132, 9), (114, 12), (98, 16)):      # soft glow
+        r = rr * f * k2
+        hd.ellipse((c - r, c - r, c + r, c + r), fill=lime + (a,))
+    im.alpha_composite(halo)
+    ring = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    rd = ImageDraw.Draw(ring)
+    ax, ay = 200 * f * k2, 60 * f * k2
+    rd.ellipse((c - ax, c - ay, c + ax, c + ay), outline=(163, 174, 186, 220),
+               width=max(2, int(7 * f)))
+    ring = ring.rotate(20, resample=Image.BICUBIC, center=(c, c))
+    im.alpha_composite(ring)
+    d = ImageDraw.Draw(im)
+    r2 = 72 * f * k2
+    d.ellipse((c - r2, c - r2, c + r2, c + r2), fill=lime + (255,))
+    r3 = 34 * f * k2
+    d.ellipse((c - r3 - 14 * f, c - r3 - 18 * f, c + r3 - 14 * f, c + r3 - 18 * f),
+              fill=(255, 255, 255, 235))
     out = io.BytesIO()
     im.resize((size, size), Image.LANCZOS).save(out, "PNG")
     return out.getvalue()
@@ -642,9 +660,9 @@ _SW = """// GOAT phone service worker: makes the page an installable app and sho
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
 self.addEventListener("push", e => {
-  let d = {title: "GOAT", body: ""};
+  let d = {title: "Aeon", body: ""};
   try { d = e.data.json(); } catch (x) {}
-  e.waitUntil(self.registration.showNotification(d.title || "GOAT", {
+  e.waitUntil(self.registration.showNotification(d.title || "Aeon", {
     body: d.body || "", tag: d.tag || "goat", icon: "/icon-192.png",
     badge: "/icon-192.png", vibrate: [120, 60, 120], renotify: true}));
 });
@@ -1166,10 +1184,10 @@ class PhoneServer:
     async def _manifest(self, request):
         from aiohttp import web
         return web.json_response({
-            "name": "GOAT", "short_name": "GOAT", "start_url": "/",
-            "id": "/", "scope": "/", "description": "Talk to GOAT, your laptop's AI",
+            "name": "Aeon", "short_name": "Aeon", "start_url": "/",
+            "id": "/", "scope": "/", "description": "Talk to Aeon, your laptop's AI",
             "display": "standalone", "orientation": "portrait",
-            "background_color": "#0e0e0f", "theme_color": "#0e0e0f",
+            "background_color": "#05070a", "theme_color": "#05070a",
             "icons": [
                 {"src": "/icon-192.png", "sizes": "192x192",
                  "type": "image/png", "purpose": "any"},
@@ -1366,10 +1384,14 @@ class PhoneServer:
     async def _icon(self, request):
         from aiohttp import web
         svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
-               '<rect width="512" height="512" rx="110" fill="#0e0e0f"/>'
-               '<circle cx="256" cy="256" r="150" fill="none" stroke="#f0b429" '
-               'stroke-width="28"/><circle cx="256" cy="256" r="70" '
-               'fill="#eceae4"/></svg>')
+               '<defs><radialGradient id="g" cx="40%" cy="35%" r="70%">'
+               '<stop offset="0" stop-color="#fff"/><stop offset=".3" '
+               'stop-color="#c8ff4d"/><stop offset="1" stop-color="#c8ff4d" '
+               'stop-opacity=".5"/></radialGradient></defs>'
+               '<rect width="512" height="512" rx="110" fill="#05070a"/>'
+               '<ellipse cx="256" cy="256" rx="200" ry="60" fill="none" '
+               'stroke="#a3aeba" stroke-width="7" transform="rotate(-20 256 256)"/>'
+               '<circle cx="256" cy="256" r="74" fill="url(#g)"/></svg>')
         return web.Response(text=svg, content_type="image/svg+xml")
 
     async def _upload(self, request):
