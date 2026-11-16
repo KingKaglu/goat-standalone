@@ -736,7 +736,7 @@ def self_window() -> dict | None:
             continue    # the Live window (ui_qt.LiveWindow) is not GOAT itself
         if w["pid"] == own:
             return w
-        if w["title"].strip() == "GOAT" and named is None:
+        if w["title"].strip() in ("GOAT", "Aeon") and named is None:
             named = w
     return named
 

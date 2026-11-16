@@ -99,8 +99,8 @@ def test_window():
     QTest.keyClicks(pal.box, "re")
     pump(250)
     cur = pal.list.currentItem()
-    check(cur is not None and cur.text() == "Restart GOAT",
-          f"'re' -> Restart GOAT first ({cur.text() if cur else None})")
+    check(cur is not None and cur.text() == "Restart Aeon",
+          f"'re' -> Restart Aeon first ({cur.text() if cur else None})")
     room = w._room_rect()
     g = pal.panel.geometry()
     check(abs(g.center().x() - room.center().x()) <= 2, "panel centred over the room")

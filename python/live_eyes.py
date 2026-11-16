@@ -605,7 +605,7 @@ if __name__ == "__main__":
     eyes = LiveEyes()
     # Outside GOAT, GOAT's own window would be "the front": skip it.
     eyes.skip_pids |= {w["pid"] for w in screen_hands.windows()
-                       if w["title"].strip() == "GOAT"}
+                       if w["title"].strip() in ("GOAT", "Aeon")}
     _EYES = eyes.start()
     time.sleep(secs)
     cpu = proc.cpu_percent()

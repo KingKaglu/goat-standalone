@@ -201,7 +201,7 @@ def media():
 
 
 # ---- windows ----
-_SKIP = {"Program Manager", "Windows Input Experience", "GOAT", "GOAT live"}
+_SKIP = {"Program Manager", "Windows Input Experience", "GOAT", "Aeon", "GOAT live"}
 _names: dict = {}
 
 

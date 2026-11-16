@@ -139,6 +139,23 @@ UI_CONFIG = os.path.join(GOAT_ROOT, "ui-config.json")
 # themes lifted a full step: backgrounds up from near-black, dim/faint
 # raised so secondary text is READABLE, not archaeological.
 THEMES = {
+    # v10 (his order 2026-11-16: "this UI/UX for GOAT, rename it Aeon"): the
+    # Aeon mockup. Near-black instrument, one lime accent, a particle sphere
+    # for the presence, glass panes over a faded grid. "sphere" swaps the
+    # ring-on-a-string for the 3D point sphere (Presence), "grid" paints the
+    # faded grid (Backdrop), "aurora_k" turns the aurora down to a whisper.
+    # "work" (Claude's light) is the mockup's ice blue.
+    "aeon": {
+        "bg_top": "#07090d", "bg_bot": "#05070a",
+        "paper": "#f2f5f7", "dim": "#a3aeba", "faint": "#808b97",
+        "accent": "#c8ff4d", "accent2": "#e4ff9e", "string_base": "#56616d",
+        "you_old": "#a3aeba", "reply_old": "#a3aeba", "sel": "#38481a",
+        "rail": "#06080b", "card": "#0e1116", "line": "#1e242c",
+        "glow": "#2d3a12", "ok": "#6be3a8", "danger": "#ff7468",
+        "work": "#7fd4ff", "glass": True, "sphere": True, "grid": True,
+        "aurora": ("#c8ff4d", "#7fd4ff", "#c8ff4d", "#7fd4ff"),
+        "aurora_k": 0.16,
+    },
     # v9 (his order 2026-11-12: "a glassy UI"): frosted panes over slow
     # coloured light. "glass" turns the surfaces into light panes (build_style)
     # and the room into an aurora (Backdrop), so the panes have something to
@@ -205,7 +222,7 @@ THEMES = {
         "work": "#9aa0ff",
     },
 }
-THEME_ORDER = ["glass", "midnight", "jarvis", "ember", "paper", "phosphor", "graphite"]
+THEME_ORDER = ["aeon", "glass", "midnight", "jarvis", "ember", "paper", "phosphor", "graphite"]
 
 
 def _hex_mix(a: str, b: str, f: float) -> str:
@@ -285,10 +302,10 @@ COLOR_PARTS = {"text": ["paper"], "accent": ["accent"],
                "background": ["bg_top", "bg_bot"]}
 
 # Bumped when a new face should re-seat the theme once (v7 → midnight,
-# v9 → glass).
-DESIGN_VERSION = 9
+# v9 → glass, v10 → aeon).
+DESIGN_VERSION = 10
 
-DEFAULT_CFG = {"theme": "glass", "text": "normal", "voice": True,
+DEFAULT_CFG = {"theme": "aeon", "text": "normal", "voice": True,
                "level": "normal", "wake": True, "ontop": False,
                "lang": "en", "character": "goat",
                "work_model": "fable 5.1", "hard_model": "fable 5.1",
@@ -847,7 +864,8 @@ class Backdrop(QWidget):
         p = QPainter(self)
         key = (self.width(), self.height(), self.rail_w, self.side_w,
                self.glow_y, self.glow, self.t.get("bg_top"),
-               self.t.get("accent"), self.t.get("paper"), self.t.get("glass"))
+               self.t.get("accent"), self.t.get("paper"), self.t.get("glass"),
+               self.t.get("grid"))
         if self._cache is None or key != self._cache_key:
             self._cache = self._paint()
             self._cache_key = key
@@ -881,11 +899,30 @@ class Backdrop(QWidget):
                                                    (0.30, 1.02, 0.52, 0.22),
                                                    (0.86, 0.94, 0.46, 0.17))):
                 rg = QRadialGradient(QPointF(w * fx, h * fy), big * fr)
+                a *= float(t.get("aurora_k", 1.0))
                 rg.setColorAt(0.0, _qc(col, int(255 * a)))
                 rg.setColorAt(0.55, _qc(col, int(255 * a * 0.32)))
                 rg.setColorAt(1.0, _qc(col, 0))
                 p.fillRect(0, 0, w, h, rg)
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        if t.get("grid"):
+            # Aeon: a 48 px grid of hairlines, faded out from behind the
+            # presence so the sphere floats in an instrument field.
+            gl = QPixmap(w, h)
+            gl.fill(Qt.transparent)
+            gp = QPainter(gl)
+            gp.setPen(QPen(_qc(t["paper"], 13), 1))
+            for gx in range(0, w, 48):
+                gp.drawLine(gx, 0, gx, h)
+            for gy in range(0, h, 48):
+                gp.drawLine(0, gy, w, gy)
+            gp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+            fade = QRadialGradient(QPointF(cx, h * 0.42), max(w - self.rail_w - self.side_w, 400) * 0.62)
+            fade.setColorAt(0.0, QColor(0, 0, 0, 255))
+            fade.setColorAt(1.0, QColor(0, 0, 0, 0))
+            gp.fillRect(0, 0, w, h, fade)
+            gp.end()
+            p.drawPixmap(0, 0, gl)
         if self.glow > 0.0:
             rad = max(200.0, 620.0 * h / 900.0)
             rg = QRadialGradient(QPointF(cx, h * self.glow_y), rad)
@@ -895,7 +932,8 @@ class Backdrop(QWidget):
             p.fillRect(0, 0, w, h, rg)
         # The horizon: two soft waves of paper at 2.5-3.5% along the foot.
         sy = h / 900.0
-        for i, (base, amp, a) in enumerate(((830, 70, 0.025), (862, 46, 0.035))):
+        for i, (base, amp, a) in enumerate(() if t.get("grid") else
+                                           ((830, 70, 0.025), (862, 46, 0.035))):
             path = QPainterPath(QPointF(0, h))
             for x in range(0, w + 20, 20):
                 y = (base - amp * (0.5 + 0.5 * math.sin(x / (170 + 60 * i) + i * 2.1))
@@ -1063,8 +1101,22 @@ class Presence(QWidget):
         self._faint = QColor("#56627d")
         self._paper = QColor("#e9eefa")
         self.setMinimumHeight(28 if compact else 72)
+        # Aeon sphere (theme flag "sphere"): a Fibonacci sphere of points,
+        # rotated per frame with numpy. kind 0 accent, 1 paper, 2 work light.
+        self._sphere = False
+        self._rot = 0.0               # sphere spin
+        self._pulse = 0.0             # breathing / ripple phase
+        self._oclk = 0.0              # orbit-light clock
+        n = 150 if compact else 560
+        i = np.arange(n, dtype=float)
+        uy = 1.0 - 2.0 * (i + 0.5) / n
+        rr = np.sqrt(1.0 - uy * uy)
+        th = i * math.pi * (3.0 - math.sqrt(5.0))
+        self._ux, self._uy, self._uz = np.cos(th) * rr, uy, np.sin(th) * rr
+        self._kind = np.where(i % 13 == 0, 1, np.where(i % 9 == 4, 2, 0))
 
     def set_theme(self, t: dict):
+        self._sphere = bool(t.get("sphere"))
         self._voice = QColor(t["accent"])
         self._workc = QColor(t.get("work", "#f2b36b"))
         self._danger = QColor(t.get("danger", "#ff6b5e"))
@@ -1140,9 +1192,183 @@ class Presence(QWidget):
             elif self._breathing:
                 self._breathing = False
                 want = True              # land the frame exactly at rest
+        if self._sphere:
+            # The sphere never fully rests (it turns slowly): 15 fps at idle,
+            # full rate while anything is happening, nothing when asleep.
+            en = self._energy()
+            self._rot += dt * (0.10 + 0.9 * en)
+            self._pulse += dt * (1.2 + 5.0 * en)
+            self._oclk += dt * (0.35 + 0.5 * en)
+            if self._v["asleep"] < 1.0:
+                self._frame += 1
+                want = bool(busy) or self._frame % 2 == 0
         if want and self.isVisible():
             self.update()
         return want
+
+    def _energy(self) -> float:
+        """How alive the sphere is, 0..1, from the blended state weights."""
+        v, lv = self._v, self.level
+        en = max(0.16 * v["idle"], v["listening"] * (0.55 + 0.45 * lv),
+                 0.9 * v["thinking"], v["speaking"] * (0.6 + 0.4 * lv),
+                 0.5 * v["error"])
+        return min(1.0, en + 0.15 * v["work"])
+
+    # (a, b, tilt degrees, rad/s, phase, colour key) of the orbit lights
+    _ORBITS = ((1.25, 0.34, -16.0, 1.0, 0.0, "acc"),
+               (1.25, 0.34, -16.0, 1.0, math.pi, "paper"),
+               (1.08, 0.22, 22.0, 1.5, 1.2, "work"))
+
+    def _paint_sphere(self, p: QPainter, w: float, h: float):
+        """The Aeon presence: a swirling point sphere with glass core, three
+        agent lights on tilted orbits (the cyan one is Claude, brighter while
+        a work turn runs), pings while listening/speaking, a comet arc while
+        thinking. Same state machine as the ring; only the picture differs."""
+        now = time.monotonic()
+        v = self._v
+        asleep, err, wrk = v["asleep"], v["error"], v["work"]
+        lis, thk, spk = v["listening"], v["thinking"], v["speaking"]
+        lv, en = self.level, self._energy()
+        cx, cy = w / 2, h / 2
+        comp = self.compact
+        R = h * (0.25 if comp else 0.34)
+        R *= 1.0 + math.sin(self._pulse) * (0.012 + 0.03 * en) * (1 - asleep)
+        acc = _mixc(_mixc(self._voice, self._faint, asleep), self._danger, err)
+        life = 1.0 - 0.7 * asleep
+        if self._flinch_t0:
+            ft = now - self._flinch_t0
+            if ft < 0.45:
+                p.translate(4 * math.sin(ft * 48) * (1 - ft / 0.45) * err, 0)
+            else:
+                self._flinch_t0 = 0.0
+        if self._ignite_t0:
+            f = (now - self._ignite_t0) / self._ignite_dur
+            if f >= 1.0:
+                self._ignite_t0 = 0.0
+            else:
+                p.setOpacity(0.25 + 0.75 * (1 - (1 - f) ** 3))
+
+        def ca(a: float, c: QColor = acc) -> QColor:
+            q = QColor(c)
+            q.setAlphaF(max(0.0, min(1.0, a)))
+            return q
+
+        # halo behind everything
+        if not comp:
+            hg = QRadialGradient(QPointF(cx, cy), R * 1.9)
+            hg.setColorAt(0.0, ca((0.16 + 0.2 * en) * life))
+            hg.setColorAt(0.5, ca((0.04 + 0.05 * en) * life))
+            hg.setColorAt(1.0, ca(0.0))
+            p.setPen(Qt.NoPen)
+            p.setBrush(hg)
+            p.drawEllipse(QPointF(cx, cy), R * 1.9, R * 1.9)
+
+        workc = self._workc
+        cols = {"acc": acc, "paper": self._paper, "work": workc}
+        orbit_a = (0.45, 0.45, 0.2 + 0.25 * wrk)
+
+        def orbit_ring(front: bool):
+            for (a, b, tilt, _sp, _ph, key) in self._ORBITS[::2]:
+                p.save()
+                p.translate(cx, cy)
+                p.rotate(tilt)
+                p.setPen(QPen(ca((0.42 if front else 0.2) * life, self._faint), 1))
+                p.setBrush(Qt.NoBrush)
+                rect = QRectF(-a * R, -b * R, 2 * a * R, 2 * b * R)
+                p.drawArc(rect, (180 if front else 0) * 16, 180 * 16)
+                p.restore()
+
+        def orbit_lights(front: bool):
+            for k, (a, b, tilt, sp, ph, key) in enumerate(self._ORBITS):
+                ang = self._oclk * sp + ph
+                if (math.sin(ang) > 0) != front:
+                    continue
+                al = (1.0 if front else 0.45) * (orbit_a[k] / 0.45 if key == "work" else 1.0)
+                if key == "work":
+                    al = (1.0 if front else 0.5) * (0.35 + 0.65 * wrk)
+                p.save()
+                p.translate(cx, cy)
+                p.rotate(tilt)
+                ex, ey = math.cos(ang) * a * R, math.sin(ang) * b * R
+                gr = max(4.0, R * 0.16)
+                lg = QRadialGradient(QPointF(ex, ey), gr)
+                lg.setColorAt(0.0, ca(0.6 * al * life, cols[key]))
+                lg.setColorAt(1.0, ca(0.0, cols[key]))
+                p.setPen(Qt.NoPen)
+                p.setBrush(lg)
+                p.drawEllipse(QPointF(ex, ey), gr, gr)
+                p.setBrush(ca(al * life, cols[key]))
+                dr = max(1.6, R * (0.035 if comp else 0.045))
+                p.drawEllipse(QPointF(ex, ey), dr, dr)
+                p.restore()
+
+        # rotate the point cloud (numpy), tilt it, project
+        c, s = math.cos(self._rot), math.sin(self._rot)
+        ux, uy, uz = self._ux, self._uy, self._uz
+        x = ux * c + uz * s
+        z = -ux * s + uz * c
+        y = uy
+        if en > 0.02:
+            wob = 1.0 + np.sin(uy * 7 + ux * 5 + self._pulse * 1.4) * en * 0.045
+            x, y, z = x * wob, y * wob, z * wob
+        tx, tz = 0.95, 0.4
+        y1 = y * math.cos(tx) - z * math.sin(tx)
+        z1 = y * math.sin(tx) + z * math.cos(tx)
+        x2 = x * math.cos(tz) - y1 * math.sin(tz)
+        y2 = x * math.sin(tz) + y1 * math.cos(tz)
+        px, py, dep = cx + x2 * R, cy + y2 * R, (z1 + 1.0) / 2.0
+        bucket = np.minimum((dep * 4).astype(int), 3)
+        base = 1.1 if comp else 1.7
+        kcol = (acc, self._paper, workc)
+
+        def cloud(front: bool):
+            side = (z1 >= 0) if front else (z1 < 0)
+            for bi in range(4):
+                for kk in range(3):
+                    m = side & (bucket == bi) & (self._kind == kk)
+                    if not m.any():
+                        continue
+                    d = (bi + 0.5) / 4.0
+                    a = ((0.25 + 0.75 * d ** 1.4) if front else (0.1 + 0.3 * d)) * life
+                    pen = QPen(ca(a, kcol[kk]), base * (0.7 + 0.45 * bi),
+                               Qt.SolidLine, Qt.RoundCap)
+                    p.setPen(pen)
+                    p.drawPoints(QPolygonF([QPointF(a_, b_) for a_, b_ in
+                                            zip(px[m].tolist(), py[m].tolist())]))
+
+        orbit_ring(False)
+        orbit_lights(False)
+        cloud(False)
+        # glass core: a bright pool at the centre of the sphere
+        cg = QRadialGradient(QPointF(cx - R * 0.15, cy - R * 0.18), R * 0.95)
+        cg.setColorAt(0.0, ca((0.5 + 0.25 * en) * life, QColor("#ffffff")))
+        cg.setColorAt(0.18, ca((0.5 + 0.2 * en) * life))
+        cg.setColorAt(0.5, ca(0.12 * life))
+        cg.setColorAt(1.0, ca(0.0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(cg)
+        p.drawEllipse(QPointF(cx, cy), R * 0.95, R * 0.95)
+        cloud(True)
+        p.setBrush(Qt.NoBrush)
+        # listening / speaking: pings expand off the sphere
+        ping = max(lis, spk)
+        if ping > 0.0 and not comp:
+            for i in range(2):
+                u = (self._t * 0.42 + i * 0.5) % 1.0
+                rr = R * (0.8 + 0.5 * u)
+                p.setPen(QPen(ca(ping * (1 - u) * (0.2 + 0.4 * lv + 0.2 * spk)), 1.2))
+                p.drawEllipse(QPointF(cx, cy), rr, rr)
+        # thinking: a comet arc circles the sphere
+        if thk > 0.0:
+            rect = QRectF(cx - R * 1.12, cy - R * 1.12, R * 2.24, R * 2.24)
+            a0 = (self._t * 300) % 360
+            for i in range(14):
+                pc = QPen(ca(0.9 * thk * (1 - i / 14), self._paper), 1.4 if comp else 2.2)
+                pc.setCapStyle(Qt.RoundCap)
+                p.setPen(pc)
+                p.drawArc(rect, int((a0 - i * 6) * 16), int(-6 * 16))
+        orbit_ring(True)
+        orbit_lights(True)
 
     def _breath(self, now: float) -> float:
         if self.state != "idle":
@@ -1185,6 +1411,8 @@ class Presence(QWidget):
         now = time.monotonic()
         if w < 20 or h < 12:
             return
+        if self._sphere:
+            return self._paint_sphere(p, w, h)
         v = self._v
         asleep, idle, err = v["asleep"], v["idle"], v["error"]
         lis, thk, spk, wrk = v["listening"], v["thinking"], v["speaking"], v["work"]
@@ -2341,7 +2569,7 @@ class WorkColumn(QWidget):
         self.scroll.setWidget(host)
         self._pin = BottomFollow(self.scroll)
         self._idle = QLabel(
-            "Nothing running. When you give GOAT a job, its steps show up "
+            "Nothing running. When you give Aeon a job, its steps show up "
             "here live.")
         self._idle.setObjectName("workidle")
         self._idle.setWordWrap(True)
@@ -2523,9 +2751,9 @@ class WorkColumn(QWidget):
         if voice and work:
             self._model_name = work
         if self._idle is not None:
-            who = voice or "GOAT"
+            who = voice or "Aeon"
             self._idle.setText(
-                f"Nothing running. When you give GOAT a job, {who} hands it "
+                f"Nothing running. When you give Aeon a job, {who} hands it "
                 "to Claude, and its steps, thinking and notes show up here "
                 "live.")
         self._refresh_sub()
@@ -2817,7 +3045,7 @@ class Bubble(QWidget):
                          | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("GOAT — click to open, drag to move")
+        self.setToolTip("Aeon — click to open, drag to move")
         self._t = dict(theme)
         self._state = "idle"
         self._unread = False
@@ -3050,7 +3278,7 @@ class MessagePop(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("click to open GOAT — right-click to dismiss")
+        self.setToolTip("click to open Aeon — right-click to dismiss")
         self._t = dict(theme)
         self._anchor = QRect()
         self.label = QLabel(self)
@@ -3200,7 +3428,7 @@ _CAPS_LEAD = re.compile(r"^((?:[A-Z][A-Z0-9+&'/-]*|\d[\w.]*|v\d+|\+)"
 _LONG_PAREN = re.compile(r"\s*\([^()]{14,}\)")
 _SENTENCE_END = re.compile(r"(?<=[a-z0-9)\]])\.(?:\s|$)|;\s")
 # Windows that are never "what he's on" for the ambient line.
-_AMBIENT_SKIP = {"Program Manager", "Windows Input Experience", "GOAT",
+_AMBIENT_SKIP = {"Program Manager", "Windows Input Experience", "GOAT", "Aeon",
                  "GOAT live", ""}
 
 
@@ -3615,7 +3843,7 @@ class LiveWindow(QWidget):
         self.hide()
 
     def _paint_head(self):
-        bits = ["GOAT", self._model or "", self._state]
+        bits = ["Aeon", self._model or "", self._state]
         if self._t0:
             up = int(time.time() - self._t0)
             bits.append(f"{up // 60}:{up % 60:02d}")
@@ -3748,7 +3976,7 @@ class GoatWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.cfg = load_ui_config()
-        self.setWindowTitle("GOAT")
+        self.setWindowTitle("Aeon")
         flags = Qt.FramelessWindowHint
         if self.cfg.get("ontop"):
             flags |= Qt.WindowStaysOnTopHint
@@ -4444,7 +4672,7 @@ class GoatWindow(QWidget):
         cl.addWidget(attach)
         self.input = QLineEdit()
         self.input.setObjectName("cmd")
-        self.input.setPlaceholderText("Speak, or type to GOAT…")
+        self.input.setPlaceholderText("Say it or type it…")
         self.input.returnPressed.connect(self._submit)
         cl.addWidget(self.input, 1)
         # Mic toggle lives on the composer — the single most-used switch of a
@@ -4595,7 +4823,7 @@ class GoatWindow(QWidget):
         b_full.clicked.connect(self.toggle_fullscreen)
         b_close = QPushButton(IC["close"])
         b_close.setObjectName("winclose")
-        b_close.setToolTip("quit GOAT")
+        b_close.setToolTip("quit Aeon")
         b_close.clicked.connect(QApplication.quit)
         for b in (b_min, b_full, b_close):
             row.addWidget(b)
@@ -5418,7 +5646,7 @@ class GoatWindow(QWidget):
             bottom = c.mapTo(self, QPoint(0, 0)).y() - round(16 * k)
         return QRect(QPoint(room.left(), room.top()), QPoint(right, bottom))
 
-    def proactive(self, text: str, kicker: str = "GOAT", tone: str = "accent",
+    def proactive(self, text: str, kicker: str = "Aeon", tone: str = "accent",
                   actions: list | None = None, key: str = ""):
         """Say something quietly on screen (design.md motion rules)."""
         if self.bubble.isVisible():
@@ -5439,7 +5667,7 @@ class GoatWindow(QWidget):
         g = self.goat
         muted = bool(g and g.mic_muted)
         e = [
-            Entry(A, "Restart GOAT", "action", self.restart_goat, "reload reboot"),
+            Entry(A, "Restart Aeon", "action", self.restart_goat, "reload reboot goat"),
             Entry(A, "New chat", "Ctrl N", self.new_chat, "fresh clear reset"),
             Entry(A, "Unmute the mic" if muted else "Mute the mic", "Ctrl M",
                   self.toggle_mic, "microphone listen quiet"),
@@ -5619,11 +5847,16 @@ class GoatWindow(QWidget):
                                        self.hint_row.sizeHint().height()) + round(2 * k))
         # Docked presence: ring radius = 0.3 x height = 28 px at 1x (design
         # mockup B), so the conversation keeps the room.
-        self.presence.setFixedHeight(round(94 * k))
+        sph = self.home_presence._sphere   # Aeon: a bigger hero sphere
+        self.presence.setFixedHeight(round((104 if sph else 94) * k))
         # Home presence: r = 0.3 x height = 50 px at 1x on a 900 px window,
         # smaller on short windows so the desk still shows.
-        self.home_presence.setFixedHeight(
-            round(min(166 * k, max(110 * k, self.height() * 0.185))))
+        if sph:
+            self.home_presence.setFixedHeight(
+                round(min(236 * k, max(130 * k, self.height() * 0.26))))
+        else:
+            self.home_presence.setFixedHeight(
+                round(min(166 * k, max(110 * k, self.height() * 0.185))))
         self._desk_lay.setSpacing(round(40 * k))
         self.desk.setMaximumWidth(round(DESK_MAX_W * k))
         self._hero_gap.setFixedHeight(round(max(8, min(48, self.height() * 0.035)) * k))
@@ -6107,7 +6340,7 @@ class GoatWindow(QWidget):
             ev.acceptProposedAction()
 
     def _pick_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Send to GOAT")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Send to Aeon")
         if paths:
             self._send_files(paths)
 
@@ -6512,7 +6745,7 @@ class GoatWindow(QWidget):
             acts = []
             if c.get("page") in self.pages:
                 acts.append(("Open", lambda p=c["page"]: self.show_page(p)))
-            self.proactive(str(c.get("text") or ""), str(c.get("kicker") or "GOAT"),
+            self.proactive(str(c.get("text") or ""), str(c.get("kicker") or "Aeon"),
                            str(c.get("tone") or "accent"), acts, str(c.get("key") or ""))
         elif kind == "you":
             if self.epigraph is not None:
@@ -6702,7 +6935,7 @@ def main():
     except Exception:  # noqa: BLE001
         pass
     app = QApplication(sys.argv)
-    app.setApplicationName("GOAT")
+    app.setApplicationName("Aeon")
     if os.path.exists(ICON):
         app.setWindowIcon(QIcon(ICON))
     win = GoatWindow()

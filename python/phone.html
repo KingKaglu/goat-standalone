@@ -5,15 +5,16 @@
 <link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
 <link rel="apple-touch-icon" href="/icon.svg">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
-<title>GOAT</title>
+<title>Aeon</title>
 <style>
 :root{color-scheme:dark;
   /* v9 glass (2026-11-12): same tokens as the laptop's glass theme. acc =
      the voice, work = Claude (used ONLY on Claude's marks). s1/s2 are panes
      of white light; --pane and --rim make a frosted card. */
-  --bg:#0c1226;--bg2:#05070e;--s1:#ffffff14;--s2:#ffffff21;--line:#ffffff1f;--line2:#ffffff33;
-  --tx:#f3f6ff;--dim:#a9b4d0;--faint:#6c7896;--on:#06101f;
-  --acc:#6fa8ff;--accd:#6fa8ff24;--work:#ffc27a;--ok:#5fe0a0;--bad:#ff7468;--warn:#ffc27a;
+  /* v10 Aeon (2026-11-16): near-black, one lime accent, ice-blue for Claude. */
+  --bg:#07090d;--bg2:#05070a;--s1:#ffffff14;--s2:#ffffff21;--line:#ffffff1f;--line2:#ffffff33;
+  --tx:#f2f5f7;--dim:#a3aeba;--faint:#808b97;--on:#05070a;
+  --acc:#c8ff4d;--accd:#c8ff4d24;--work:#7fd4ff;--ok:#6be3a8;--bad:#ff7468;--warn:#ffc27a;
   --pane:linear-gradient(180deg,#ffffff1f,#ffffff0b);
   --rim:inset 0 1px 0 #ffffff29,0 10px 30px #00000042;
   --blur:blur(20px) saturate(150%);
@@ -21,12 +22,12 @@
   --nav:62px}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;overflow:hidden;color:var(--tx);
-  /* the aurora: four wide pools of light for the panes to catch */
+  /* a faded 40px grid and two faint pools of light for the panes to catch */
   background:
-    radial-gradient(120vmax 90vmax at 10% -8%,#4f7dff5c,transparent 60%),
-    radial-gradient(110vmax 80vmax at 108% 8%,#9b6bff52,transparent 58%),
-    radial-gradient(100vmax 80vmax at 18% 108%,#22c7c03d,transparent 55%),
-    radial-gradient(90vmax 70vmax at 104% 100%,#ff6fae2e,transparent 55%),
+    radial-gradient(90vmax 70vmax at 108% -6%,#c8ff4d1f,transparent 58%),
+    radial-gradient(80vmax 60vmax at -8% 106%,#7fd4ff17,transparent 55%),
+    linear-gradient(#ffffff0d 1px,transparent 1px) 0 0/40px 40px,
+    linear-gradient(90deg,#ffffff0d 1px,transparent 1px) 0 0/40px 40px,
     linear-gradient(180deg,var(--bg),var(--bg2));
   background-attachment:fixed;
   font:15px/1.5 "Segoe UI Variable","Segoe UI",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -41,7 +42,7 @@ header{display:flex;align-items:center;gap:10px;min-height:46px;
   padding:calc(6px + env(safe-area-inset-top)) 18px 6px}
 .brand{display:flex;align-items:center;gap:9px;font-weight:650;font-size:15px;letter-spacing:.2em}
 #dot{width:11px;height:11px;border-radius:50%;border:1.5px solid var(--faint);transition:border-color .3s,box-shadow .3s}
-#dot.on{border-color:var(--acc);box-shadow:0 0 8px #6fa8ff66}
+#dot.on{border-color:var(--acc);box-shadow:0 0 8px #c8ff4d66}
 body[data-work="1"] #dot.on{box-shadow:0 0 0 2px var(--bg),0 0 0 3.5px var(--work)}
 .chips{margin-left:auto;display:flex;align-items:center;gap:8px;min-width:0;
   font:11.5px/1 var(--mono);color:var(--dim);white-space:nowrap}
@@ -78,7 +79,7 @@ main{flex:1;min-height:0;position:relative}
 .pres .str{flex:1;height:1px;background:linear-gradient(90deg,transparent,#4a5a80)}
 .pres .str+.ring+.str{background:linear-gradient(270deg,transparent,#4a5a80)}
 .ring{width:88px;height:88px;border-radius:50%;border:2px solid var(--acc);opacity:.7;flex:none;
-  position:relative;display:grid;place-items:center;box-shadow:0 0 28px #6fa8ff2e,inset 0 0 18px #6fa8ff1f;
+  position:relative;display:grid;place-items:center;box-shadow:0 0 28px #c8ff4d2e,inset 0 0 18px #c8ff4d1f;
   transition:opacity .4s,transform .3s,border-color .3s;animation:breathe 8s ease-in-out infinite}
 .ring>b{display:block;width:0;height:0;border-radius:50%;background:var(--acc);transition:width .15s,height .15s,opacity .15s}
 .ring::after{content:"";position:absolute;inset:-2px;border-radius:50%;border:2px solid var(--acc);opacity:0}
@@ -94,7 +95,7 @@ body[data-st=hear] .ring{opacity:1;animation:none;transform:scale(1.04)}
 body[data-st=hear] .ring>b{width:46px;height:46px;opacity:.55}
 body[data-st=speak] .ring{opacity:1;animation:none}
 body[data-st=speak] .ring::after{animation:pulse 1.4s ease-out infinite}
-body[data-think="1"] .ring{opacity:1;animation:arc 1.2s linear infinite;border-top-color:#cfe3ff;border-right-color:#6fa8ff55}
+body[data-think="1"] .ring{opacity:1;animation:arc 1.2s linear infinite;border-top-color:#e4ff9e;border-right-color:#c8ff4d55}
 body[data-work="1"] .ring::before{opacity:1;animation:orbit 3s linear infinite}
 body[data-conn="0"] .ring{opacity:.25;animation:none;border-color:var(--faint);box-shadow:none}
 .greet{font-size:30px;font-weight:300;color:var(--tx);letter-spacing:.01em}
@@ -285,7 +286,7 @@ form#f{display:flex;align-items:center;gap:8px;padding:6px 14px 10px}
 #t{flex:1;min-width:0;background:var(--pane);border:1px solid var(--line2);color:var(--tx);
   border-radius:23px;padding:0 18px;min-height:46px;font-size:16px;outline:none;
   box-shadow:inset 0 1px 0 #ffffff24}
-#t:focus{border-color:#6fa8ff99;box-shadow:inset 0 1px 0 #ffffff24,0 0 0 3px #6fa8ff26}
+#t:focus{border-color:#c8ff4d99;box-shadow:inset 0 1px 0 #ffffff24,0 0 0 3px #c8ff4d26}
 #t::placeholder{color:var(--faint)}
 #orb,#send{width:46px;height:46px;border-radius:50%;border:none;flex:none;
   display:grid;place-items:center;position:relative;transition:background .2s,color .2s,transform .12s}
@@ -347,7 +348,7 @@ nav .badge.on{display:block;animation:blink 1.2s infinite}
 <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
 </defs></svg>
 <header>
-  <span class="brand"><span id="dot"></span>GOAT</span>
+  <span class="brand"><span id="dot"></span>AEON</span>
   <div class="chips"><span class="chip" id="cmodel">—</span><span class="chip" id="cstate">idle</span></div>
   <button class="spk" id="cspk" aria-label="Where I answer out loud"><svg class="i"><use href="#i-laptop"/></svg></button>
 </header>
@@ -407,7 +408,7 @@ nav .badge.on{display:block;animation:blink 1.2s infinite}
       <div class="row"><span>Battery</span><span id="battxt">—</span></div>
       <div class="bar"><i id="batbar"></i></div>
       <div class="row"><span>Disk C free</span><span id="disktxt">—</span></div>
-      <div class="row"><span>GOAT itself</span><span id="goattxt">—</span></div>
+      <div class="row"><span>Aeon itself</span><span id="goattxt">—</span></div>
     </div>
     <div class="card">
       <h3><span>Screen</span><button class="btn" id="scrbtn" style="min-height:34px;border-radius:11px;font-size:13px">Capture</button></h3>
@@ -502,7 +503,7 @@ nav .badge.on{display:block;animation:blink 1.2s infinite}
   <form id="f">
     <button type="button" class="ic" id="attach" aria-label="Attach"><svg class="i"><use href="#i-clip"/></svg></button>
     <input type="file" id="fi" accept="image/*,application/pdf,.txt,.doc,.docx" multiple hidden>
-    <input id="t" placeholder="Message GOAT" autocomplete="off" enterkeyhint="send">
+    <input id="t" placeholder="Message Aeon" autocomplete="off" enterkeyhint="send">
     <button type="button" id="orb" aria-label="Talk"><svg class="i mic"><use href="#i-mic"/></svg><span class="eq"><i></i><i></i><i></i></span></button>
     <button id="send" aria-label="Send"><svg class="i"><use href="#i-send"/></svg></button>
   </form>
@@ -673,7 +674,7 @@ function tick() {
     $("nowtxt").textContent = last; $("nowtime").textContent = ago(end - task.t);
   }
 }
-setInterval(() => { tick(); if (booted) $("uptxt").textContent = "GOAT up " + ago(now() - booted); }, 1000);
+setInterval(() => { tick(); if (booted) $("uptxt").textContent = "Aeon up " + ago(now() - booted); }, 1000);
 function renderDone(list) {
   const el = $("done"); el.innerHTML = "";
   if (!list.length) { el.innerHTML = '<div class="empty">Nothing yet this session.</div>'; return; }
@@ -1936,7 +1937,7 @@ $("fi").onchange = async () => {
 function buzz() {
   if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
   if (document.hidden && window.Notification && Notification.permission === "granted") {
-    try { new Notification("GOAT", {body: "Done."}); } catch (e) {}
+    try { new Notification("Aeon", {body: "Done."}); } catch (e) {}
   }
 }
 async function pushSetup() {

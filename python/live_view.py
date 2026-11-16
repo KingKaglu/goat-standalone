@@ -29,7 +29,7 @@ _procs: dict = {}
 _primed_at = [0.0]
 
 # Titles that are never his content.
-_SKIP_TITLES = {"Program Manager", "Windows Input Experience", "GOAT",
+_SKIP_TITLES = {"Program Manager", "Windows Input Experience", "GOAT", "Aeon",
                 "GOAT live"}
 
 

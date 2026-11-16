@@ -75,7 +75,7 @@ MAX_SAMPLES = SR * 60
 _TAILNET = ipaddress.ip_network("100.64.0.0/10")
 # Fallback for goat_app.WAKE_RE (tests run without goat_app loaded).
 import re as _re
-_WAKE = _re.compile(r"\b(goat|goats|goad|goot|gote|coat|გოატ|გოუთ|გოთ)\b", _re.I)
+_WAKE = _re.compile(r"\b(goat|goats|goad|goot|gote|coat|aeon|aeons|eon|aion|ayon|გოატ|გოუთ|გოთ|ეონ)\b", _re.I)
 # What "stop talking" sounds like when it's all that's left of a clip once my
 # own words are taken out (stop_inside_echo).
 _STOP_LEFT = _re.compile(
@@ -87,7 +87,7 @@ TOKEN_MIN = 20     # a token he writes into token.txt himself must be this long
 ROOT = os.path.dirname(HERE)
 SHOT = os.path.join(HERE, "live-shot.png")       # screen_tools.SHOT_PATH
 VITALS_S = 3.0
-_SKIP_TITLES = {"Program Manager", "Windows Input Experience", "GOAT",
+_SKIP_TITLES = {"Program Manager", "Windows Input Experience", "GOAT", "Aeon",
                 "GOAT live"}
 
 
