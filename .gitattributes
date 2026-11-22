@@ -2,3 +2,4 @@
 # which made GOAT.bat silently fail on double-click. Force CRLF forever.
 *.bat text eol=crlf
 *.cmd text eol=crlf
+graphify-out/graph.json merge=graphify

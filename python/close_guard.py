@@ -61,14 +61,17 @@ UNSAVED_RE = re.compile(r"^\s*[*●•]|[*●]\s*$|\s●\s|\bunsaved\b|\bnot sav
 # ---- his answer ------------------------------------------------------------
 YES_RE = re.compile(
     r"^\s*(?:(?:ok(?:ay)?|yeah|yes|yep|sure|go\s+ahead|do\s+it|close\s+it|"
-    r"yes\s+close\s+it|that's\s+fine|it's\s+fine|confirm(?:ed)?|კი|ჰო|ხო|"
-    r"დიახ|კარგი|დახურე)\b[\s,.!]*)+(?:please|goat)?[\s.!]*$", re.IGNORECASE)
+    r"yes\s+close\s+it|that's\s+fine|it's\s+fine|confirm(?:ed)?|"
+    r"of\s+course|absolutely|definitely|go\s+for\s+it|i\s+do|კი|ჰო|ხო|"
+    r"დიახ|კარგი|რა\s+თქმა\s+უნდა|დახურე)\b[\s,.!]*)+(?:please|goat)?[\s.!]*$",
+    re.IGNORECASE)
 NO_RE = re.compile(
     r"^\s*(?:no|nope|don't|do\s+not|stop|cancel|wait|leave\s+it|არა|არ\s+"
     r"დახურო|მოიცა)\b", re.IGNORECASE)
 ACTION_YES_RE = re.compile(
     r"^\s*(?:(?:ok(?:ay)?|yeah|yes|yep|sure|go\s+ahead|do\s+it|"
-    r"confirm(?:ed)?|კი|ჰო|ხო|დიახ|კარგი)\b[\s,.!]*)+"
+    r"confirm(?:ed)?|of\s+course|absolutely|definitely|go\s+for\s+it|i\s+do|"
+    r"კი|ჰო|ხო|დიახ|კარგი|რა\s+თქმა\s+უნდა)\b[\s,.!]*)+"
     r"(?:please|goat|close\s+it|do\s+it|that|დახურე)?[\s.!]*$",
     re.IGNORECASE)
 

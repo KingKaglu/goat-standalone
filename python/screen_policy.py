@@ -65,8 +65,19 @@ RISKY_KEYS = {
 _CARD_RE = re.compile(r"(?:\d[ -]?){13,19}")
 
 
-def _hit(text: str, words: list[str]) -> str | None:
+# File paths and file names are not intents (his order 2026-11-04: attaching
+# Work-Hours-Pay.ods kept tripping on "pay"). Stripped before the word check.
+_PATH_RE = re.compile(
+    r"(?<![a-z])(?:[a-z]:[\\/]|\\\\|~[\\/]|\.{1,2}[\\/])\S*"  # C:\..., \\share, ~/
+    r"|[^\s\\/:*?\"<>|]+\.(?:ods|odt|odp|xlsx?|xlsm|csv|docx?|pptx?|pdf|txt|md"
+    r"|json|png|jpe?g|gif|webp|mp[34]|wav|zip|7z|rar|py)(?![a-z0-9])",
+    re.IGNORECASE)
+
+
+def _hit(text: str, words: list[str], paths_ok: bool = False) -> str | None:
     low = (text or "").lower()
+    if paths_ok:
+        low = _PATH_RE.sub(" ", low)
     for w in words:
         if w in low:
             return w
@@ -141,7 +152,7 @@ def classify(action: str, args: dict, window_title: str = "",
         text = str(args.get("text") or "")
         if _CARD_RE.search(text.replace(" ", " ")):
             return CONFIRM, "the text looks like a card number"
-        word = _hit(text, RISKY_WORDS)
+        word = _hit(text, RISKY_WORDS, paths_ok=True)
         if word:
             return CONFIRM, f"the text contains {word!r}"
         return AUTO, ""
@@ -150,7 +161,7 @@ def classify(action: str, args: dict, window_title: str = "",
                   "click_selector", "fill_selector", "click_mark", "click_text"):
         target = " ".join(str(args.get(k) or "") for k in
                           ("label", "selector", "value", "target", "description"))
-        word = _hit(target, RISKY_WORDS)
+        word = _hit(target, RISKY_WORDS, paths_ok=True)
         if word:
             return CONFIRM, f"the target mentions {word!r}"
         return AUTO, ""
